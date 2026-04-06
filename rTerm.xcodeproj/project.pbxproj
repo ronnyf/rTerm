@@ -51,6 +51,9 @@
 		E3AA010A2C80A10000AA0001 /* TerminalParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */; };
 		E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */; };
 		E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */; };
+		E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E3BB01102C80B10000BB0001 /* Shaders.metal */; };
+		E3AA01102C80A20000AA0001 /* KeyEncoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */; };
+		E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -210,6 +213,9 @@
 		E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalParserTests.swift; sourceTree = "<group>"; };
 		E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModelTests.swift; sourceTree = "<group>"; };
 		E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoder.swift; sourceTree = "<group>"; };
+		E3BB01102C80B10000BB0001 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
+		E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoderTests.swift; sourceTree = "<group>"; };
+		E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlyphAtlas.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -329,6 +335,8 @@
 				E30920842C23FF0600B6D264 /* rTermApp.swift */,
 				E3CA58C02C3DF1D1008E8E05 /* TermView.swift */,
 				E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */,
+				E3BB01102C80B10000BB0001 /* Shaders.metal */,
+				E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */,
 				E30920862C23FF0600B6D264 /* ContentView.swift */,
 				E30920882C23FF0700B6D264 /* Assets.xcassets */,
 				E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */,
@@ -349,6 +357,7 @@
 			isa = PBXGroup;
 			children = (
 				E30920962C23FF0800B6D264 /* rTermTests.swift */,
+				E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */,
 			);
 			path = rTermTests;
 			sourceTree = "<group>";
@@ -775,6 +784,8 @@
 				E30920852C23FF0600B6D264 /* rTermApp.swift in Sources */,
 				E3CA58C12C3DF1D1008E8E05 /* TermView.swift in Sources */,
 				E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */,
+				E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */,
+				E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -783,6 +794,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E30920972C23FF0800B6D264 /* rTermTests.swift in Sources */,
+				E3AA01102C80A20000AA0001 /* KeyEncoderTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
