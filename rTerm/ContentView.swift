@@ -40,13 +40,10 @@ class TerminalSession {
 
     /// Runs the output processing loop. Called from a `.task` modifier.
     ///
-    /// This method is `nonisolated` because it runs a long-lived async loop
-    /// that must not monopolize the main actor. The parser is created as a
-    /// local variable rather than stored on `self` -- this avoids crossing
-    /// the `@MainActor` isolation boundary (a `nonisolated` method cannot
-    /// access actor-isolated stored properties). The local `var` also gives
-    /// us the `mutating` semantics that `TerminalParser.parse(_:)` requires.
-    nonisolated func connect() async {
+    /// The parser is created as a local variable because it is only used
+    /// within this loop. A local `var` naturally provides the `mutating`
+    /// semantics that `TerminalParser.parse(_:)` requires.
+    func connect() async {
         do {
             try remotePTY.connect()
             let spawnReply = try remotePTY.sendSync(RemoteCommand.spawn)

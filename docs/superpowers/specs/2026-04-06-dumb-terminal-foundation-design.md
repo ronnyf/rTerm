@@ -261,8 +261,8 @@ NSEvent (keyDown)
 The `Term` class in `ContentView.swift` is refactored into `TerminalSession`:
 
 - `TerminalSession` is `@Observable` and `@MainActor`.
-- Owns `RemotePTY`, `TerminalParser`, and `ScreenModel`.
-- On `connect()`, spawns a `Task` that reads from `remotePTY.outputData`, runs each chunk through the parser, and applies events to the screen model.
+- Owns `RemotePTY` and `ScreenModel`.
+- On `connect()`, creates a local `TerminalParser` and spawns a loop that reads from `remotePTY.outputData`, runs each chunk through the parser, and applies events to the screen model. The parser is local (not stored) because it is only needed during the connection loop and this avoids actor-isolation complexities with the mutating struct.
 - Exposes the `ScreenModel` to the view layer.
 - `ContentView` creates a `TerminalSession` and passes its `ScreenModel` to `TermView`'s coordinator.
 
