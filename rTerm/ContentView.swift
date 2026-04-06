@@ -53,7 +53,7 @@ class Term {
         self.cols = cols
         self.text = text
         self.remotePty = remotePty
-        try! remotePty.connect()
+        try? remotePty.connect()
     }
     
     func update(text value: String) {

@@ -69,14 +69,12 @@ class PTYResponder {
                     
                     guard let outputPipe = shellProcess.outputPipe, let errorPipe = shellProcess.errorPipe else { throw Errors.wrongPipe }
                     taskGroup.addTask {
-                        // alternatively, we could use the same pipe for output and error, but later on this could prove to be a bit cuter
-                        // we could make a redish background for text printed to stderr, don't know.
-                        let outputValues = outputPipe.fileHandleForReading.values()
-                        let errorValues = errorPipe.fileHandleForReading.values()
-                        
-                        for try await mergedData in merge(outputValues, errorValues) {
+                        let outputData = outputPipe.fileHandleForReading.dataStream()
+                        let errorData = errorPipe.fileHandleForReading.dataStream()
+
+                        for try await chunk in merge(outputData, errorData) {
                             try Task.checkCancellation()
-                            try session.send(RemoteResponse.stdout(mergedData))
+                            try session.send(RemoteResponse.stdout(chunk))
                         }
                     }
                     
@@ -130,6 +128,24 @@ extension PTYResponder {
             return String(cString: errorPtr)
         } else {
             return "Unknown error: \(errno)"
+        }
+    }
+}
+
+extension FileHandle {
+    func dataStream() -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            self.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    continuation.finish()
+                } else {
+                    continuation.yield(data)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                self.readabilityHandler = nil
+            }
         }
     }
 }

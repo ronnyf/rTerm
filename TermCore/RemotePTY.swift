@@ -119,7 +119,7 @@ public class RemotePTY {
 //                continuation.resume(throwing: error)
 //            }
 //        }
-        fatalError()
+        throw RemoteErrors.notConnected
     }
 }
 
