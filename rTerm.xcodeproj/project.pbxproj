@@ -50,6 +50,7 @@
 		E3AA01082C80A10000AA0001 /* ScreenModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01072C80A10000AA0001 /* ScreenModel.swift */; };
 		E3AA010A2C80A10000AA0001 /* TerminalParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */; };
 		E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */; };
+		E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -208,6 +209,7 @@
 		E3AA01072C80A10000AA0001 /* ScreenModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModel.swift; sourceTree = "<group>"; };
 		E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalParserTests.swift; sourceTree = "<group>"; };
 		E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModelTests.swift; sourceTree = "<group>"; };
+		E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoder.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -326,6 +328,7 @@
 			children = (
 				E30920842C23FF0600B6D264 /* rTermApp.swift */,
 				E3CA58C02C3DF1D1008E8E05 /* TermView.swift */,
+				E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */,
 				E30920862C23FF0600B6D264 /* ContentView.swift */,
 				E30920882C23FF0700B6D264 /* Assets.xcassets */,
 				E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */,
@@ -771,6 +774,7 @@
 				E30920872C23FF0600B6D264 /* ContentView.swift in Sources */,
 				E30920852C23FF0600B6D264 /* rTermApp.swift in Sources */,
 				E3CA58C12C3DF1D1008E8E05 /* TermView.swift in Sources */,
+				E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
