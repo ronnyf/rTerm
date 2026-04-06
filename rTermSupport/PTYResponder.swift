@@ -25,6 +25,7 @@ class PTYResponder {
     
     let log = Logger(subsystem: "rTermSupport", category: "PTYResponder")
     
+    var primaryFD: FileDescriptor?
     var shellTask: Task<Void, Error>? // maybe process and task both need to be unified in one structure?
     
     deinit {
@@ -37,6 +38,7 @@ class PTYResponder {
         guard shellTask == nil else { throw Errors.shellTaskIsRunning }
        
         let pseudoTerminal = try PseudoTerminal()
+        primaryFD = pseudoTerminal.pty.primary
         let fd = pseudoTerminal.pty.secondary
         guard let ttyName = fd.name else { throw Errors.noTTY}
         try fd.tiosctty()
@@ -102,7 +104,15 @@ extension PTYResponder: XPCSyncResponder {
         switch request {
             case .spawn:
                 return try spawn(session: session)
-                
+
+            case .input(let data):
+                guard let fd = primaryFD else { return .failure("no PTY") }
+                data.withUnsafeBytes { buffer in
+                    guard let baseAddress = buffer.baseAddress else { return }
+                    _ = Darwin.write(fd.rawValue, baseAddress, buffer.count)
+                }
+                return nil
+
             case .failure(let message):
                 return .failure(message)
                 

@@ -61,6 +61,7 @@ public struct XPCRequest {
 /// Remote Messages get sent to the XPC Service.
 public enum RemoteCommand: Codable {
     case spawn
+    case input(Data)
     case failure(String)
 }
 
