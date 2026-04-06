@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -44,6 +44,12 @@
 		E3E00EDF2C277F8E00DE1213 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EDE2C277F8E00DE1213 /* Agent.swift */; };
 		E3E00EE32C27816600DE1213 /* PseudoTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */; };
 		E3E00EE52C2781CC00DE1213 /* PTY.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE42C2781CC00DE1213 /* PTY.swift */; };
+		E3AA01022C80A10000AA0001 /* TerminalEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01012C80A10000AA0001 /* TerminalEvent.swift */; };
+		E3AA01042C80A10000AA0001 /* TerminalParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01032C80A10000AA0001 /* TerminalParser.swift */; };
+		E3AA01062C80A10000AA0001 /* Cell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01052C80A10000AA0001 /* Cell.swift */; };
+		E3AA01082C80A10000AA0001 /* ScreenModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01072C80A10000AA0001 /* ScreenModel.swift */; };
+		E3AA010A2C80A10000AA0001 /* TerminalParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */; };
+		E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -196,7 +202,17 @@
 		E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminal.swift; sourceTree = "<group>"; };
 		E3E00EE42C2781CC00DE1213 /* PTY.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTY.swift; sourceTree = "<group>"; };
 		E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rTerm.entitlements; sourceTree = "<group>"; };
+		E3AA01012C80A10000AA0001 /* TerminalEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalEvent.swift; sourceTree = "<group>"; };
+		E3AA01032C80A10000AA0001 /* TerminalParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalParser.swift; sourceTree = "<group>"; };
+		E3AA01052C80A10000AA0001 /* Cell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cell.swift; sourceTree = "<group>"; };
+		E3AA01072C80A10000AA0001 /* ScreenModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModel.swift; sourceTree = "<group>"; };
+		E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalParserTests.swift; sourceTree = "<group>"; };
+		E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		E3B98F432F84654200FC0610 /* docs */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = docs; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		E309207E2C23FF0600B6D264 /* Frameworks */ = {
@@ -274,6 +290,7 @@
 		E30920782C23FF0600B6D264 = {
 			isa = PBXGroup;
 			children = (
+				E3B98F432F84654200FC0610 /* docs */,
 				E30920832C23FF0600B6D264 /* rTerm */,
 				E30920952C23FF0800B6D264 /* rTermTests */,
 				E309209F2C23FF0800B6D264 /* rTermUITests */,
@@ -358,6 +375,10 @@
 				E3C634E02C3507E800BF09C7 /* ScreenBuffer.swift */,
 				E39E64772C3DC7BA0035B75D /* CircularCollection.swift */,
 				E36EA6F82C73BECC00F9A403 /* RingBuffer.swift */,
+				E3AA01012C80A10000AA0001 /* TerminalEvent.swift */,
+				E3AA01032C80A10000AA0001 /* TerminalParser.swift */,
+				E3AA01052C80A10000AA0001 /* Cell.swift */,
+				E3AA01072C80A10000AA0001 /* ScreenModel.swift */,
 			);
 			path = TermCore;
 			sourceTree = "<group>";
@@ -366,6 +387,8 @@
 			isa = PBXGroup;
 			children = (
 				E30920C22C23FF6800B6D264 /* TermCoreTests.swift */,
+				E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */,
+				E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */,
 			);
 			path = TermCoreTests;
 			sourceTree = "<group>";
@@ -784,6 +807,10 @@
 				E3E00EE32C27816600DE1213 /* PseudoTerminal.swift in Sources */,
 				E3C634DF2C34BDEB00BF09C7 /* Logging.swift in Sources */,
 				E35D37A92C2B5DEA00F6CF07 /* XPCRequest.swift in Sources */,
+				E3AA01022C80A10000AA0001 /* TerminalEvent.swift in Sources */,
+				E3AA01042C80A10000AA0001 /* TerminalParser.swift in Sources */,
+				E3AA01062C80A10000AA0001 /* Cell.swift in Sources */,
+				E3AA01082C80A10000AA0001 /* ScreenModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -792,6 +819,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				E30920C32C23FF6800B6D264 /* TermCoreTests.swift in Sources */,
+				E3AA010A2C80A10000AA0001 /* TerminalParserTests.swift in Sources */,
+				E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
