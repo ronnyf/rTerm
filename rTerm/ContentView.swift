@@ -52,7 +52,7 @@ class TerminalSession {
             if case .spawned = spawnReply {
                 var parser = TerminalParser()
 
-                for await output in await remotePTY.outputData {
+                for await output in remotePTY.outputData {
                     let events = parser.parse(Data(output))
                     await screenModel.apply(events)
                 }

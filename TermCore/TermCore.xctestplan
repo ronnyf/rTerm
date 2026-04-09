@@ -1,0 +1,25 @@
+{
+  "configurations" : [
+    {
+      "id" : "4B6B1294-F731-4D0E-B14D-D670A18D10C5",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false,
+    "performanceAntipatternCheckerEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:rTerm.xcodeproj",
+        "identifier" : "E30920BA2C23FF6800B6D264",
+        "name" : "TermCoreTests"
+      }
+    }
+  ],
+  "version" : 1
+}
