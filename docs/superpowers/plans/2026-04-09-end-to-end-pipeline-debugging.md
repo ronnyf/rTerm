@@ -31,12 +31,13 @@ Expected: All tests pass. Note any failures — they may be related to the pipel
 
 ---
 
-### Task 2: Add Logger categories for PseudoTerminal and ScreenModel
+### Task 2: Standardize Logger categories and add missing ones
 
-The existing `Logging.swift` has categories for `SessionHandler`, `RemotePTY`, and `ScreenBuffer`. Add categories needed for output path instrumentation.
+The existing `Logging.swift` has categories for `SessionHandler`, `RemotePTY`, and `ScreenBuffer`. Add categories needed for instrumentation, and update `PseudoTerminal.swift` to use the centralized logger (its current `log` property uses subsystem `"TermCore"` instead of `"com.ronnyf.TermCore"`, which would be invisible in Console.app filtering).
 
 **Files:**
 - Modify: `TermCore/Logging.swift`
+- Modify: `TermCore/PseudoTerminal.swift:34`
 
 - [ ] **Step 1: Add pseudoTerminal and screenModel logger categories**
 
@@ -56,22 +57,92 @@ extension Logger {
 }
 ```
 
-- [ ] **Step 2: Build TermCore to verify**
+- [ ] **Step 2: Update PseudoTerminal to use centralized logger**
+
+In `TermCore/PseudoTerminal.swift`, replace the existing `log` property at line 34:
+
+```swift
+    let log = Logger(subsystem: "TermCore", category: "PseudoTerminal")
+```
+
+with:
+
+```swift
+    let log = Logger.TermCore.pseudoTerminal
+```
+
+This ensures PseudoTerminal logs appear under subsystem `"com.ronnyf.TermCore"` alongside all other TermCore logs.
+
+- [ ] **Step 3: Build TermCore to verify**
 
 Run: `xcodebuild -project rTerm.xcodeproj -scheme TermCore -configuration Debug build 2>&1 | tail -5`
 
 Expected: BUILD SUCCEEDED
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add TermCore/Logging.swift
-git commit -m "chore: add PseudoTerminal and ScreenModel logger categories"
+git add TermCore/Logging.swift TermCore/PseudoTerminal.swift
+git commit -m "chore: standardize Logger categories, add PseudoTerminal and ScreenModel"
 ```
 
 ---
 
-### Task 3: Instrument the output path with diagnostic logging
+### Task 3: Fix shell environment and interactive mode
+
+The default shell (zsh) has no `TERM` env variable and no `-i` flag. This is likely why the shell produces no prompt output. Fix both.
+
+**Files:**
+- Modify: `TermCore/Shell.swift:38-43` (defaultArguments)
+- Modify: `TermCore/Shell.swift:53` (environment)
+
+- [ ] **Step 1: Add `-i` to zsh defaultArguments**
+
+In `TermCore/Shell.swift`, update `defaultArguments` to include `-i` for zsh:
+
+```swift
+    var defaultArguments: [String] {
+        switch self {
+            case .bash:
+                return ["-i"]
+                
+            case .zsh:
+                return ["-i"]
+                
+            default:
+                return []
+        }
+    }
+```
+
+- [ ] **Step 2: Add TERM to shell environment**
+
+In `TermCore/Shell.swift`, update the environment in `process()` to include `TERM=dumb`. Using `dumb` avoids ANSI escape sequences that the parser cannot yet handle:
+
+```swift
+        shellProcess.environment = [
+            "HOME": "/Users/ronny",
+            "PATH": "/usr/bin:/bin:/opt/homebrew/bin",
+            "TERM": "dumb"
+        ]
+```
+
+- [ ] **Step 3: Build and run tests**
+
+Run: `xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test 2>&1 | tail -20`
+
+Expected: All tests pass. The `test_start_and_output_stream` test should still produce output (sh is unaffected by zsh changes).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add TermCore/Shell.swift
+git commit -m "fix(Shell): add TERM=dumb env and -i flag for zsh interactive mode"
+```
+
+---
+
+### Task 4: Instrument the output path with diagnostic logging
 
 Add a log statement at each handoff in the output pipeline. After this, running the app and reading Console.app will show exactly where data stops.
 
@@ -135,6 +206,7 @@ with:
             for await message in incomingMessages {
                 Logger.TermCore.remotePTY.debug("Received XPC message: \(message.count) bytes")
                 await outputDataChannel.send(message)
+                Logger.TermCore.remotePTY.debug("Forwarded to outputDataChannel")
             }
         }
 ```
@@ -163,11 +235,13 @@ with:
 
 - [ ] **Step 5: Add log in ScreenModel.apply()**
 
-In `TermCore/ScreenModel.swift`, add a log at the top of `apply(_:)`. This requires importing `OSLog` and adding a logger. Add after the existing properties:
+In `TermCore/ScreenModel.swift`, add a log at the top of `apply(_:)`. Add a logger property after the existing properties (inside the actor):
 
 ```swift
     private let log = Logger.TermCore.screenModel
 ```
+
+`Logger` is `Sendable`, so a plain `let` stored property works inside an actor without any `nonisolated` annotation.
 
 Then at the top of `apply(_:)`, add:
 
@@ -175,12 +249,6 @@ Then at the top of `apply(_:)`, add:
     public func apply(_ events: [TerminalEvent]) {
         log.debug("Applying \(events.count) events")
         for event in events {
-```
-
-Note: `Logger` stored properties are not allowed directly in actors. Instead, use a `nonisolated` computed property or make the log call use a static. The simplest approach is to use `nonisolated(unsafe)`:
-
-```swift
-    nonisolated(unsafe) private let log = Logger.TermCore.screenModel
 ```
 
 - [ ] **Step 6: Build the app to verify all logging compiles**
@@ -198,9 +266,9 @@ git commit -m "debug: add output path diagnostic logging at each handoff"
 
 ---
 
-### Task 4: Fix PTYResponder.outputTask error resilience
+### Task 5: Fix PTYResponder.outputTask error resilience
 
-The current `outputTask` has unguarded `try` on `session.send()` — one failure kills the entire output stream. Wrap in do/catch so errors are logged but don't stop output delivery.
+The current `outputTask` has unguarded `try` on `session.send()` — one failure kills the entire output stream. Wrap in do/catch so errors are logged but don't stop output delivery. This supersedes the logging-only version from Task 4.
 
 **Files:**
 - Modify: `rTermSupport/PTYResponder.swift:29-35`
@@ -212,7 +280,10 @@ In `rTermSupport/PTYResponder.swift`, replace the `outputTask` assignment:
 ```swift
         outputTask = Task { [log] in
             for await data in pt.outputStream {
-                if Task.isCancelled { break }
+                if Task.isCancelled {
+                    log.info("output task cancelled")
+                    break
+                }
                 do {
                     log.debug("XPC sending stdout: \(data.count) bytes")
                     try session.send(RemoteResponse.stdout(data))
@@ -224,7 +295,7 @@ In `rTermSupport/PTYResponder.swift`, replace the `outputTask` assignment:
         }
 ```
 
-Note: replaced `try Task.checkCancellation()` with `if Task.isCancelled { break }` so cancellation doesn't throw through the catch.
+Note: replaced `try Task.checkCancellation()` with `if Task.isCancelled` + log so cancellation doesn't throw through the catch, and the exit is logged.
 
 - [ ] **Step 2: Build to verify**
 
@@ -241,7 +312,7 @@ git commit -m "fix(PTYResponder): make outputTask resilient to individual send e
 
 ---
 
-### Task 5: Instrument the input path and fix first responder
+### Task 6: Instrument the input path and fix first responder
 
 Add diagnostic logging to the input path and fix the most likely input issue: first responder not being set.
 
@@ -252,7 +323,16 @@ Add diagnostic logging to the input path and fix the most likely input issue: fi
 
 - [ ] **Step 1: Add keyDown logging in TerminalMTKView**
 
-In `rTerm/TermView.swift`, add a logger and log inside `keyDown`. Add a property to the class:
+In `rTerm/TermView.swift`, first add the import at the top of the file:
+
+```swift
+import MetalKit
+import OSLog
+import SwiftUI
+import TermCore
+```
+
+Then add a logger and log inside `keyDown`. Add a property to the class:
 
 ```swift
 final class TerminalMTKView: MTKView {
@@ -278,11 +358,27 @@ Then update `keyDown`:
     }
 ```
 
-Add `import OSLog` at the top of the file if not already present.
+- [ ] **Step 2: Fix first responder via viewDidMoveToWindow override**
 
-- [ ] **Step 2: Fix first responder in makeNSView**
+In `rTerm/TermView.swift`, add a `viewDidMoveToWindow()` override to `TerminalMTKView`. This is more reliable than `DispatchQueue.main.async` from `makeNSView`, which may fire before the view has a window:
 
-In `rTerm/TermView.swift`, update `makeNSView` to request first responder after the view is in the window:
+```swift
+final class TerminalMTKView: MTKView {
+
+    private let log = Logger(subsystem: "rTerm", category: "TerminalMTKView")
+
+    /// Called with the encoded byte sequence for each key-down event.
+    var onKeyInput: ((Data) -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.makeFirstResponder(self)
+    }
+```
+
+And remove any `DispatchQueue.main.async` from `makeNSView` — it is no longer needed. The `makeNSView` method stays as:
 
 ```swift
     func makeNSView(context: Context) -> TerminalMTKView {
@@ -293,12 +389,6 @@ In `rTerm/TermView.swift`, update `makeNSView` to request first responder after 
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         view.onKeyInput = onInput
-
-        // Request first responder after the view is added to the window hierarchy.
-        DispatchQueue.main.async {
-            view.window?.makeFirstResponder(view)
-        }
-
         return view
     }
 ```
@@ -344,7 +434,7 @@ git commit -m "fix(TermView): set first responder, add input path diagnostic log
 
 ---
 
-### Task 6: Write shell echo integration test
+### Task 7: Write shell echo integration test
 
 Test the PTY→parser→ScreenModel pipeline without XPC or rendering. This captures the fix and prevents regression.
 
@@ -353,7 +443,7 @@ Test the PTY→parser→ScreenModel pipeline without XPC or rendering. This capt
 
 - [ ] **Step 1: Write the failing test**
 
-Add a new test to `TermCoreTests/PseudoTerminalTests.swift` that spawns a shell, sends `echo hello`, and verifies the output reaches a `ScreenModel` through `TerminalParser`:
+Add a new test to `TermCoreTests/PseudoTerminalTests.swift` that spawns a shell, sends `echo hello`, and verifies the output reaches a `ScreenModel` through `TerminalParser`. Uses a single `AsyncStream` consumer (since `AsyncStream` is single-consumer) with a timeout task:
 
 ```swift
     @Test("shell echo reaches ScreenModel through parser pipeline")
@@ -367,48 +457,42 @@ Add a new test to `TermCoreTests/PseudoTerminalTests.swift` that spawns a shell,
         // Send a command that produces known output
         pt.write(Data("echo hello\r".utf8))
 
-        // Collect output for up to 2 seconds
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            let chunk = try await withThrowingTaskGroup(of: Data?.self) { group in
-                group.addTask {
-                    for await data in pt.outputStream {
-                        return data
+        // Single consumer with timeout — AsyncStream is single-consumer,
+        // so we must not create multiple `for await` iterators.
+        let found = try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await data in pt.outputStream {
+                    let events = parser.parse(data)
+                    await screenModel.apply(events)
+
+                    let snap = await screenModel.snapshot()
+                    let text = (0..<snap.rows).map { row in
+                        (0..<snap.cols).map { col in
+                            String(snap[row, col].character)
+                        }.joined()
+                    }.joined()
+
+                    if text.contains("hello") {
+                        return true
                     }
-                    return nil
                 }
-                group.addTask {
-                    try await Task.sleep(for: .milliseconds(200))
-                    return nil
-                }
-                let first = try await group.next() ?? nil
-                group.cancelAll()
-                return first
+                return false
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(3))
+                return false
             }
 
-            guard let chunk else { break }
-
-            let events = parser.parse(chunk)
-            await screenModel.apply(events)
-
-            // Check if "hello" appears in the grid
-            let snap = await screenModel.snapshot()
-            let text = (0..<snap.rows).map { row in
-                (0..<snap.cols).map { col in
-                    String(snap[row, col].character)
-                }.joined()
-            }.joined()
-
-            if text.contains("hello") {
-                // Success — "hello" reached the screen model
-                return
-            }
+            let first = try await group.next() ?? false
+            group.cancelAll()
+            return first
         }
 
-        // If we get here, "hello" never appeared
-        let snap = await screenModel.snapshot()
-        let firstRowText = (0..<snap.cols).map { String(snap[0, $0].character) }.joined()
-        #expect(Bool(false), "Expected 'hello' in screen model, first row: '\(firstRowText.trimmingCharacters(in: .whitespaces))'")
+        if !found {
+            let snap = await screenModel.snapshot()
+            let firstRowText = (0..<snap.cols).map { String(snap[0, $0].character) }.joined()
+            Issue.record("Expected 'hello' in screen model, first row: '\(firstRowText.trimmingCharacters(in: .whitespaces))'")
+        }
     }
 ```
 
@@ -427,7 +511,7 @@ git commit -m "test: add shell echo integration test through parser to ScreenMod
 
 ---
 
-### Task 7: Build app and manual end-to-end verification
+### Task 8: Build app and manual end-to-end verification
 
 Run the app, check Console.app logs, verify the pipeline works.
 

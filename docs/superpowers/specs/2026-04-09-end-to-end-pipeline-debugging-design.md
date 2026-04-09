@@ -63,7 +63,13 @@ If data reaches `ScreenModel` but the renderer isn't picking it up, possible cau
 
 **Files:** `rTerm/TermView.swift`, `rTerm/GlyphAtlas.swift`
 
-### S5: First responder not set for keyboard input (HIGH)
+### S5: Shell not entering interactive mode (HIGH)
+
+`Shell.swift` configures the shell environment with only `HOME` and `PATH` — no `TERM` variable is set. Without `TERM`, zsh may default to `dumb` mode or skip the prompt entirely. Additionally, only bash receives the `-i` (interactive) flag; zsh (the default shell) receives no arguments. Combined, these two omissions make it likely the shell does not enter interactive mode and produces no prompt output.
+
+**Files:** `TermCore/Shell.swift`
+
+### S6: First responder not set for keyboard input (HIGH)
 
 `TerminalMTKView.acceptsFirstResponder` returns `true` but in SwiftUI's `NSViewRepresentable`, the view may not automatically become first responder. Without first responder status, `keyDown(with:)` is never called.
 
@@ -79,7 +85,8 @@ Add `os_log` / `Logger` statements at each handoff to trace data flow. Each log 
 |----------|-------------|------|
 | `PseudoTerminal.start()` readabilityHandler | `"PTY output: \(data.count) bytes"` | `PseudoTerminal.swift` |
 | `PTYResponder.outputTask` before send | `"XPC sending stdout: \(data.count) bytes"` | `PTYResponder.swift` |
-| `RemotePTY.processIncomingMessages` | `"Received XPC message: \(message.count) bytes"` | `RemotePTY.swift` |
+| `RemotePTY.processIncomingMessages` before channel send | `"Received XPC message: \(message.count) bytes"` | `RemotePTY.swift` |
+| `RemotePTY.processIncomingMessages` after channel send | `"Forwarded to outputDataChannel"` | `RemotePTY.swift` |
 | `TerminalSession.connect()` for-await loop | `"Parser input: \(output.count) bytes"` | `ContentView.swift` |
 | `ScreenModel.apply()` | `"Applying \(events.count) events"` | `ScreenModel.swift` |
 
@@ -98,16 +105,19 @@ Add `os_log` / `Logger` statements at each handoff to trace data flow. Each log 
 
 Based on code review, the predicted fixes are:
 
-**Fix 1: Verify shell output at the PTY level**
-Add a log in the `readabilityHandler` to confirm data is arriving from the shell. If no data arrives, the issue is in shell/PTY setup (TIOCSCTTY, fd inheritance). If data arrives but doesn't reach the app, the issue is in XPC delivery.
+**Fix 1: Set `TERM` environment variable and `-i` flag for zsh**
+Add `TERM=dumb` to the shell environment in `Shell.swift` so the shell recognizes it is connected to a terminal. Add `-i` to zsh's `defaultArguments` to force interactive mode. Using `TERM=dumb` (rather than `xterm-256color`) avoids ANSI escape sequences the parser cannot yet handle.
 
-**Fix 2: Make PTYResponder.outputTask resilient to send errors**
+**Fix 2: Verify shell output at the PTY level**
+Add a log in the `readabilityHandler` to confirm data is arriving from the shell. If no data arrives after Fix 1, the issue is in PTY fd inheritance or process setup. If data arrives but doesn't reach the app, the issue is in XPC delivery.
+
+**Fix 3: Make PTYResponder.outputTask resilient to send errors**
 Wrap individual `session.send()` calls in do/catch so a single send failure doesn't kill the entire output stream. Log the error and continue.
 
-**Fix 3: Ensure first responder in TermView**
-Call `view.window?.makeFirstResponder(view)` in `makeNSView` or use `DispatchQueue.main.async` to set it after the view is added to the window hierarchy.
+**Fix 4: Ensure first responder in TermView**
+Override `viewDidMoveToWindow()` in `TerminalMTKView` to call `window?.makeFirstResponder(self)`. This is more reliable than `DispatchQueue.main.async` from `makeNSView`, which may fire before the view has a window.
 
-**Fix 4: Verify GlyphAtlas character mapping**
+**Fix 5: Verify GlyphAtlas character mapping**
 Confirm that common prompt characters (`%`, `$`, `~`, `/`) are in the ASCII range (0x20-0x7E) that GlyphAtlas rasterizes. They should be, but verify the UV lookup returns valid coordinates.
 
 ## Testing
@@ -131,7 +141,7 @@ Confirm that common prompt characters (`%`, `$`, `~`, `/`) are in the ASCII rang
 - Basic first-responder handling for keyboard input
 
 **Out of scope:**
-- ANSI escape sequences, colors, attributes
+- ANSI escape sequences, colors, attributes (note: with `TERM=dumb`, the shell should not emit escape sequences; if garbled output appears despite a working pipeline, this is the parser's limited vocabulary, not a pipeline bug)
 - Window resize propagation
 - Scrollback buffer
 - Arrow keys and function keys
@@ -141,3 +151,5 @@ Confirm that common prompt characters (`%`, `$`, `~`, `/`) are in the ASCII rang
 
 - Diagnostic logging added during debugging should be kept at `debug` level or removed once the pipeline is confirmed working. Permanent logging at `info`/`error` level is fine for error paths.
 - The existing `SessionHandler` already logs incoming requests at `info` level — these logs should appear in Console.app and help trace XPC message flow.
+- **Newline semantics:** `ScreenModel` treats `\n` as combined newline + carriage return (moves to col 0 and advances row). Real terminals treat LF as "advance row only" with CR separate. Shells typically emit `\r\n`, so this produces correct behavior for now. Programs that emit bare `\n` without `\r` may render incorrectly — this is expected and out of scope for this debugging effort.
+- **AsyncChannel blocking:** `await outputDataChannel.send(message)` in `RemotePTY` is a suspension point that waits for a consumer. If `TerminalSession.connect()` has not yet started consuming (e.g., because `sendSync` blocks the MainActor first), incoming messages could be suspended. The instrumentation brackets this call to detect this scenario.
