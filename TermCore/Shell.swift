@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import System
 
 public enum Shell {
     case bash
