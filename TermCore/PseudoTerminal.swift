@@ -53,10 +53,17 @@ public class PseudoTerminal {
     /// Writes input bytes to the PTY primary FD.
     public func write(_ data: Data) {
         data.withUnsafeBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else { return }
-            let result = Darwin.write(pty.primary.rawValue, baseAddress, buffer.count)
-            if result < 0 {
-                log.error("write failed: \(errno)")
+            guard var ptr = buffer.baseAddress else { return }
+            var remaining = buffer.count
+            while remaining > 0 {
+                let written = Darwin.write(pty.primary.rawValue, ptr, remaining)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    log.error("write failed: \(errno)")
+                    return
+                }
+                ptr = ptr.advanced(by: written)
+                remaining -= written
             }
         }
     }
@@ -73,7 +80,7 @@ public class PseudoTerminal {
 
     /// Spawns the shell process, begins reading output. Returns the tty name.
     public func start() throws -> String {
-        guard let ptsName = ptsname(pty.secondary.rawValue) else {
+        guard let ptsName = ptsname(pty.primary.rawValue) else {
             throw Errors.noPtsName
         }
         let ttyName = String(cString: ptsName)
