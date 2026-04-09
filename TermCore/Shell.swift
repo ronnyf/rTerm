@@ -48,11 +48,7 @@ extension Shell {
     
     public func process() throws -> Process {
         let shellProcess = Process()
-        
-        shellProcess.standardInput = Pipe()
-        shellProcess.standardOutput = Pipe()
-        shellProcess.standardError = Pipe()
-        
+
         shellProcess.executableURL = URL(filePath: executable)
         shellProcess.arguments = defaultArguments
         shellProcess.environment = ["HOME": "/Users/ronny", "PATH": "/usr/bin:/bin:/opt/homebrew/bin"]
@@ -61,19 +57,5 @@ extension Shell {
         //TODO: incorporate some config (e.g. pickl for those things maybe?)
         
         return shellProcess
-    }
-}
-
-extension Process {
-    public var inputPipe: Pipe? {
-        standardInput as? Pipe
-    }
-    
-    public var outputPipe: Pipe? {
-        standardInput as? Pipe
-    }
-    
-    public var errorPipe: Pipe? {
-        standardError as? Pipe
     }
 }
