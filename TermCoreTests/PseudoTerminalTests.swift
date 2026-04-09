@@ -13,8 +13,14 @@ struct PseudoTerminalTests {
     @Test("write() sends bytes through PTY primary to secondary")
     func test_write_sends_bytes() throws {
         let pt = try PseudoTerminal()
-        let testData = Data("hello".utf8)
 
+        // Set raw mode so read() returns immediately without waiting for newline
+        var rawTermios = Darwin.termios()
+        tcgetattr(pt.pty.secondary.rawValue, &rawTermios)
+        cfmakeraw(&rawTermios)
+        tcsetattr(pt.pty.secondary.rawValue, TCSANOW, &rawTermios)
+
+        let testData = Data("hello".utf8)
         pt.write(testData)
 
         // Read from secondary FD to verify bytes arrived
