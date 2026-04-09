@@ -135,17 +135,15 @@ extension RemotePTY {
 }
 
 extension XPCSession {
-    
+
     func incomingMessages<Message: Decodable, Result>(transform: @escaping (Message) -> Result?) -> some AsyncSequence<Result, Never> {
-        AsyncStream(Result.self) { contination in
+        AsyncStream(Result.self) { continuation in
+            setIncomingMessageHandler { (message: Message) in
+                if let value = transform(message) {
+                    continuation.yield(value)
+                }
+                return nil
+            }
         }
-//        AsyncStream { continuation in
-//            setIncomingMessageHandler { (message: Message) in
-//                if let value = transform(message) {
-//                    continuation.yield(value)
-//                }
-//                return nil
-//            }
-//        }
     }
 }
