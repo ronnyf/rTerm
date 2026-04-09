@@ -452,7 +452,6 @@ Add a new test to `TermCoreTests/PseudoTerminalTests.swift` that spawns a shell,
         let _ = try pt.start()
 
         let screenModel = ScreenModel(cols: 80, rows: 24)
-        var parser = TerminalParser()
 
         // Send a command that produces known output
         pt.write(Data("echo hello\r".utf8))
@@ -461,6 +460,7 @@ Add a new test to `TermCoreTests/PseudoTerminalTests.swift` that spawns a shell,
         // so we must not create multiple `for await` iterators.
         let found = try await withThrowingTaskGroup(of: Bool.self) { group in
             group.addTask {
+                var parser = TerminalParser()
                 for await data in pt.outputStream {
                     let events = parser.parse(data)
                     await screenModel.apply(events)
