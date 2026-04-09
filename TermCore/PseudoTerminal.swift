@@ -31,7 +31,7 @@ public class PseudoTerminal {
     /// The running shell process.
     private var shellProcess: Process?
 
-    let log = Logger(subsystem: "TermCore", category: "PseudoTerminal")
+    let log = Logger.TermCore.pseudoTerminal
 
     public init(shell: Shell = .zsh, rows: UInt16 = 24, cols: UInt16 = 80) throws {
         self.shell = shell
