@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 70;
+	objectVersion = 100;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -30,6 +30,17 @@
 		E35D37AF2C2B61E700F6CF07 /* RemotePTY.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35D37AE2C2B61E700F6CF07 /* RemotePTY.swift */; };
 		E36EA6F92C73BECC00F9A403 /* RingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E36EA6F82C73BECC00F9A403 /* RingBuffer.swift */; };
 		E39E64782C3DC7BA0035B75D /* CircularCollection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E39E64772C3DC7BA0035B75D /* CircularCollection.swift */; };
+		E3AA01022C80A10000AA0001 /* TerminalEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01012C80A10000AA0001 /* TerminalEvent.swift */; };
+		E3AA01042C80A10000AA0001 /* TerminalParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01032C80A10000AA0001 /* TerminalParser.swift */; };
+		E3AA01062C80A10000AA0001 /* Cell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01052C80A10000AA0001 /* Cell.swift */; };
+		E3AA01082C80A10000AA0001 /* ScreenModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01072C80A10000AA0001 /* ScreenModel.swift */; };
+		E3AA010A2C80A10000AA0001 /* TerminalParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */; };
+		E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */; };
+		E3CC01022F87A10000CC0001 /* PseudoTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */; };
+		E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */; };
+		E3AA01102C80A20000AA0001 /* KeyEncoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */; };
+		E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */; };
+		E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E3BB01102C80B10000BB0001 /* Shaders.metal */; };
 		E3C634DC2C34B23D00BF09C7 /* TermMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C634DB2C34B23D00BF09C7 /* TermMessage.swift */; };
 		E3C634DD2C34B29900BF09C7 /* SessionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35D37B02C2B973200F6CF07 /* SessionHandler.swift */; };
 		E3C634DF2C34BDEB00BF09C7 /* Logging.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C634DE2C34BDEB00BF09C7 /* Logging.swift */; };
@@ -44,16 +55,6 @@
 		E3E00EDF2C277F8E00DE1213 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EDE2C277F8E00DE1213 /* Agent.swift */; };
 		E3E00EE32C27816600DE1213 /* PseudoTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */; };
 		E3E00EE52C2781CC00DE1213 /* PTY.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE42C2781CC00DE1213 /* PTY.swift */; };
-		E3AA01022C80A10000AA0001 /* TerminalEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01012C80A10000AA0001 /* TerminalEvent.swift */; };
-		E3AA01042C80A10000AA0001 /* TerminalParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01032C80A10000AA0001 /* TerminalParser.swift */; };
-		E3AA01062C80A10000AA0001 /* Cell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01052C80A10000AA0001 /* Cell.swift */; };
-		E3AA01082C80A10000AA0001 /* ScreenModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01072C80A10000AA0001 /* ScreenModel.swift */; };
-		E3AA010A2C80A10000AA0001 /* TerminalParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */; };
-		E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */; };
-		E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */; };
-		E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E3BB01102C80B10000BB0001 /* Shaders.metal */; };
-		E3AA01102C80A20000AA0001 /* KeyEncoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */; };
-		E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -132,32 +133,27 @@
 /* Begin PBXCopyFilesBuildPhase section */
 		E30920C92C23FF6800B6D264 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
 			dstPath = "";
-			dstSubfolderSpec = 10;
+			dstSubfolder = Frameworks;
 			files = (
 				E30920E92C23FF7800B6D264 /* TermUI.framework in Embed Frameworks */,
 				E30920C82C23FF6800B6D264 /* TermCore.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E3E00E5F2C27574F00DE1213 /* Embed XPC Services */ = {
 			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
 			dstPath = "$(CONTENTS_FOLDER_PATH)/XPCServices";
-			dstSubfolderSpec = 16;
+			dstSubfolder = Product;
 			files = (
 				E3E00E5B2C27574F00DE1213 /* rTermSupport.xpc in Embed XPC Services */,
 			);
 			name = "Embed XPC Services";
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E3E00E772C27770B00DE1213 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
 			dstPath = /usr/share/man/man1/;
-			dstSubfolderSpec = 0;
+			dstSubfolder = None;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 1;
@@ -188,6 +184,17 @@
 		E35D37B02C2B973200F6CF07 /* SessionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHandler.swift; sourceTree = "<group>"; };
 		E36EA6F82C73BECC00F9A403 /* RingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingBuffer.swift; sourceTree = "<group>"; };
 		E39E64772C3DC7BA0035B75D /* CircularCollection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CircularCollection.swift; sourceTree = "<group>"; };
+		E3AA01012C80A10000AA0001 /* TerminalEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalEvent.swift; sourceTree = "<group>"; };
+		E3AA01032C80A10000AA0001 /* TerminalParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalParser.swift; sourceTree = "<group>"; };
+		E3AA01052C80A10000AA0001 /* Cell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cell.swift; sourceTree = "<group>"; };
+		E3AA01072C80A10000AA0001 /* ScreenModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModel.swift; sourceTree = "<group>"; };
+		E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalParserTests.swift; sourceTree = "<group>"; };
+		E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModelTests.swift; sourceTree = "<group>"; };
+		E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminalTests.swift; sourceTree = "<group>"; };
+		E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoder.swift; sourceTree = "<group>"; };
+		E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoderTests.swift; sourceTree = "<group>"; };
+		E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlyphAtlas.swift; sourceTree = "<group>"; };
+		E3BB01102C80B10000BB0001 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
 		E3C634DB2C34B23D00BF09C7 /* TermMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermMessage.swift; sourceTree = "<group>"; };
 		E3C634DE2C34BDEB00BF09C7 /* Logging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logging.swift; sourceTree = "<group>"; };
 		E3C634E02C3507E800BF09C7 /* ScreenBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenBuffer.swift; sourceTree = "<group>"; };
@@ -206,91 +213,67 @@
 		E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminal.swift; sourceTree = "<group>"; };
 		E3E00EE42C2781CC00DE1213 /* PTY.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTY.swift; sourceTree = "<group>"; };
 		E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rTerm.entitlements; sourceTree = "<group>"; };
-		E3AA01012C80A10000AA0001 /* TerminalEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalEvent.swift; sourceTree = "<group>"; };
-		E3AA01032C80A10000AA0001 /* TerminalParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalParser.swift; sourceTree = "<group>"; };
-		E3AA01052C80A10000AA0001 /* Cell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cell.swift; sourceTree = "<group>"; };
-		E3AA01072C80A10000AA0001 /* ScreenModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModel.swift; sourceTree = "<group>"; };
-		E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalParserTests.swift; sourceTree = "<group>"; };
-		E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModelTests.swift; sourceTree = "<group>"; };
-		E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoder.swift; sourceTree = "<group>"; };
-		E3BB01102C80B10000BB0001 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
-		E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoderTests.swift; sourceTree = "<group>"; };
-		E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlyphAtlas.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		E3B98F432F84654200FC0610 /* docs */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = docs; sourceTree = "<group>"; };
+		E3B98F432F84654200FC0610 /* docs */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = docs;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		E309207E2C23FF0600B6D264 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920E82C23FF7800B6D264 /* TermUI.framework in Frameworks */,
 				E30920C72C23FF6800B6D264 /* TermCore.framework in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E309208F2C23FF0800B6D264 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920992C23FF0800B6D264 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920B12C23FF6800B6D264 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E352C4192C2A851400A15DE9 /* AsyncAlgorithms in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920B82C23FF6800B6D264 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920BC2C23FF6800B6D264 /* TermCore.framework in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920D22C23FF7800B6D264 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920D92C23FF7800B6D264 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920DD2C23FF7800B6D264 /* TermUI.framework in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E3E00E4C2C27574F00DE1213 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E35D37AD2C2B5E6300F6CF07 /* TermCore.framework in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E3E00E762C27770B00DE1213 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
@@ -401,6 +384,7 @@
 				E30920C22C23FF6800B6D264 /* TermCoreTests.swift */,
 				E3AA01092C80A10000AA0001 /* TerminalParserTests.swift */,
 				E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */,
+				E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */,
 			);
 			path = TermCoreTests;
 			sourceTree = "<group>";
@@ -454,19 +438,15 @@
 /* Begin PBXHeadersBuildPhase section */
 		E30920AF2C23FF6800B6D264 /* Headers */ = {
 			isa = PBXHeadersBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920C42C23FF6800B6D264 /* TermCore.h in Headers */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920D02C23FF7800B6D264 /* Headers */ = {
 			isa = PBXHeadersBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920E52C23FF7800B6D264 /* TermUI.h in Headers */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXHeadersBuildPhase section */
 
@@ -540,8 +520,6 @@
 			);
 			buildRules = (
 			);
-			dependencies = (
-			);
 			name = TermCore;
 			packageProductDependencies = (
 				E352C4182C2A851400A15DE9 /* AsyncAlgorithms */,
@@ -579,8 +557,6 @@
 				E30920D32C23FF7800B6D264 /* Resources */,
 			);
 			buildRules = (
-			);
-			dependencies = (
 			);
 			name = TermUI;
 			productName = TermUI;
@@ -634,8 +610,6 @@
 			);
 			buildRules = (
 			);
-			dependencies = (
-			);
 			name = rTermLauncher;
 			productName = rTermLauncher;
 			productReference = E3E00E792C27770B00DE1213 /* rTermLauncher */;
@@ -649,7 +623,8 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1600;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 2700;
+				ORGANIZATIONNAME = "RFx Software Inc.";
 				TargetAttributes = {
 					E30920802C23FF0600B6D264 = {
 						CreatedOnToolsVersion = 16.0;
@@ -686,7 +661,6 @@
 				};
 			};
 			buildConfigurationList = E309207C2C23FF0600B6D264 /* Build configuration list for PBXProject "rTerm" */;
-			compatibilityVersion = "Xcode 15.3";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -697,6 +671,7 @@
 			packageReferences = (
 				E352C4172C2A851400A15DE9 /* XCRemoteSwiftPackageReference "swift-async-algorithms" */,
 			);
+			preferredProjectObjectVersion = 100;
 			productRefGroup = E30920822C23FF0600B6D264 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -717,68 +692,51 @@
 /* Begin PBXResourcesBuildPhase section */
 		E309207F2C23FF0600B6D264 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E309208C2C23FF0700B6D264 /* Preview Assets.xcassets in Resources */,
 				E30920892C23FF0700B6D264 /* Assets.xcassets in Resources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920902C23FF0800B6D264 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E309209A2C23FF0800B6D264 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920B22C23FF6800B6D264 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920B92C23FF6800B6D264 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920D32C23FF7800B6D264 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920DA2C23FF7800B6D264 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E3E00E4D2C27574F00DE1213 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		E309207D2C23FF0600B6D264 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920872C23FF0600B6D264 /* ContentView.swift in Sources */,
 				E30920852C23FF0600B6D264 /* rTermApp.swift in Sources */,
@@ -787,29 +745,23 @@
 				E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */,
 				E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E309208E2C23FF0800B6D264 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920972C23FF0800B6D264 /* rTermTests.swift in Sources */,
 				E3AA01102C80A20000AA0001 /* KeyEncoderTests.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920982C23FF0800B6D264 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920A12C23FF0800B6D264 /* rTermUITests.swift in Sources */,
 				E30920A32C23FF0800B6D264 /* rTermUITestsLaunchTests.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920B02C23FF6800B6D264 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E3C634DC2C34B23D00BF09C7 /* TermMessage.swift in Sources */,
 				E3C634E12C3507E800BF09C7 /* ScreenBuffer.swift in Sources */,
@@ -828,50 +780,40 @@
 				E3AA01062C80A10000AA0001 /* Cell.swift in Sources */,
 				E3AA01082C80A10000AA0001 /* ScreenModel.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920B72C23FF6800B6D264 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920C32C23FF6800B6D264 /* TermCoreTests.swift in Sources */,
 				E3AA010A2C80A10000AA0001 /* TerminalParserTests.swift in Sources */,
 				E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */,
+				E3CC01022F87A10000CC0001 /* PseudoTerminalTests.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920D12C23FF7800B6D264 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E30920D82C23FF7800B6D264 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E30920E42C23FF7800B6D264 /* TermUITests.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E3E00E4B2C27574F00DE1213 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E3E00E522C27574F00DE1213 /* PTYResponder.swift in Sources */,
 				E3E00E562C27574F00DE1213 /* main.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E3E00E752C27770B00DE1213 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E3E00E7C2C27770B00DE1213 /* main.swift in Sources */,
 				E3E00EDD2C277F0300DE1213 /* SessionHandler.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
@@ -929,7 +871,7 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		E30920A42C23FF0800B6D264 /* Debug */ = {
+		E30920A42C23FF0800B6D264 /* Debug configuration for PBXProject "rTerm" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -963,7 +905,9 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = A638GM37QF;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -988,12 +932,13 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
 		};
-		E30920A52C23FF0800B6D264 /* Release */ = {
+		E30920A52C23FF0800B6D264 /* Release configuration for PBXProject "rTerm" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -1027,7 +972,9 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = A638GM37QF;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -1045,11 +992,12 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;
 		};
-		E30920A72C23FF0800B6D264 /* Debug */ = {
+		E30920A72C23FF0800B6D264 /* Debug configuration for PBXNativeTarget "rTerm" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -1058,8 +1006,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"rTerm/Preview Content\"";
-				DEVELOPMENT_TEAM = A638GM37QF;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -1081,7 +1029,7 @@
 			};
 			name = Debug;
 		};
-		E30920A82C23FF0800B6D264 /* Release */ = {
+		E30920A82C23FF0800B6D264 /* Release configuration for PBXNativeTarget "rTerm" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -1090,8 +1038,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"rTerm/Preview Content\"";
-				DEVELOPMENT_TEAM = A638GM37QF;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -1113,13 +1061,13 @@
 			};
 			name = Release;
 		};
-		E30920AA2C23FF0800B6D264 /* Debug */ = {
+		E30920AA2C23FF0800B6D264 /* Debug configuration for PBXNativeTarget "rTermTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
@@ -1131,13 +1079,13 @@
 			};
 			name = Debug;
 		};
-		E30920AB2C23FF0800B6D264 /* Release */ = {
+		E30920AB2C23FF0800B6D264 /* Release configuration for PBXNativeTarget "rTermTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
@@ -1149,12 +1097,12 @@
 			};
 			name = Release;
 		};
-		E30920AD2C23FF0800B6D264 /* Debug */ = {
+		E30920AD2C23FF0800B6D264 /* Debug configuration for PBXNativeTarget "rTermUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rTermUITests;
@@ -1165,12 +1113,12 @@
 			};
 			name = Debug;
 		};
-		E30920AE2C23FF0800B6D264 /* Release */ = {
+		E30920AE2C23FF0800B6D264 /* Release configuration for PBXNativeTarget "rTermUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rTermUITests;
@@ -1181,16 +1129,17 @@
 			};
 			name = Release;
 		};
-		E30920CA2C23FF6800B6D264 /* Debug */ = {
+		E30920CA2C23FF6800B6D264 /* Debug configuration for PBXNativeTarget "TermCore" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUILD_LIBRARY_FOR_DISTRIBUTION = NO;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = A638GM37QF;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
@@ -1218,16 +1167,17 @@
 			};
 			name = Debug;
 		};
-		E30920CB2C23FF6800B6D264 /* Release */ = {
+		E30920CB2C23FF6800B6D264 /* Release configuration for PBXNativeTarget "TermCore" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = A638GM37QF;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
@@ -1254,12 +1204,12 @@
 			};
 			name = Release;
 		};
-		E30920CC2C23FF6800B6D264 /* Debug */ = {
+		E30920CC2C23FF6800B6D264 /* Debug configuration for PBXNativeTarget "TermCoreTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
@@ -1271,12 +1221,12 @@
 			};
 			name = Debug;
 		};
-		E30920CD2C23FF6800B6D264 /* Release */ = {
+		E30920CD2C23FF6800B6D264 /* Release configuration for PBXNativeTarget "TermCoreTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
@@ -1288,15 +1238,16 @@
 			};
 			name = Release;
 		};
-		E30920EB2C23FF7800B6D264 /* Debug */ = {
+		E30920EB2C23FF7800B6D264 /* Debug configuration for PBXNativeTarget "TermUI" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
+				CODE_SIGN_IDENTITY = "";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = A638GM37QF;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
@@ -1323,15 +1274,16 @@
 			};
 			name = Debug;
 		};
-		E30920EC2C23FF7800B6D264 /* Release */ = {
+		E30920EC2C23FF7800B6D264 /* Release configuration for PBXNativeTarget "TermUI" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
+				CODE_SIGN_IDENTITY = "";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = A638GM37QF;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
@@ -1358,12 +1310,12 @@
 			};
 			name = Release;
 		};
-		E30920EE2C23FF7800B6D264 /* Debug */ = {
+		E30920EE2C23FF7800B6D264 /* Debug configuration for PBXNativeTarget "TermUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.TermUITests;
@@ -1374,12 +1326,12 @@
 			};
 			name = Debug;
 		};
-		E30920EF2C23FF7800B6D264 /* Release */ = {
+		E30920EF2C23FF7800B6D264 /* Release configuration for PBXNativeTarget "TermUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.TermUITests;
@@ -1390,14 +1342,14 @@
 			};
 			name = Release;
 		};
-		E3E00E5D2C27574F00DE1213 /* Debug */ = {
+		E3E00E5D2C27574F00DE1213 /* Debug configuration for PBXNativeTarget "rTermSupport" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = rTermSupport/rTermSupport.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = rTermSupport/Info.plist;
@@ -1413,14 +1365,14 @@
 			};
 			name = Debug;
 		};
-		E3E00E5E2C27574F00DE1213 /* Release */ = {
+		E3E00E5E2C27574F00DE1213 /* Release configuration for PBXNativeTarget "rTermSupport" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = rTermSupport/rTermSupport.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = rTermSupport/Info.plist;
@@ -1436,27 +1388,27 @@
 			};
 			name = Release;
 		};
-		E3E00E7E2C27770B00DE1213 /* Debug */ = {
+		E3E00E7E2C27770B00DE1213 /* Debug configuration for PBXNativeTarget "rTermLauncher" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
-				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
 		};
-		E3E00E7F2C27770B00DE1213 /* Release */ = {
+		E3E00E7F2C27770B00DE1213 /* Release configuration for PBXNativeTarget "rTermLauncher" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = A638GM37QF;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
-				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 			};
@@ -1468,91 +1420,81 @@
 		E309207C2C23FF0600B6D264 /* Build configuration list for PBXProject "rTerm" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E30920A42C23FF0800B6D264 /* Debug */,
-				E30920A52C23FF0800B6D264 /* Release */,
+				E30920A42C23FF0800B6D264 /* Debug configuration for PBXProject "rTerm" */,
+				E30920A52C23FF0800B6D264 /* Release configuration for PBXProject "rTerm" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E30920A62C23FF0800B6D264 /* Build configuration list for PBXNativeTarget "rTerm" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E30920A72C23FF0800B6D264 /* Debug */,
-				E30920A82C23FF0800B6D264 /* Release */,
+				E30920A72C23FF0800B6D264 /* Debug configuration for PBXNativeTarget "rTerm" */,
+				E30920A82C23FF0800B6D264 /* Release configuration for PBXNativeTarget "rTerm" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E30920A92C23FF0800B6D264 /* Build configuration list for PBXNativeTarget "rTermTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E30920AA2C23FF0800B6D264 /* Debug */,
-				E30920AB2C23FF0800B6D264 /* Release */,
+				E30920AA2C23FF0800B6D264 /* Debug configuration for PBXNativeTarget "rTermTests" */,
+				E30920AB2C23FF0800B6D264 /* Release configuration for PBXNativeTarget "rTermTests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E30920AC2C23FF0800B6D264 /* Build configuration list for PBXNativeTarget "rTermUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E30920AD2C23FF0800B6D264 /* Debug */,
-				E30920AE2C23FF0800B6D264 /* Release */,
+				E30920AD2C23FF0800B6D264 /* Debug configuration for PBXNativeTarget "rTermUITests" */,
+				E30920AE2C23FF0800B6D264 /* Release configuration for PBXNativeTarget "rTermUITests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E30920CE2C23FF6800B6D264 /* Build configuration list for PBXNativeTarget "TermCore" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E30920CA2C23FF6800B6D264 /* Debug */,
-				E30920CB2C23FF6800B6D264 /* Release */,
+				E30920CA2C23FF6800B6D264 /* Debug configuration for PBXNativeTarget "TermCore" */,
+				E30920CB2C23FF6800B6D264 /* Release configuration for PBXNativeTarget "TermCore" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E30920CF2C23FF6800B6D264 /* Build configuration list for PBXNativeTarget "TermCoreTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E30920CC2C23FF6800B6D264 /* Debug */,
-				E30920CD2C23FF6800B6D264 /* Release */,
+				E30920CC2C23FF6800B6D264 /* Debug configuration for PBXNativeTarget "TermCoreTests" */,
+				E30920CD2C23FF6800B6D264 /* Release configuration for PBXNativeTarget "TermCoreTests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E30920EA2C23FF7800B6D264 /* Build configuration list for PBXNativeTarget "TermUI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E30920EB2C23FF7800B6D264 /* Debug */,
-				E30920EC2C23FF7800B6D264 /* Release */,
+				E30920EB2C23FF7800B6D264 /* Debug configuration for PBXNativeTarget "TermUI" */,
+				E30920EC2C23FF7800B6D264 /* Release configuration for PBXNativeTarget "TermUI" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E30920ED2C23FF7800B6D264 /* Build configuration list for PBXNativeTarget "TermUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E30920EE2C23FF7800B6D264 /* Debug */,
-				E30920EF2C23FF7800B6D264 /* Release */,
+				E30920EE2C23FF7800B6D264 /* Debug configuration for PBXNativeTarget "TermUITests" */,
+				E30920EF2C23FF7800B6D264 /* Release configuration for PBXNativeTarget "TermUITests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E3E00E5C2C27574F00DE1213 /* Build configuration list for PBXNativeTarget "rTermSupport" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E3E00E5D2C27574F00DE1213 /* Debug */,
-				E3E00E5E2C27574F00DE1213 /* Release */,
+				E3E00E5D2C27574F00DE1213 /* Debug configuration for PBXNativeTarget "rTermSupport" */,
+				E3E00E5E2C27574F00DE1213 /* Release configuration for PBXNativeTarget "rTermSupport" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		E3E00E7D2C27770B00DE1213 /* Build configuration list for PBXNativeTarget "rTermLauncher" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E3E00E7E2C27770B00DE1213 /* Debug */,
-				E3E00E7F2C27770B00DE1213 /* Release */,
+				E3E00E7E2C27770B00DE1213 /* Debug configuration for PBXNativeTarget "rTermLauncher" */,
+				E3E00E7F2C27770B00DE1213 /* Release configuration for PBXNativeTarget "rTermLauncher" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
@@ -1563,7 +1505,7 @@
 			repositoryURL = "https://github.com/apple/swift-async-algorithms.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.1;
+				minimumVersion = 1.1.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

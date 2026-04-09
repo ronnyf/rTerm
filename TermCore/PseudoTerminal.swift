@@ -5,80 +5,62 @@
 //  Created by Ronny Falk on 6/22/24.
 //
 
-internal import AsyncAlgorithms
 import Foundation
 import OSLog
 import System
 
 public class PseudoTerminal {
-    
+
     public enum Errors: Swift.Error {
         case noProcess
         case posix(Int32)
+        case noPtsName
     }
-    
+
     public let shell: Shell
-    public var winsize: Darwin.winsize
+    public private(set) var winsize: Darwin.winsize
     public let pty: AltPTY
-    
-    let outputChannel = AsyncChannel<Data>()
-    public var outputData: some AsyncSequence<Data, Never> {
-        outputChannel
-    }
-    
+
+    /// Output bytes from the shell, backed by FileHandle.readabilityHandler on the primary FD.
+    public let outputStream: AsyncStream<Data>
+    private let outputContinuation: AsyncStream<Data>.Continuation
+
+    /// FileHandle for reading from the primary FD.
+    private let primaryHandle: FileHandle
+
+    /// The running shell process.
+    private var shellProcess: Process?
+
     let log = Logger(subsystem: "TermCore", category: "PseudoTerminal")
+
     public init(shell: Shell = .zsh, rows: UInt16 = 24, cols: UInt16 = 80) throws {
         self.shell = shell
         self.winsize = Darwin.winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
         self.pty = try AltPTY()
+        self.primaryHandle = FileHandle(fileDescriptor: pty.primary.rawValue, closeOnDealloc: false)
+
+        (self.outputStream, self.outputContinuation) = AsyncStream<Data>.makeStream()
     }
-    
-    // TODO:
-    private func update(winsize: Darwin.winsize) {
+
+    /// Writes input bytes to the PTY primary FD.
+    public func write(_ data: Data) {
+        data.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            let result = Darwin.write(pty.primary.rawValue, baseAddress, buffer.count)
+            if result < 0 {
+                log.error("write failed: \(errno)")
+            }
+        }
     }
-    
-    public func connect() async throws {
-        let fh = FileHandle(fileDescriptor: STDIN_FILENO)
-        
-        let archive = NSKeyedArchiver(requiringSecureCoding: true)
-        archive.encode(fh, forKey: "fh")
-        let data = archive.encodedData
-    }
-    
-    //    public func teardownPTY(_ pty: _PTY) throws {
-    //    }
-    
-//    public func stream(fd: FileDescriptor) -> some AsyncSequence<Data, Never> {
-//        stream(fd: fd.rawValue)
-//    }
-//    
-//    public func stream(fd: Int32) -> some AsyncSequence<Data, Never> {
-//        AsyncStream(Data.self) { continuation in
-//            
-//            // shall we dup this one?
-//            let fileHandle = FileHandle(fileDescriptor: dup(fd), closeOnDealloc: true)
-//            
-//            fileHandle.readabilityHandler = { handle in
-//                let data = handle.availableData
-//                if data.count > 0 {
-//                    continuation.yield(data)
-//                }
-//            }
-//            
-//            continuation.onTermination = { @Sendable _ in
-//                try? fileHandle.close()
-//            }
-//        }
-//    }
-    
-    public func primaryIOChannel() throws -> DispatchIO {
-        let primaryDup = try pty.primary.duplicate()
-        return try primaryDup.dispatchIO(closeWhenDone: true)
-    }
-    
-    public func secondaryIOChannel() throws -> DispatchIO {
-        let secondaryDup = try pty.secondary.duplicate()
-        return try secondaryDup.dispatchIO(closeWhenDone: true)
+
+    /// Updates window size via TIOCSWINSZ ioctl.
+    public func resize(rows: UInt16, cols: UInt16) {
+        winsize = Darwin.winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
+        var ws = winsize
+        let rc = ioctl(pty.primary.rawValue, TIOCSWINSZ, &ws)
+        if rc < 0 {
+            log.error("TIOCSWINSZ failed: \(errno)")
+        }
     }
 }
 
