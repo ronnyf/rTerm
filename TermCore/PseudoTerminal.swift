@@ -42,6 +42,14 @@ public class PseudoTerminal {
         (self.outputStream, self.outputContinuation) = AsyncStream<Data>.makeStream()
     }
 
+    deinit {
+        primaryHandle.readabilityHandler = nil
+        outputContinuation.finish()
+        if let shellProcess, shellProcess.isRunning {
+            shellProcess.terminate()
+        }
+    }
+
     /// Writes input bytes to the PTY primary FD.
     public func write(_ data: Data) {
         data.withUnsafeBytes { buffer in
@@ -61,6 +69,52 @@ public class PseudoTerminal {
         if rc < 0 {
             log.error("TIOCSWINSZ failed: \(errno)")
         }
+    }
+
+    /// Spawns the shell process, begins reading output. Returns the tty name.
+    public func start() throws -> String {
+        guard let ptsName = ptsname(pty.secondary.rawValue) else {
+            throw Errors.noPtsName
+        }
+        let ttyName = String(cString: ptsName)
+
+        // Set controlling terminal on parent — child inherits via fork
+        let tioResult = ioctl(pty.secondary.rawValue, TIOCSCTTY, 0)
+        if tioResult < 0 {
+            log.warning("TIOCSCTTY failed: \(errno)")
+        }
+
+        // Create the shell process
+        let process = try shell.process()
+        let secondaryHandle = FileHandle(fileDescriptor: pty.secondary.rawValue, closeOnDealloc: false)
+        process.standardInput = secondaryHandle
+        process.standardOutput = secondaryHandle
+        process.standardError = secondaryHandle
+
+        // Hook up output reading before starting the shell
+        primaryHandle.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                self?.outputContinuation.finish()
+                handle.readabilityHandler = nil
+            } else {
+                self?.outputContinuation.yield(data)
+            }
+        }
+
+        // Shell termination cleanup
+        process.terminationHandler = { [weak self] _ in
+            self?.primaryHandle.readabilityHandler = nil
+            self?.outputContinuation.finish()
+        }
+
+        try process.run()
+        self.shellProcess = process
+
+        // Close the secondary FD — the shell process has inherited it
+        try pty.secondary.close()
+
+        return ttyName
     }
 }
 
