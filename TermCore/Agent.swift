@@ -7,7 +7,7 @@
 
 import Foundation
 import ServiceManagement
-import XPCOverlay
+import XPC
 
 public class Agent {
     

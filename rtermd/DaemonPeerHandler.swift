@@ -24,7 +24,7 @@
 import Foundation
 import os
 import TermCore
-import XPCOverlay
+import XPC
 
 // MARK: - Error conversion
 

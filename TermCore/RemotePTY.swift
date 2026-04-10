@@ -9,7 +9,7 @@ internal import AsyncAlgorithms
 import Foundation
 import OSLog
 import System
-import XPCOverlay
+import XPC
 
 public enum RemoteErrors: Error {
     case notConnected

@@ -8,7 +8,7 @@
 import Foundation
 import OSLog
 import TermCore
-import XPCOverlay
+import XPC
 
 class PTYResponder {
 

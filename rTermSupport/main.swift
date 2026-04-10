@@ -8,7 +8,7 @@
 import Darwin
 import Foundation
 import TermCore
-import XPCOverlay
+import XPC
 
 if #available(macOS 14.0, *) {
     let listener = try XPCListener(service: "com.ronnyf.rTermSupport") { request in

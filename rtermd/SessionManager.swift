@@ -25,7 +25,7 @@ import Darwin
 import Foundation
 import os
 import TermCore
-import XPCOverlay
+import XPC
 
 // MARK: - SessionManager
 
