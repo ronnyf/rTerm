@@ -14,11 +14,11 @@ public class Agent {
     let service: SMAppService
     
     public convenience init() {
-        self.init(name: "com.ronnyf.rTermLauncher.agent.plist")
+        self.init(name: "group.com.ronnyf.rterm.rtermd.plist")
     }
     
     init(name: String) {
-        self.service = SMAppService.agent(plistName: "com.xpc.example.agent.plist")
+        self.service = SMAppService.agent(plistName: name)
     }
     
     public var status: SMAppService.Status {

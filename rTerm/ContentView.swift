@@ -151,6 +151,11 @@ struct ContentView: View {
             session.sendInput(data)
         })
         .task {
+            do {
+                try Agent().register()
+            } catch {
+                print("ERROR: \(error)")
+            }
             await session.connect()
         }
     }
