@@ -21,6 +21,7 @@
 //
 
 import MetalKit
+import OSLog
 import SwiftUI
 import TermCore
 
@@ -30,15 +31,25 @@ import TermCore
 /// keyboard input as raw `Data` through a closure.
 final class TerminalMTKView: MTKView {
 
+    private let log = Logger(subsystem: "rTerm", category: "TerminalMTKView")
+
     /// Called with the encoded byte sequence for each key-down event.
     var onKeyInput: ((Data) -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.makeFirstResponder(self)
+    }
+
     override func keyDown(with event: NSEvent) {
         let encoder = KeyEncoder()
         if let data = encoder.encode(event) {
+            log.debug("keyDown: keyCode=\(event.keyCode), encoded \(data.count) bytes")
             onKeyInput?(data)
+        } else {
+            log.debug("keyDown: keyCode=\(event.keyCode), unhandled")
         }
         // Swallow all key events — do not call super.
     }

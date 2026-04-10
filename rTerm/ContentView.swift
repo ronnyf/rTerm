@@ -66,6 +66,7 @@ class TerminalSession {
 
     /// Sends keyboard input to the remote PTY.
     func sendInput(_ data: Data) {
+        log.debug("sendInput: \(data.count) bytes")
         do {
             try remotePTY.send(command: RemoteCommand.input(data))
         } catch {

@@ -54,6 +54,7 @@ extension PTYResponder: XPCSyncResponder {
             return try spawn(session: session)
 
         case .input(let data):
+            log.debug("PTY write: \(data.count) bytes")
             pseudoTerminal?.write(data)
             return nil
 
