@@ -62,6 +62,8 @@ final class Session: @unchecked Sendable {
     let pid: pid_t
     let primaryFD: Int32
     let createdAt: Date
+    let rows: UInt16
+    let cols: UInt16
     let screenModel: ScreenModel
 
     // MARK: - Private state
@@ -112,6 +114,8 @@ final class Session: @unchecked Sendable {
         self.pid = result.pid
         self.primaryFD = result.primaryFD
         self.createdAt = Date()
+        self.rows = rows
+        self.cols = cols
         self.screenModel = ScreenModel(cols: Int(cols), rows: Int(rows))
         self.parser = TerminalParser()
         self.primaryHandle = FileHandle(fileDescriptor: result.primaryFD, closeOnDealloc: false)
@@ -322,8 +326,8 @@ final class Session: @unchecked Sendable {
             pid: pid,
             createdAt: createdAt,
             title: nil,
-            rows: UInt16(screenModel.rows),
-            cols: UInt16(screenModel.cols),
+            rows: rows,
+            cols: cols,
             hasClient: clientCount > 0
         )
     }
