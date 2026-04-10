@@ -1,19 +1,30 @@
 # PTY and Shell Process Management on macOS
 
 **Date:** 2026-04-09
-**Context:** Lessons learned from building rTerm's PTY layer and studying iTerm2 (Obj-C) and wezterm (Rust).
+**Context:** Lessons learned from building rTerm's PTY layer and studying iTerm2 (Obj-C), wezterm (Rust), and Apple's Terminal.app (Obj-C).
 
 ## PTY Creation
 
-Two approaches on macOS:
+Three approaches on macOS:
 
-**`openpty()` (iTerm2's approach):** Single call that creates the PTY pair, sets termios and winsize atomically. Simpler but less control over individual steps.
+**`forkpty()` (Apple Terminal's approach):** Combines PTY creation AND fork in a single call. The simplest option — handles openpty + fork + setsid + slave setup atomically. The child gets stdin/stdout/stderr already connected to the PTY secondary.
+
+```c
+pid = forkpty(&masterFD, ttyPath, NULL, &winsize);
+if (pid == 0) {
+    // Child — already has new session + controlling terminal
+    // Just configure termios and exec
+    execvp(shell, argv);
+}
+```
+
+**`openpty()` (iTerm2 and wezterm):** Creates the PTY pair without forking. Caller handles fork/exec separately. More flexible for complex setups (daemon architectures, pre-exec hooks).
 
 ```c
 openpty(&master, &slave, ttyName, &termios, &winsize);
 ```
 
-**`posix_openpt/grantpt/unlockpt` (rTerm's approach):** Three-step creation with explicit control. Requires manual `ptsname()` to get the secondary device name.
+**`posix_openpt/grantpt/unlockpt` (rTerm's current approach):** Three-step creation with explicit control. Most verbose but portable.
 
 ```c
 int master = posix_openpt(O_RDWR | O_NOCTTY);
@@ -23,21 +34,37 @@ char *slaveName = ptsname(master);
 int slave = open(slaveName, O_RDWR);
 ```
 
-Both work. `openpty()` is more convenient; the manual approach gives finer control. Both iTerm2 and wezterm use `openpty()`.
+Both work. `openpty()` is more convenient; the manual approach gives finer control. iTerm2 and wezterm use `openpty()`. Apple Terminal uses `forkpty()` which is the simplest overall.
 
 **CLOEXEC (wezterm pattern):** Set `FD_CLOEXEC` on both FDs immediately after creation so they don't leak to unrelated child processes. Only the FDs explicitly dup'd to 0/1/2 survive exec.
 
-## Shell Spawning: Three Approaches
+## Shell Spawning: Four Approaches
 
 **Critical distinction:** The ability to run setup code in the child process *before* exec determines how much control you have over the shell's session and terminal.
 
-### 1. Foundation's Process / posix_spawn (rTerm)
+### 1. forkpty() (Apple Terminal — simplest)
+
+Combines PTY creation + fork + setsid + dup2 in one call. The child already has a new session, controlling terminal, and stdin/stdout/stderr connected. Just configure termios and exec:
+
+```c
+pid = forkpty(&masterFD, ttyPath, NULL, &winsize);
+if (pid == 0) {
+    // Child — session leader, controlling terminal set, FDs ready
+    tcsetattr(0, TCSANOW, &customTermios);  // Configure terminal
+    chdir(homeDir);
+    execvp(shell, argv);
+}
+```
+
+Apple Terminal also uses an **exec verification pipe**: a pipe with `FD_CLOEXEC` created before fork. The parent reads from it — if data arrives, exec failed (child wrote error); if read returns 0, exec succeeded (CLOEXEC closed the pipe).
+
+### 2. Foundation's Process / posix_spawn (rTerm — current)
 
 `posix_spawn` creates the child in a single step — no window to execute code before exec. Cannot call `setsid()`, `TIOCSCTTY`, or `setpgid()` in the child.
 
 **Workaround:** Call `tcsetpgrp()` from the parent after spawn.
 
-### 2. fork/exec (iTerm2)
+### 3. fork/exec (iTerm2)
 
 Direct fork allows pre-exec setup in the child:
 
@@ -58,7 +85,7 @@ if (pid == 0) {
 }
 ```
 
-### 3. Command with pre_exec hook (wezterm / Rust)
+### 4. Command with pre_exec hook (wezterm / Rust)
 
 Rust's `std::process::Command` supports a `pre_exec` closure that runs in the child after fork but before exec — the best of both worlds:
 
@@ -117,11 +144,13 @@ This works because the parent calls it immediately after `process.run()`, before
 
 ## Signal Handling in Child Processes
 
-Two strategies observed:
+Three strategies observed:
 
 **iTerm2 (block in parent):** Block SIGTTIN/SIGTTOU/SIGTSTP/SIGCHLD before `tcsetpgrp()`, restore after. Prevents race conditions when the parent sets the foreground group.
 
 **wezterm (reset in child):** Reset all signal handlers to `SIG_DFL` and unblock all signals in the child's `pre_exec` hook. Simpler, and ensures the shell starts with a clean signal state regardless of what the parent was doing. Also handles signals inherited from the terminal emulator's own signal handling (e.g., custom SIGCHLD handler).
+
+**Apple Terminal (pipe-based SIGCHLD):** The signal handler does only one thing: `write(signalPipe[1], "!", 1)`. A separate thread reads from the pipe and calls `wait3(WNOHANG)` in a loop. Child termination is dispatched to the main thread via GCD. This is the gold standard for async-signal-safe design — no Objective-C or malloc in the signal handler.
 
 ## XPC Services and Terminal Processes
 
@@ -150,6 +179,19 @@ Two strategies observed:
 iTerm2 also sets: `COLORTERM=truecolor`, `TERM_PROGRAM=iTerm.app`, `LC_TERMINAL=iTerm2`, custom `TERMINFO_DIRS` for bundled terminfo.
 
 wezterm also sets: `COLORTERM=truecolor`, `TERM_PROGRAM=WezTerm`, `TERM_PROGRAM_VERSION=<version>`.
+
+Apple Terminal uses a fallback chain: `xterm-256color` → `xterm` → `vt100` → `unknown`, validated via `tgetent()` before use. Sets `COLORTERM=truecolor` when direct color is enabled.
+
+## I/O Architecture
+
+**Apple Terminal's pattern (recommended):**
+- Dedicated I/O thread running `select()` on all PTY master FDs
+- Read: 4096 bytes per iteration, accumulated into a queue
+- Main thread processes queued data asynchronously via `performSelectorOnMainThread:`
+- **Write throttling:** Max 1024 bytes per chunk with 0.1s delay between chunks (prevents overwhelming the terminal with large pastes)
+- **Backpressure:** Suspends reads if buffer exceeds 5MB
+
+This separation keeps the main thread responsive and the I/O thread efficient. rTerm currently uses `FileHandle.readabilityHandler` which dispatches to a GCD queue — functionally similar but without throttling or backpressure.
 
 ## Termios Configuration
 
@@ -218,26 +260,40 @@ struct CachedLeaderInfo {
 // Only refresh if > 300ms since last update
 ```
 
+## Process Monitoring
+
+**Apple Terminal's approach:**
+- `tcgetpgrp(masterFD)` to get the foreground process group
+- `proc_pidinfo()` to enumerate child processes
+- **Dirty process detection:** A non-shell process with controlling TTY is "dirty" (unsaved work). Shell in foreground group + TTY not in `ICANON` mode = "busy" (running a pipeline). This is how Terminal.app decides whether to warn on close.
+
 ## Future Considerations for rTerm
 
-1. **Replace Foundation's Process with fork/exec** — Enables proper setsid()/TIOCSCTTY in the child, full job control, and signal handling. Both iTerm2 and wezterm do their own fork/exec (wezterm via Rust's Command + pre_exec, iTerm2 via raw fork).
-2. **Consider a daemon architecture** — If XPC limitations become blocking (e.g., for Ctrl+Z support), a standalone daemon like iTerm2's approach would be more robust. wezterm uses a mux server daemon with double-fork for daemonization.
-3. **Custom termios initialization** — Set explicit termios flags rather than relying on PTY defaults. Ensures consistent behavior across macOS versions.
-4. **Signal blocking around tcsetpgrp()** — Block SIGTTIN/SIGTTOU/SIGTSTP before calling tcsetpgrp() to avoid race conditions (iTerm2 does this, copied from bash).
-5. **Close leaked FDs in child** — macOS Big Sur+ leaks FDs. Enumerate /dev/fd and close all > 2 after fork (wezterm pattern).
-6. **Cache tcgetpgrp() results** — Implement a TTL cache (~300ms) for foreground process queries to avoid UI stuttering with multiple tabs (wezterm pattern).
-7. **Set FD_CLOEXEC eagerly** — On all FDs created by the app to prevent accidental inheritance.
+1. **Replace Foundation's Process with forkpty()** — Apple Terminal's approach is the simplest: `forkpty()` handles PTY creation + fork + session setup in one call. This is the recommended migration path for rTerm. Both iTerm2 and wezterm also do their own fork/exec.
+2. **Add exec verification pipe** — Apple Terminal's pattern: pipe with CLOEXEC before fork, parent reads to detect exec failure. Race-free.
+3. **Consider a daemon architecture** — If XPC limitations become blocking (e.g., for Ctrl+Z support), a standalone daemon like iTerm2's approach would be more robust. wezterm uses a mux server daemon with double-fork for daemonization.
+4. **Custom termios initialization** — Set explicit termios flags rather than relying on PTY defaults. Apple Terminal carefully configures IUTF8, echo flags, and control characters.
+5. **Signal blocking around tcsetpgrp()** — Block SIGTTIN/SIGTTOU/SIGTSTP before calling tcsetpgrp() to avoid race conditions (iTerm2 does this, copied from bash).
+6. **Close leaked FDs in child** — macOS Big Sur+ leaks FDs. Enumerate /dev/fd and close all > 2 after fork (wezterm pattern).
+7. **Cache tcgetpgrp() results** — Implement a TTL cache (~300ms) for foreground process queries to avoid UI stuttering with multiple tabs (wezterm pattern).
+8. **Add I/O throttling** — Write throttling (1024 bytes/chunk, 0.1s delay) and backpressure (suspend reads at 5MB) per Apple Terminal's pattern.
+9. **Pipe-based SIGCHLD handling** — Use a self-pipe for signal-safe child termination detection (Apple Terminal pattern).
+10. **Dirty process detection** — Check ICANON mode + foreground group to warn on close (Apple Terminal pattern).
 
 ## Reference: Comparison of Approaches
 
-| Aspect | rTerm (Swift) | iTerm2 (Obj-C) | wezterm (Rust) |
-|--------|--------------|----------------|----------------|
-| PTY creation | posix_openpt | openpty() | openpty() |
-| Process spawn | Foundation Process | fork/exec | Command + pre_exec |
-| setsid() | Cannot (posix_spawn) | In child | In child pre_exec |
-| TIOCSCTTY | Removed (failed) | In child | In child pre_exec |
-| Foreground group | tcsetpgrp() from parent | In child | Implicit via setsid |
-| Signal handling | None | Block in parent | Reset in child |
-| FD cleanup | Manual close secondary | closefrom(3) | Enumerate /dev/fd |
-| Process isolation | XPC service | Standalone daemon | In-process (mux server optional) |
-| TERM default | dumb | xterm (configurable) | xterm-256color |
+| Aspect | rTerm (Swift) | Apple Terminal (Obj-C) | iTerm2 (Obj-C) | wezterm (Rust) |
+|--------|--------------|----------------------|----------------|----------------|
+| PTY creation | posix_openpt | forkpty() | openpty() | openpty() |
+| Process spawn | Foundation Process | forkpty() + exec | fork/exec | Command + pre_exec |
+| setsid() | Cannot (posix_spawn) | Automatic (forkpty) | In child | In child pre_exec |
+| TIOCSCTTY | Removed (failed) | Automatic (forkpty) | In child | In child pre_exec |
+| Foreground group | tcsetpgrp() from parent | Automatic | In child | Implicit via setsid |
+| Signal handling | None | Pipe-based SIGCHLD | Block in parent | Reset in child |
+| FD cleanup | Manual close secondary | N/A (forkpty handles) | closefrom(3) | Enumerate /dev/fd |
+| I/O model | FileHandle readabilityHandler | select() thread + queue | Dispatch sources | Rust async I/O |
+| Write throttling | None | 1024B chunks, 0.1s delay | Unknown | Unknown |
+| Backpressure | None | Suspend at 5MB | Unknown | Unknown |
+| Process isolation | XPC service | In-process | Standalone daemon | In-process |
+| TERM default | dumb | xterm-256color (validated) | xterm (configurable) | xterm-256color |
+| Exec verification | None | CLOEXEC pipe | Unknown | Unknown |
