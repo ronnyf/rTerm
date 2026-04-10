@@ -43,6 +43,8 @@ public enum DaemonRequest: Codable, Sendable, Equatable {
     case input(sessionID: SessionID, data: Data)
     /// Resize a session's terminal window.
     case resize(sessionID: SessionID, rows: UInt16, cols: UInt16)
+    /// Terminate a session and its shell process.
+    case destroySession(sessionID: SessionID)
 }
 
 // MARK: - DaemonResponse

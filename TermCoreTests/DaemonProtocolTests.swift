@@ -64,6 +64,13 @@ struct DaemonRequestTests {
         #expect(decoded == request)
     }
 
+    @Test("DaemonRequest.destroySession round-trips through JSON")
+    func destroySessionRoundTrip() throws {
+        let request = DaemonRequest.destroySession(sessionID: 5)
+        let decoded = try roundTrip(request)
+        #expect(decoded == request)
+    }
+
     @Test("All DaemonRequest cases survive an array round-trip")
     func allCasesRoundTrip() throws {
         let requests: [DaemonRequest] = [
@@ -73,6 +80,7 @@ struct DaemonRequestTests {
             .detach(sessionID: 2),
             .input(sessionID: 3, data: Data([0x1B, 0x5B, 0x41])),
             .resize(sessionID: 4, rows: 40, cols: 120),
+            .destroySession(sessionID: 5),
         ]
         let decoded = try roundTrip(requests)
         #expect(decoded == requests)
