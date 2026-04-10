@@ -102,3 +102,121 @@ struct ShellTests {
         #expect(proc.currentDirectoryURL == expected)
     }
 }
+
+// MARK: - Cell Codable
+
+struct CellCodableTests {
+
+    @Test("Cell round-trips through JSON for a normal character")
+    func normalCharacterRoundTrip() throws {
+        let cell = Cell(character: "A")
+        let data = try JSONEncoder().encode(cell)
+        let decoded = try JSONDecoder().decode(Cell.self, from: data)
+        #expect(decoded == cell)
+    }
+
+    @Test("Cell.empty round-trips through JSON")
+    func emptyCellRoundTrip() throws {
+        let cell = Cell.empty
+        let data = try JSONEncoder().encode(cell)
+        let decoded = try JSONDecoder().decode(Cell.self, from: data)
+        #expect(decoded == cell)
+        #expect(decoded.character == " ")
+    }
+
+    @Test("Cell round-trips through JSON for emoji and unicode", arguments: [
+        Character("\u{1F600}"),  // grinning face emoji
+        Character("\u{00E9}"),   // e-acute
+        Character("\u{4E16}"),   // CJK character (shi4, "world")
+    ])
+    func unicodeRoundTrip(character: Character) throws {
+        let cell = Cell(character: character)
+        let data = try JSONEncoder().encode(cell)
+        let decoded = try JSONDecoder().decode(Cell.self, from: data)
+        #expect(decoded == cell)
+    }
+
+    @Test("Cell decoding rejects multi-character strings")
+    func rejectsMultiCharacterString() throws {
+        let json = Data(#"{"character":"AB"}"#.utf8)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(Cell.self, from: json)
+        }
+    }
+
+    @Test("Cell decoding rejects empty strings")
+    func rejectsEmptyString() throws {
+        let json = Data(#"{"character":""}"#.utf8)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(Cell.self, from: json)
+        }
+    }
+}
+
+// MARK: - Cursor Codable
+
+struct CursorCodableTests {
+
+    @Test("Cursor round-trips through JSON")
+    func roundTrip() throws {
+        let cursor = Cursor(row: 5, col: 42)
+        let data = try JSONEncoder().encode(cursor)
+        let decoded = try JSONDecoder().decode(Cursor.self, from: data)
+        #expect(decoded == cursor)
+    }
+
+    @Test("Cursor at origin round-trips through JSON")
+    func originRoundTrip() throws {
+        let cursor = Cursor(row: 0, col: 0)
+        let data = try JSONEncoder().encode(cursor)
+        let decoded = try JSONDecoder().decode(Cursor.self, from: data)
+        #expect(decoded == cursor)
+    }
+}
+
+// MARK: - ScreenSnapshot Codable
+
+struct ScreenSnapshotCodableTests {
+
+    @Test("ScreenSnapshot round-trips through JSON for a small grid")
+    func roundTrip() throws {
+        // 2x3 grid: "Hi " / "   "
+        let cells: ContiguousArray<Cell> = [
+            Cell(character: "H"), Cell(character: "i"), .empty,
+            .empty, .empty, .empty,
+        ]
+        let snapshot = ScreenSnapshot(
+            cells: cells,
+            cols: 3,
+            rows: 2,
+            cursor: Cursor(row: 0, col: 2)
+        )
+
+        let data = try JSONEncoder().encode(snapshot)
+        let decoded = try JSONDecoder().decode(ScreenSnapshot.self, from: data)
+
+        #expect(decoded == snapshot)
+        #expect(decoded.cols == 3)
+        #expect(decoded.rows == 2)
+        #expect(decoded.cursor == Cursor(row: 0, col: 2))
+        #expect(decoded[0, 0].character == "H")
+        #expect(decoded[0, 1].character == "i")
+        #expect(decoded[1, 2] == .empty)
+    }
+
+    @Test("ScreenSnapshot round-trips an all-empty grid")
+    func emptyGridRoundTrip() throws {
+        let cells = ContiguousArray<Cell>(repeating: .empty, count: 4)
+        let snapshot = ScreenSnapshot(
+            cells: cells,
+            cols: 2,
+            rows: 2,
+            cursor: Cursor(row: 0, col: 0)
+        )
+
+        let data = try JSONEncoder().encode(snapshot)
+        let decoded = try JSONDecoder().decode(ScreenSnapshot.self, from: data)
+
+        #expect(decoded == snapshot)
+    }
+}
