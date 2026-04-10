@@ -17,7 +17,6 @@
 		E30920C32C23FF6800B6D264 /* TermCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30920C22C23FF6800B6D264 /* TermCoreTests.swift */; };
 		E30920C42C23FF6800B6D264 /* TermCore.h in Headers */ = {isa = PBXBuildFile; fileRef = E30920B62C23FF6800B6D264 /* TermCore.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		E30920C72C23FF6800B6D264 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
-		E30920C82C23FF6800B6D264 /* TermCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E30920DD2C23FF7800B6D264 /* TermUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920D52C23FF7800B6D264 /* TermUI.framework */; };
 		E30920E42C23FF7800B6D264 /* TermUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30920E32C23FF7800B6D264 /* TermUITests.swift */; };
 		E30920E52C23FF7800B6D264 /* TermUI.h in Headers */ = {isa = PBXBuildFile; fileRef = E30920D72C23FF7800B6D264 /* TermUI.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -57,6 +56,7 @@
 		E3E00EDF2C277F8E00DE1213 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EDE2C277F8E00DE1213 /* Agent.swift */; };
 		E3E00EE32C27816600DE1213 /* PseudoTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */; };
 		E3E00EE52C2781CC00DE1213 /* PTY.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE42C2781CC00DE1213 /* PTY.swift */; };
+		E3DC01012F89B10000DC0001 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DC01002F89B10000DC0001 /* DaemonClient.swift */; };
 		E3EE01012F88D10000EE0001 /* DaemonProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */; };
 		E3EE01032F88D10000EE0002 /* DaemonProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */; };
 		E3FF01002F89A10000FF0001 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
@@ -127,6 +127,13 @@
 			remoteGlobalIDString = E30920B32C23FF6800B6D264;
 			remoteInfo = TermCore;
 		};
+		E3CDC3042F89597200B5D830 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E30920792C23FF0600B6D264 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E3CD420E2F88B8D200B5D830;
+			remoteInfo = rtermd;
+		};
 		E3E00E592C27574F00DE1213 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E30920792C23FF0600B6D264 /* Project object */;
@@ -150,7 +157,6 @@
 			dstSubfolder = Frameworks;
 			files = (
 				E30920E92C23FF7800B6D264 /* TermUI.framework in Embed Frameworks */,
-				E30920C82C23FF6800B6D264 /* TermCore.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 		};
@@ -171,15 +177,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 1;
 		};
-		E3FF01032F89A10000FF0004 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			dstPath = "";
-			dstSubfolder = Frameworks;
-			files = (
-				E3FF01012F89A10000FF0002 /* TermCore.framework in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-		};
 		E3E00E5F2C27574F00DE1213 /* Embed XPC Services */ = {
 			isa = PBXCopyFilesBuildPhase;
 			dstPath = "$(CONTENTS_FOLDER_PATH)/XPCServices";
@@ -196,6 +193,15 @@
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 1;
+		};
+		E3FF01032F89A10000FF0004 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = Frameworks;
+			files = (
+				E3FF01012F89A10000FF0002 /* TermCore.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
 		};
 /* End PBXCopyFilesBuildPhase section */
 
@@ -256,6 +262,7 @@
 		E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminal.swift; sourceTree = "<group>"; };
 		E3E00EE42C2781CC00DE1213 /* PTY.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTY.swift; sourceTree = "<group>"; };
 		E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rTerm.entitlements; sourceTree = "<group>"; };
+		E3DC01002F89B10000DC0001 /* DaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonClient.swift; sourceTree = "<group>"; };
 		E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProtocol.swift; sourceTree = "<group>"; };
 		E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProtocolTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -434,6 +441,7 @@
 				E3AA01032C80A10000AA0001 /* TerminalParser.swift */,
 				E3AA01052C80A10000AA0001 /* Cell.swift */,
 				E3AA01072C80A10000AA0001 /* ScreenModel.swift */,
+				E3DC01002F89B10000DC0001 /* DaemonClient.swift */,
 				E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */,
 			);
 			path = TermCore;
@@ -527,6 +535,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				E3CDC3052F89597200B5D830 /* PBXTargetDependency */,
 				E30920C62C23FF6800B6D264 /* PBXTargetDependency */,
 				E30920E72C23FF7800B6D264 /* PBXTargetDependency */,
 				E3E00E5A2C27574F00DE1213 /* PBXTargetDependency */,
@@ -869,6 +878,7 @@
 				E3AA01042C80A10000AA0001 /* TerminalParser.swift in Sources */,
 				E3AA01062C80A10000AA0001 /* Cell.swift in Sources */,
 				E3AA01082C80A10000AA0001 /* ScreenModel.swift in Sources */,
+				E3DC01012F89B10000DC0001 /* DaemonClient.swift in Sources */,
 				E3EE01012F88D10000EE0001 /* DaemonProtocol.swift in Sources */,
 			);
 		};
@@ -960,6 +970,11 @@
 			isa = PBXTargetDependency;
 			target = E30920B32C23FF6800B6D264 /* TermCore */;
 			targetProxy = E35D37AA2C2B5E5C00F6CF07 /* PBXContainerItemProxy */;
+		};
+		E3CDC3052F89597200B5D830 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E3CD420E2F88B8D200B5D830 /* rtermd */;
+			targetProxy = E3CDC3042F89597200B5D830 /* PBXContainerItemProxy */;
 		};
 		E3E00E5A2C27574F00DE1213 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1452,6 +1467,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = A638GM37QF;
 				ENABLE_HARDENED_RUNTIME = YES;
+				INSTALL_PATH = /usr/local/libexec;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -1473,6 +1489,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = A638GM37QF;
 				ENABLE_HARDENED_RUNTIME = YES;
+				INSTALL_PATH = /usr/local/libexec;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
