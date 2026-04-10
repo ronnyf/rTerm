@@ -79,7 +79,7 @@ public final class DaemonClient: Sendable {
     ///
     /// - Parameter serviceName: The Mach service name registered by the
     ///   daemon's `XPCListener`. Defaults to the standard rtermd service.
-    public init(serviceName: String = "group.com.ronnyf.rterm.rtermd") {
+    public init(serviceName: String = "com.ronnyf.rterm.rtermd") {
         self.serviceName = serviceName
         self.state = OSAllocatedUnfairLock(initialState: ClientState())
     }
@@ -136,10 +136,12 @@ public final class DaemonClient: Sendable {
     private func connectOnce() throws {
         let session = try XPCSession(
             machService: serviceName,
-            targetQueue: .global(qos: .userInteractive)
+            targetQueue: .global(qos: .userInteractive),
+            options: .inactive
         )
 
         // Incoming push messages from the daemon (output, sessionEnded, etc.)
+        // Handlers must be set while the session is inactive.
         session.setIncomingMessageHandler { [weak self] (response: DaemonResponse) -> (any Encodable)? in
             guard let self else { return nil }
             let handler = self.state.withLock { $0.responseHandler }
@@ -153,6 +155,9 @@ public final class DaemonClient: Sendable {
             self.log.warning("XPC session cancelled: \(String(describing: error))")
             self.state.withLock { $0.xpcSession = nil }
         }
+
+        // Activate after all handlers are installed.
+        try session.activate()
 
         // Replace any existing session.
         state.withLock { state in
