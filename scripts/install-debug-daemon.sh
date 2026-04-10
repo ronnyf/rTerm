@@ -40,9 +40,10 @@ cp "$SOURCE" "$DEST"
 /usr/libexec/PlistBuddy -c "Add :ProgramArguments: string ${RTERMD_BIN}" "$DEST"
 
 # Reload the daemon
-DOMAIN="gui/$(id -u)"
-launchctl bootout "${DOMAIN}/${PLIST_NAME}" 2>/dev/null || true
-launchctl bootstrap "${DOMAIN}" "$DEST"
+# Use launchctl load/unload (legacy but works with ad-hoc signed binaries)
+# bootstrap/bootout enforce stricter codesign checks on modern macOS.
+launchctl unload "$DEST" 2>/dev/null || true
+launchctl load "$DEST"
 
 echo "Installed debug daemon: ${RTERMD_BIN}"
 echo "Plist: ${DEST}"
