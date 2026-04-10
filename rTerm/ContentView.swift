@@ -53,10 +53,8 @@ class TerminalSession {
         client = DaemonClient()
     }
 
-    deinit {
-        guard let sessionID else { return }
-        try? client.send(.detach(sessionID: sessionID))
-    }
+    // No deinit needed — the daemon detaches the client automatically
+    // when the XPC connection drops (DaemonPeerHandler.handleCancellation).
 
     /// Connect to the daemon, create a session, and begin receiving output.
     ///
