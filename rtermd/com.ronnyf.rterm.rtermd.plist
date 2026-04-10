@@ -5,10 +5,10 @@
 	<key>AssociatedBundleIdentifiers</key>
 	<string>com.ronnyf.rTerm</string>
 	<key>Label</key>
-	<string>group.com.ronnyf.rterm.rtermd</string>
+	<string>com.ronnyf.rterm.rtermd</string>
 	<key>MachServices</key>
 	<dict>
-		<key>group.com.ronnyf.rterm.rtermd</key>
+		<key>com.ronnyf.rterm.rtermd</key>
 		<true/>
 	</dict>
 	<key>BundleProgram</key>

@@ -14,7 +14,7 @@ public class Agent {
     let service: SMAppService
     
     public convenience init() {
-        self.init(name: "group.com.ronnyf.rterm.rtermd.plist")
+        self.init(name: "com.ronnyf.rterm.rtermd.plist")
     }
     
     init(name: String) {
