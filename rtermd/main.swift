@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import TermCore
 
-print("Hello, World!")
-
+print("rtermd starting...")
+dispatchMain()

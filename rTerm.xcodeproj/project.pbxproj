@@ -49,8 +49,6 @@
 		E3CA58C12C3DF1D1008E8E05 /* TermView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CA58C02C3DF1D1008E8E05 /* TermView.swift */; };
 		E3CC01022F87A10000CC0001 /* PseudoTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */; };
 		E3DD01012F88C10000DD0001 /* CodableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DD01002F88C10000DD0001 /* CodableTests.swift */; };
-		E3EE01012F88D10000EE0001 /* DaemonProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */; };
-		E3EE01032F88D10000EE0002 /* DaemonProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */; };
 		E3E00E522C27574F00DE1213 /* PTYResponder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00E512C27574F00DE1213 /* PTYResponder.swift */; };
 		E3E00E562C27574F00DE1213 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00E552C27574F00DE1213 /* main.swift */; };
 		E3E00E5B2C27574F00DE1213 /* rTermSupport.xpc in Embed XPC Services */ = {isa = PBXBuildFile; fileRef = E3E00E4F2C27574F00DE1213 /* rTermSupport.xpc */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -59,6 +57,10 @@
 		E3E00EDF2C277F8E00DE1213 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EDE2C277F8E00DE1213 /* Agent.swift */; };
 		E3E00EE32C27816600DE1213 /* PseudoTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */; };
 		E3E00EE52C2781CC00DE1213 /* PTY.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE42C2781CC00DE1213 /* PTY.swift */; };
+		E3EE01012F88D10000EE0001 /* DaemonProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */; };
+		E3EE01032F88D10000EE0002 /* DaemonProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */; };
+		E3FF01002F89A10000FF0001 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
+		E3FF01012F89A10000FF0002 /* TermCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -132,6 +134,13 @@
 			remoteGlobalIDString = E3E00E4E2C27574F00DE1213;
 			remoteInfo = rTermSupport;
 		};
+		E3FF01022F89A10000FF0003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E30920792C23FF0600B6D264 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E30920B32C23FF6800B6D264;
+			remoteInfo = TermCore;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -161,6 +170,15 @@
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 1;
+		};
+		E3FF01032F89A10000FF0004 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = Frameworks;
+			files = (
+				E3FF01012F89A10000FF0002 /* TermCore.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
 		};
 		E3E00E5F2C27574F00DE1213 /* Embed XPC Services */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -221,12 +239,10 @@
 		E3C6C9132C251E8600D1AC70 /* Shell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shell.swift; sourceTree = "<group>"; };
 		E3CA58C02C3DF1D1008E8E05 /* TermView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermView.swift; sourceTree = "<group>"; };
 		E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminalTests.swift; sourceTree = "<group>"; };
-		E3DD01002F88C10000DD0001 /* CodableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableTests.swift; sourceTree = "<group>"; };
-		E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProtocol.swift; sourceTree = "<group>"; };
-		E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProtocolTests.swift; sourceTree = "<group>"; };
 		E3CD420F2F88B8D200B5D830 /* rtermd */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = rtermd; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3CD94002F882B3900B5D830 /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
 		E3CD94012F882B4200B5D830 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		E3DD01002F88C10000DD0001 /* CodableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableTests.swift; sourceTree = "<group>"; };
 		E3E00E4F2C27574F00DE1213 /* rTermSupport.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = rTermSupport.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3E00E512C27574F00DE1213 /* PTYResponder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTYResponder.swift; sourceTree = "<group>"; };
 		E3E00E552C27574F00DE1213 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
@@ -240,6 +256,8 @@
 		E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminal.swift; sourceTree = "<group>"; };
 		E3E00EE42C2781CC00DE1213 /* PTY.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTY.swift; sourceTree = "<group>"; };
 		E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rTerm.entitlements; sourceTree = "<group>"; };
+		E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProtocol.swift; sourceTree = "<group>"; };
+		E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProtocolTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -299,6 +317,7 @@
 		E3CD420C2F88B8D200B5D830 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				E3FF01002F89A10000FF0001 /* TermCore.framework in Frameworks */,
 			);
 		};
 		E3E00E4C2C27574F00DE1213 /* Frameworks */ = {
@@ -634,8 +653,12 @@
 				E3CD420B2F88B8D200B5D830 /* Sources */,
 				E3CD420C2F88B8D200B5D830 /* Frameworks */,
 				E3CD420D2F88B8D200B5D830 /* CopyFiles */,
+				E3FF01032F89A10000FF0004 /* Embed Frameworks */,
 			);
 			buildRules = (
+			);
+			dependencies = (
+				E3FF01042F89A10000FF0005 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				E3CD42102F88B8D200B5D830 /* rtermd */,
@@ -942,6 +965,11 @@
 			isa = PBXTargetDependency;
 			target = E3E00E4E2C27574F00DE1213 /* rTermSupport */;
 			targetProxy = E3E00E592C27574F00DE1213 /* PBXContainerItemProxy */;
+		};
+		E3FF01042F89A10000FF0005 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E30920B32C23FF6800B6D264 /* TermCore */;
+			targetProxy = E3FF01022F89A10000FF0003 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1420,10 +1448,17 @@
 		E3CD42142F88B8D200B5D830 /* Debug configuration for PBXNativeTarget "rtermd" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = rtermd/rtermd.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = A638GM37QF;
 				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rtermd;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -1434,10 +1469,17 @@
 		E3CD42152F88B8D200B5D830 /* Release configuration for PBXNativeTarget "rtermd" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = rtermd/rtermd.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = A638GM37QF;
 				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rtermd;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
