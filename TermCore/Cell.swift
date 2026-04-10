@@ -133,10 +133,18 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let array = try container.decode([Cell].self, forKey: .cells)
-        self.cells = ContiguousArray(array)
         self.cols = try container.decode(Int.self, forKey: .cols)
         self.rows = try container.decode(Int.self, forKey: .rows)
         self.cursor = try container.decode(Cursor.self, forKey: .cursor)
+        guard array.count == rows * cols else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: "Expected \(rows * cols) cells (\(rows)x\(cols)), got \(array.count)"
+                )
+            )
+        }
+        self.cells = ContiguousArray(array)
     }
 
     public func encode(to encoder: Encoder) throws {
