@@ -125,6 +125,31 @@ public actor ScreenModel {
         _latestSnapshot.withLock { $0 = snap }
     }
 
+    // MARK: - Restore
+
+    /// Resets the screen model to the state captured in a snapshot.
+    ///
+    /// This is the inverse of ``snapshot()``: it replaces the grid and cursor
+    /// with the values from the given snapshot and updates the lock-protected
+    /// cache so ``latestSnapshot()`` reflects the restored state immediately.
+    ///
+    /// Use this during session reattach — the daemon sends a `ScreenSnapshot`
+    /// and the client calls `restore(from:)` to synchronize its local model.
+    ///
+    /// - Precondition: `snapshot.cols == cols && snapshot.rows == rows`.
+    ///   Restoring from a snapshot with different dimensions is a programming
+    ///   error (resize the model first if dimensions changed).
+    public func restore(from snapshot: ScreenSnapshot) {
+        precondition(
+            snapshot.cols == cols && snapshot.rows == rows,
+            "Cannot restore from snapshot with dimensions \(snapshot.cols)x\(snapshot.rows) "
+            + "into model with dimensions \(cols)x\(rows)"
+        )
+        grid = snapshot.cells
+        cursor = snapshot.cursor
+        _latestSnapshot.withLock { $0 = snapshot }
+    }
+
     // MARK: - Snapshot access
 
     /// Returns a value-type snapshot of the current screen state.
