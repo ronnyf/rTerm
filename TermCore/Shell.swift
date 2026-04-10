@@ -7,7 +7,7 @@
 
 import Foundation
 
-public enum Shell: Codable, Sendable, Equatable {
+public enum Shell: Codable, Sendable, Equatable, CaseIterable {
     case bash
     case zsh
     case fish
@@ -56,7 +56,7 @@ extension Shell {
             "PATH": "/usr/bin:/bin:/opt/homebrew/bin",
             "TERM": "dumb"
         ]
-        shellProcess.currentDirectoryURL = URL(fileURLWithPath: home)
+        shellProcess.currentDirectoryURL = URL(filePath: home)
 
         //TODO: incorporate some config (e.g. pickl for those things maybe?)
 

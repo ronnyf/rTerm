@@ -13,12 +13,7 @@ struct ShellTests {
 
     // MARK: - Codable Round-Trip
 
-    @Test("Shell encodes and decodes via JSON round-trip", arguments: [
-        Shell.bash,
-        Shell.zsh,
-        Shell.fish,
-        Shell.sh,
-    ])
+    @Test("Shell encodes and decodes via JSON round-trip", arguments: Shell.allCases)
     func codableRoundTrip(shell: Shell) throws {
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
@@ -31,7 +26,7 @@ struct ShellTests {
 
     @Test("Shell JSON representation is stable across all cases")
     func codableAllCases() throws {
-        let allShells: [Shell] = [.bash, .zsh, .fish, .sh]
+        let allShells = Shell.allCases
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
 
