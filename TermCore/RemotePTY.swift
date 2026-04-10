@@ -78,7 +78,9 @@ public class RemotePTY {
         }
         processingTask = Task {
             for await message in incomingMessages {
+                Logger.TermCore.remotePTY.debug("Received XPC message: \(message.count) bytes")
                 await outputDataChannel.send(message)
+                Logger.TermCore.remotePTY.debug("Forwarded to outputDataChannel")
             }
         }
         

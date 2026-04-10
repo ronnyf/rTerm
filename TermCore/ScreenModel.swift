@@ -46,6 +46,8 @@ public actor ScreenModel {
     /// Lock-protected snapshot cache for synchronous renderer access.
     private let _latestSnapshot: OSAllocatedUnfairLock<ScreenSnapshot>
 
+    private let log = Logger.TermCore.screenModel
+
     // MARK: - Initialization
 
     /// Creates a screen model with the given dimensions.
@@ -82,6 +84,7 @@ public actor ScreenModel {
     /// the row does not change. The wrap executes on the next printable
     /// character, keeping newline and carriage-return from double-advancing.
     public func apply(_ events: [TerminalEvent]) {
+        log.debug("Applying \(events.count) events")
         for event in events {
             switch event {
             case .printable(let char):

@@ -53,7 +53,9 @@ class TerminalSession {
                 var parser = TerminalParser()
 
                 for await output in remotePTY.outputData {
-                    let events = parser.parse(Data(output))
+                    let data = Data(output)
+                    log.debug("Parser input: \(data.count) bytes")
+                    let events = parser.parse(data)
                     await screenModel.apply(events)
                 }
             }

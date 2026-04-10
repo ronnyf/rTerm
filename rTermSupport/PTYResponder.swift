@@ -29,6 +29,7 @@ class PTYResponder {
         outputTask = Task { [log] in
             for await data in pt.outputStream {
                 try Task.checkCancellation()
+                log.debug("XPC sending stdout: \(data.count) bytes")
                 try session.send(RemoteResponse.stdout(data))
             }
             log.info("output stream finished")
