@@ -38,10 +38,10 @@ extension Shell {
     var defaultArguments: [String] {
         switch self {
             case .bash:
-                return ["-i"]
+                return ["--norc", "--noprofile", "+m"]
 
             case .zsh:
-                return ["-i"]
+                return ["-f", "+m"]
 
             default:
                 return []

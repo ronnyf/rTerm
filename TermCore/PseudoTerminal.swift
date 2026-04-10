@@ -33,7 +33,7 @@ public class PseudoTerminal {
 
     let log = Logger.TermCore.pseudoTerminal
 
-    public init(shell: Shell = .zsh, rows: UInt16 = 24, cols: UInt16 = 80) throws {
+    public init(shell: Shell = .sh, rows: UInt16 = 24, cols: UInt16 = 80) throws {
         self.shell = shell
         self.winsize = Darwin.winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
         self.pty = try AltPTY()
@@ -85,12 +85,6 @@ public class PseudoTerminal {
         }
         let ttyName = String(cString: ptsName)
 
-        // Set controlling terminal on parent — child inherits via fork
-        let tioResult = ioctl(pty.secondary.rawValue, TIOCSCTTY, 0)
-        if tioResult < 0 {
-            log.warning("TIOCSCTTY failed: \(errno)")
-        }
-
         // Create the shell process
         let process = try shell.process()
         let secondaryHandle = FileHandle(fileDescriptor: pty.secondary.rawValue, closeOnDealloc: false)
@@ -112,13 +106,23 @@ public class PseudoTerminal {
         }
 
         // Shell termination cleanup
-        process.terminationHandler = { [weak self] _ in
+        process.terminationHandler = { [weak self] proc in
+            self?.log.info("Shell exited: status=\(proc.terminationStatus), reason=\(proc.terminationReason.rawValue)")
             self?.primaryHandle.readabilityHandler = nil
             self?.outputContinuation.finish()
         }
 
         try process.run()
         self.shellProcess = process
+        log.info("Shell started: pid=\(process.processIdentifier), isRunning=\(process.isRunning)")
+
+        // Set the shell's process group as the terminal's foreground group.
+        // Without this, bash/sh sends itself SIGTSTP because it's not the
+        // foreground group and can't read from the terminal.
+        let pgrc = tcsetpgrp(pty.primary.rawValue, process.processIdentifier)
+        if pgrc < 0 {
+            log.warning("tcsetpgrp failed: \(errno)")
+        }
 
         // Close the secondary FD — the shell process has inherited it
         try pty.secondary.close()

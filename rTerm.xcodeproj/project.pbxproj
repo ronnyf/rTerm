@@ -210,6 +210,8 @@
 		E3C6C9132C251E8600D1AC70 /* Shell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shell.swift; sourceTree = "<group>"; };
 		E3CA58C02C3DF1D1008E8E05 /* TermView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermView.swift; sourceTree = "<group>"; };
 		E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminalTests.swift; sourceTree = "<group>"; };
+		E3CD94002F882B3900B5D830 /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
+		E3CD94012F882B4200B5D830 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		E3E00E4F2C27574F00DE1213 /* rTermSupport.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = rTermSupport.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3E00E512C27574F00DE1213 /* PTYResponder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTYResponder.swift; sourceTree = "<group>"; };
 		E3E00E552C27574F00DE1213 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
@@ -291,6 +293,8 @@
 		E30920782C23FF0600B6D264 = {
 			isa = PBXGroup;
 			children = (
+				E3CD94012F882B4200B5D830 /* README.md */,
+				E3CD94002F882B3900B5D830 /* CLAUDE.md */,
 				E3B98F432F84654200FC0610 /* docs */,
 				E30920832C23FF0600B6D264 /* rTerm */,
 				E30920952C23FF0800B6D264 /* rTermTests */,
@@ -1366,6 +1370,10 @@
 				INFOPLIST_FILE = rTermSupport/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = rTermSupport;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/../../../../Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rTermSupport;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1389,6 +1397,10 @@
 				INFOPLIST_FILE = rTermSupport/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = rTermSupport;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/../../../../Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rTermSupport;
 				PRODUCT_NAME = "$(TARGET_NAME)";
