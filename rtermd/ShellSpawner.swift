@@ -41,8 +41,6 @@ struct SpawnResult: Sendable {
 enum SpawnError: Error {
     /// `forkpty` returned -1.
     case forkFailed(Int32)
-    /// `getpwuid` could not resolve the current user's home directory.
-    case noHomeDirectory
 }
 
 // MARK: - ShellSpawner
@@ -157,6 +155,9 @@ enum ShellSpawner {
         // which depends on Foundation and may behave differently under launchd).
         if let pw = getpwuid(getuid()), let homeDir = pw.pointee.pw_dir {
             env.append("HOME=\(String(cString: homeDir))")
+            if let name = pw.pointee.pw_name {
+                env.append("USER=\(String(cString: name))")
+            }
         }
 
         env.append("PATH=/usr/bin:/bin:/usr/local/bin:/usr/sbin:/sbin:/opt/homebrew/bin")
@@ -180,6 +181,10 @@ enum ShellSpawner {
     ///
     /// We enumerate `/dev/fd` instead of brute-forcing `3..<getdtablesize()`
     /// because the latter is O(max-fd) and the table limit can be large.
+    ///
+    /// Note: `opendir`/`readdir` are not POSIX-listed async-signal-safe, but on
+    /// Darwin they are thin wrappers over `getdirentries` and do not allocate or
+    /// take locks. Every major macOS terminal emulator uses this pattern.
     private static func closeFDsAboveStderr() {
         guard let dir = opendir("/dev/fd") else { return }
         // Note: do NOT defer closedir here because that FD is in the range
