@@ -62,8 +62,6 @@ final class Session: @unchecked Sendable {
     let pid: pid_t
     let primaryFD: Int32
     let createdAt: Date
-    let rows: UInt16
-    let cols: UInt16
     let screenModel: ScreenModel
 
     // MARK: - Private state
@@ -83,7 +81,7 @@ final class Session: @unchecked Sendable {
     private var outputTask: Task<Void, Never>?
 
     /// Lock-protected mutable state shared across isolation boundaries.
-    private let lock = OSAllocatedUnfairLock<SessionState>(initialState: .init())
+    private let lock: OSAllocatedUnfairLock<SessionState>
 
     private let log = Logger(subsystem: "com.ronnyf.rtermd", category: "Session")
 
@@ -91,8 +89,10 @@ final class Session: @unchecked Sendable {
 
     struct SessionState: Sendable {
         var attachedClients: [XPCSession] = []
-        var shellExited = false
-        var exitCode: Int32 = 0
+        var exitStatus: Int32?
+        var rows: UInt16
+        var cols: UInt16
+        var isStopped = false
     }
 
     // MARK: - Initialization
@@ -114,11 +114,10 @@ final class Session: @unchecked Sendable {
         self.pid = result.pid
         self.primaryFD = result.primaryFD
         self.createdAt = Date()
-        self.rows = rows
-        self.cols = cols
         self.screenModel = ScreenModel(cols: Int(cols), rows: Int(rows))
         self.parser = TerminalParser()
         self.primaryHandle = FileHandle(fileDescriptor: result.primaryFD, closeOnDealloc: false)
+        self.lock = OSAllocatedUnfairLock(initialState: SessionState(rows: rows, cols: cols))
 
         let (stream, continuation) = AsyncStream<Data>.makeStream()
         self.outputStream = stream
@@ -141,9 +140,12 @@ final class Session: @unchecked Sendable {
     }
 
     deinit {
+        let alreadyStopped = lock.withLock { $0.isStopped }
+        guard !alreadyStopped else { return }
         primaryHandle.readabilityHandler = nil
         outputContinuation.finish()
         outputTask?.cancel()
+        kill(pid, SIGTERM)
         close(primaryFD)
         kill(pid, SIGTERM)
     }
@@ -163,15 +165,13 @@ final class Session: @unchecked Sendable {
         // Cleanup is driven by stop() or deinit, not by Task cancellation.
         outputTask = Task {
             for await data in self.outputStream {
-                // 1. Parse raw bytes into terminal events.
-                let events = self.parser.parse(data)
-
-                // 2. Apply events to the screen model so the daemon always
-                //    has up-to-date terminal state for reattach snapshots.
-                await self.screenModel.apply(events)
-
-                // 3. Fan out the raw bytes to every attached client.
+                // 1. Fan out raw bytes to clients first — they parse locally,
+                //    so don't make them wait for the daemon's actor hop.
                 self.fanOutToClients(data)
+
+                // 2. Parse and apply to the daemon's screen model (for reattach).
+                let events = self.parser.parse(data)
+                await self.screenModel.apply(events)
             }
             self.log.info("Session \(self.id): output stream ended")
         }
@@ -271,6 +271,10 @@ final class Session: @unchecked Sendable {
         if rc < 0 {
             log.error("Session \(self.id): TIOCSWINSZ failed: errno=\(errno)")
         }
+        lock.withLock { state in
+            state.rows = rows
+            state.cols = cols
+        }
     }
 
     // MARK: - Exit handling
@@ -284,8 +288,7 @@ final class Session: @unchecked Sendable {
     /// - Parameter exitCode: The shell's exit status.
     func markExited(exitCode: Int32) {
         lock.withLock { state in
-            state.shellExited = true
-            state.exitCode = exitCode
+            state.exitStatus = exitCode
         }
         log.info("Session \(self.id): shell exited with code \(exitCode)")
     }
@@ -318,7 +321,9 @@ final class Session: @unchecked Sendable {
     /// Metadata snapshot for this session, suitable for sending to clients
     /// in response to `.listSessions`.
     var info: SessionInfo {
-        let clientCount = lock.withLock { $0.attachedClients.count }
+        let (clientCount, currentRows, currentCols) = lock.withLock {
+            ($0.attachedClients.count, $0.rows, $0.cols)
+        }
         return SessionInfo(
             id: id,
             shell: shell,
@@ -326,8 +331,8 @@ final class Session: @unchecked Sendable {
             pid: pid,
             createdAt: createdAt,
             title: nil,
-            rows: rows,
-            cols: cols,
+            rows: currentRows,
+            cols: currentCols,
             hasClient: clientCount > 0
         )
     }
@@ -340,6 +345,12 @@ final class Session: @unchecked Sendable {
     /// After `stop()`, the session is inert and should be removed from
     /// ``SessionManager``.
     func stop() {
+        let alreadyStopped = lock.withLock { state in
+            let was = state.isStopped
+            state.isStopped = true
+            return was
+        }
+        guard !alreadyStopped else { return }
         primaryHandle.readabilityHandler = nil
         outputContinuation.finish()
         outputTask?.cancel()
