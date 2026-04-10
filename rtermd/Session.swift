@@ -140,6 +140,8 @@ final class Session: @unchecked Sendable {
         primaryHandle.readabilityHandler = nil
         outputContinuation.finish()
         outputTask?.cancel()
+        close(primaryFD)
+        kill(pid, SIGTERM)
     }
 
     // MARK: - Output consumer
@@ -151,8 +153,11 @@ final class Session: @unchecked Sendable {
     /// Call this once after `init`. The task runs until the output stream
     /// ends (shell exits / PTY EOF) or is cancelled via `stop()`.
     func startOutputConsumer() {
-        outputTask = Task { [weak self] in
-            guard let self else { return }
+        precondition(outputTask == nil, "startOutputConsumer() called twice")
+        // The Task retains self for the duration of the stream. This is
+        // intentional — the Session must stay alive while output is flowing.
+        // Cleanup is driven by stop() or deinit, not by Task cancellation.
+        outputTask = Task {
             for await data in self.outputStream {
                 // 1. Parse raw bytes into terminal events.
                 let events = self.parser.parse(data)
@@ -174,14 +179,13 @@ final class Session: @unchecked Sendable {
     /// Send failures are logged but do not remove the client — the client's
     /// cancellation handler (set up by the peer handler) handles cleanup.
     private func fanOutToClients(_ data: Data) {
+        let clients = lock.withLock { $0.attachedClients }
         let response = DaemonResponse.output(sessionID: id, data: data)
-        lock.withLock { state in
-            for client in state.attachedClients {
-                do {
-                    try client.send(response)
-                } catch {
-                    log.error("Session \(self.id): failed to send output to client: \(error)")
-                }
+        for client in clients {
+            do {
+                try client.send(response)
+            } catch {
+                log.error("Session \(self.id): failed to send output to client: \(error)")
             }
         }
     }
@@ -291,15 +295,17 @@ final class Session: @unchecked Sendable {
     /// - Parameter exitCode: The shell's exit status to report.
     func notifyClientsEnded(exitCode: Int32) {
         let response = DaemonResponse.sessionEnded(sessionID: id, exitCode: exitCode)
-        lock.withLock { state in
-            for client in state.attachedClients {
-                do {
-                    try client.send(response)
-                } catch {
-                    log.error("Session \(self.id): failed to notify client of exit: \(error)")
-                }
-            }
+        let clients = lock.withLock { state -> [XPCSession] in
+            let snapshot = state.attachedClients
             state.attachedClients.removeAll()
+            return snapshot
+        }
+        for client in clients {
+            do {
+                try client.send(response)
+            } catch {
+                log.error("Session \(self.id): failed to notify client of exit: \(error)")
+            }
         }
     }
 
@@ -333,8 +339,8 @@ final class Session: @unchecked Sendable {
         primaryHandle.readabilityHandler = nil
         outputContinuation.finish()
         outputTask?.cancel()
-        close(primaryFD)
         kill(pid, SIGTERM)
+        close(primaryFD)
         log.info("Session \(self.id): stopped")
     }
 }
