@@ -1,10 +1,8 @@
 #!/bin/bash
 #
-# manage-debug-daemon.sh
-# Installs or uninstalls the rtermd LaunchAgent plist for Debug builds.
-#
-# Called from the rTerm app target's Run Script build phase.
-# Pass "clean" as $1 (via ACTION) to uninstall, otherwise installs.
+# install-debug-daemon.sh
+# Installs the rtermd LaunchAgent plist for Debug builds.
+# Runs on build action only.
 #
 # The source plist uses BundleProgram (for SMAppService in Release);
 # this script rewrites it to use Program with the DerivedData binary path.
@@ -12,28 +10,13 @@
 
 set -euo pipefail
 
-if [ "$CONFIGURATION" != "Debug" ]; then
-    echo "Skipping debug daemon management for $CONFIGURATION"
+if [ "$CONFIGURATION" != "Debug" ] || [ "$ACTION" != "build" ]; then
     exit 0
 fi
 
 PLIST_NAME="com.ronnyf.rterm.rtermd.plist"
-DEST="${HOME}/Library/LaunchAgents/${PLIST_NAME}"
-
-# Unload existing daemon (common to both install and clean)
-if [ -f "$DEST" ]; then
-    launchctl unload "$DEST" 2>/dev/null || true
-fi
-
-# Clean: just remove and exit
-if [ "$ACTION" = "clean" ]; then
-    rm -f "$DEST"
-    echo "Uninstalled debug daemon: ${DEST}"
-    exit 0
-fi
-
-# Install
 SOURCE="${SRCROOT}/rtermd/${PLIST_NAME}"
+DEST="${HOME}/Library/LaunchAgents/${PLIST_NAME}"
 RTERMD_BIN="${BUILT_PRODUCTS_DIR}/rtermd"
 
 if [ ! -f "$SOURCE" ]; then
@@ -44,6 +27,11 @@ fi
 if [ ! -f "$RTERMD_BIN" ]; then
     echo "error: rtermd binary not found at $RTERMD_BIN" >&2
     exit 1
+fi
+
+# Unload existing daemon before replacing
+if [ -f "$DEST" ]; then
+    launchctl unload "$DEST" 2>/dev/null || true
 fi
 
 # Copy plist and rewrite BundleProgram → Program for direct launchd loading
