@@ -16,7 +16,7 @@ if [ "$CONFIGURATION" != "Debug" ]; then
 fi
 
 PLIST_NAME="group.com.ronnyf.rterm.rtermd.plist"
-SOURCE="${BUILT_PRODUCTS_DIR}/rTerm.app/Contents/Library/LaunchAgents/${PLIST_NAME}"
+SOURCE="${SRCROOT}/rtermd/${PLIST_NAME}"
 DEST="${HOME}/Library/LaunchAgents/${PLIST_NAME}"
 RTERMD_BIN="${BUILT_PRODUCTS_DIR}/rtermd"
 
