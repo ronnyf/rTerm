@@ -31,7 +31,7 @@ public class PseudoTerminal {
     /// The running shell process.
     private var shellProcess: Process?
 
-    let log = Logger(subsystem: "TermCore", category: "PseudoTerminal")
+    let log = Logger.TermCore.pseudoTerminal
 
     public init(shell: Shell = .zsh, rows: UInt16 = 24, cols: UInt16 = 80) throws {
         self.shell = shell
@@ -102,9 +102,11 @@ public class PseudoTerminal {
         primaryHandle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty {
+                self?.log.debug("PTY output: EOF (0 bytes)")
                 self?.outputContinuation.finish()
                 handle.readabilityHandler = nil
             } else {
+                self?.log.debug("PTY output: \(data.count) bytes")
                 self?.outputContinuation.yield(data)
             }
         }

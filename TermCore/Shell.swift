@@ -39,7 +39,10 @@ extension Shell {
         switch self {
             case .bash:
                 return ["-i"]
-                
+
+            case .zsh:
+                return ["-i"]
+
             default:
                 return []
         }
@@ -50,7 +53,11 @@ extension Shell {
 
         shellProcess.executableURL = URL(filePath: executable)
         shellProcess.arguments = defaultArguments
-        shellProcess.environment = ["HOME": "/Users/ronny", "PATH": "/usr/bin:/bin:/opt/homebrew/bin"]
+        shellProcess.environment = [
+            "HOME": "/Users/ronny",
+            "PATH": "/usr/bin:/bin:/opt/homebrew/bin",
+            "TERM": "dumb"
+        ]
         shellProcess.currentDirectoryURL = URL(fileURLWithPath: "/Users/ronny")
         
         //TODO: incorporate some config (e.g. pickl for those things maybe?)

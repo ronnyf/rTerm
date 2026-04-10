@@ -53,7 +53,9 @@ class TerminalSession {
                 var parser = TerminalParser()
 
                 for await output in remotePTY.outputData {
-                    let events = parser.parse(Data(output))
+                    let data = Data(output)
+                    log.debug("Parser input: \(data.count) bytes")
+                    let events = parser.parse(data)
                     await screenModel.apply(events)
                 }
             }
@@ -64,6 +66,7 @@ class TerminalSession {
 
     /// Sends keyboard input to the remote PTY.
     func sendInput(_ data: Data) {
+        log.debug("sendInput: \(data.count) bytes")
         do {
             try remotePTY.send(command: RemoteCommand.input(data))
         } catch {

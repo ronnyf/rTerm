@@ -15,7 +15,7 @@ class PTYResponder {
     let log = Logger(subsystem: "rTermSupport", category: "PTYResponder")
 
     var pseudoTerminal: PseudoTerminal?
-    var outputTask: Task<Void, Error>?
+    var outputTask: Task<Void, Never>?
 
     deinit {
         outputTask?.cancel()
@@ -28,8 +28,16 @@ class PTYResponder {
 
         outputTask = Task { [log] in
             for await data in pt.outputStream {
-                try Task.checkCancellation()
-                try session.send(RemoteResponse.stdout(data))
+                if Task.isCancelled {
+                    log.info("output task cancelled")
+                    break
+                }
+                do {
+                    log.debug("XPC sending stdout: \(data.count) bytes")
+                    try session.send(RemoteResponse.stdout(data))
+                } catch {
+                    log.error("XPC send failed: \(error.localizedDescription)")
+                }
             }
             log.info("output stream finished")
         }
@@ -46,6 +54,7 @@ extension PTYResponder: XPCSyncResponder {
             return try spawn(session: session)
 
         case .input(let data):
+            log.debug("PTY write: \(data.count) bytes")
             pseudoTerminal?.write(data)
             return nil
 
