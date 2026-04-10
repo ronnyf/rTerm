@@ -2,15 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>AssociatedBundleIdentifiers</key>
+	<string>com.ronnyf.rTerm</string>
 	<key>Label</key>
 	<string>group.com.ronnyf.rterm.rtermd</string>
-	<key>Program</key>
-	<string>/usr/local/libexec/rtermd</string>
 	<key>MachServices</key>
 	<dict>
 		<key>group.com.ronnyf.rterm.rtermd</key>
 		<true/>
 	</dict>
+	<key>Program</key>
+	<string>/usr/local/libexec/rtermd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/libexec/rtermd</string>
+	</array>
 	<key>KeepAlive</key>
 	<dict>
 		<key>SuccessfulExit</key>
