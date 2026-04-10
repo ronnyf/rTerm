@@ -151,16 +151,11 @@ struct ContentView: View {
             session.sendInput(data)
         })
         .task {
-            #if !DEBUG
-            // In Release builds, SMAppService registers the LaunchAgent
-            // from the plist embedded in the app bundle. Debug builds use
-            // a Run Script phase that installs the plist directly.
             do {
                 try Agent().register()
             } catch {
                 print("ERROR: \(error)")
             }
-            #endif
             await session.connect()
         }
     }

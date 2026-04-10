@@ -26,7 +26,9 @@ public class Agent {
     }
     
     public func register() throws {
+        #if !DEBUG
         try service.register()
+        #endif
     }
     
     public func unregister() throws {
