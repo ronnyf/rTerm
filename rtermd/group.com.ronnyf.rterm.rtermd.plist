@@ -11,12 +11,8 @@
 		<key>group.com.ronnyf.rterm.rtermd</key>
 		<true/>
 	</dict>
-	<key>Program</key>
-	<string>/usr/local/libexec/rtermd</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/usr/local/libexec/rtermd</string>
-	</array>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/rtermd</string>
 	<key>KeepAlive</key>
 	<dict>
 		<key>SuccessfulExit</key>
