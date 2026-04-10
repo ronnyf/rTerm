@@ -272,11 +272,13 @@ struct SessionInfoTests {
             SessionInfo(
                 id: 2, shell: .bash, tty: "/dev/ttys002", pid: 200,
                 createdAt: Date(timeIntervalSince1970: 1_700_000_001),
-                title: "bash", rows: 30, cols: 100, hasClient: false
+                title: nil, rows: 30, cols: 100, hasClient: false
             ),
         ]
         let decoded = try roundTrip(sessions)
         #expect(decoded == sessions)
+        #expect(decoded[0].title == "zsh")
+        #expect(decoded[1].title == nil)
     }
 }
 

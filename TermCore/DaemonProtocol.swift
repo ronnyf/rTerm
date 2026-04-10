@@ -94,7 +94,7 @@ public struct SessionInfo: Codable, Sendable, Equatable {
     /// When the session was created.
     public let createdAt: Date
     /// User-visible title (derived from the running command or shell name).
-    public let title: String
+    public let title: String?
     /// Current terminal height.
     public let rows: UInt16
     /// Current terminal width.
@@ -108,7 +108,7 @@ public struct SessionInfo: Codable, Sendable, Equatable {
         tty: String,
         pid: Int32,
         createdAt: Date,
-        title: String,
+        title: String?,
         rows: UInt16,
         cols: UInt16,
         hasClient: Bool
