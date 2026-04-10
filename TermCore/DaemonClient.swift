@@ -140,10 +140,11 @@ public final class DaemonClient: Sendable {
         )
 
         // Incoming push messages from the daemon (output, sessionEnded, etc.)
-        session.setIncomingMessageHandler { [weak self] (response: DaemonResponse) in
-            guard let self else { return }
+        session.setIncomingMessageHandler { [weak self] (response: DaemonResponse) -> (any Encodable)? in
+            guard let self else { return nil }
             let handler = self.state.withLock { $0.responseHandler }
             handler?(response)
+            return nil
         }
 
         // Handle XPC disconnection / cancellation.
