@@ -1,7 +1,7 @@
 # PTY and Shell Process Management on macOS
 
 **Date:** 2026-04-09
-**Context:** Lessons learned from building rTerm's PTY layer and studying iTerm2's implementation.
+**Context:** Lessons learned from building rTerm's PTY layer and studying iTerm2 (Obj-C) and wezterm (Rust).
 
 ## PTY Creation
 
@@ -23,13 +23,23 @@ char *slaveName = ptsname(master);
 int slave = open(slaveName, O_RDWR);
 ```
 
-Both work. `openpty()` is more convenient; the manual approach gives finer control.
+Both work. `openpty()` is more convenient; the manual approach gives finer control. Both iTerm2 and wezterm use `openpty()`.
 
-## Shell Spawning: fork/exec vs. posix_spawn
+**CLOEXEC (wezterm pattern):** Set `FD_CLOEXEC` on both FDs immediately after creation so they don't leak to unrelated child processes. Only the FDs explicitly dup'd to 0/1/2 survive exec.
 
-**Critical distinction:** Foundation's `Process` (NSTask) uses `posix_spawn` internally. `posix_spawn` creates the child in a single step — there is no window to execute code in the child before exec. This means you **cannot** call `setsid()`, `TIOCSCTTY`, or `setpgid()` in the child.
+## Shell Spawning: Three Approaches
 
-**iTerm2 uses fork/exec directly**, which allows pre-exec setup in the child:
+**Critical distinction:** The ability to run setup code in the child process *before* exec determines how much control you have over the shell's session and terminal.
+
+### 1. Foundation's Process / posix_spawn (rTerm)
+
+`posix_spawn` creates the child in a single step — no window to execute code before exec. Cannot call `setsid()`, `TIOCSCTTY`, or `setpgid()` in the child.
+
+**Workaround:** Call `tcsetpgrp()` from the parent after spawn.
+
+### 2. fork/exec (iTerm2)
+
+Direct fork allows pre-exec setup in the child:
 
 ```c
 pid_t pid = fork();
@@ -47,6 +57,30 @@ if (pid == 0) {
     execvp(shell, argv);
 }
 ```
+
+### 3. Command with pre_exec hook (wezterm / Rust)
+
+Rust's `std::process::Command` supports a `pre_exec` closure that runs in the child after fork but before exec — the best of both worlds:
+
+```rust
+cmd.pre_exec(move || {
+    // Reset signal handlers to defaults
+    for sig in &[SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGALRM] {
+        libc::signal(*sig, libc::SIG_DFL);
+    }
+    // Unblock all signals
+    let empty: libc::sigset_t = std::mem::zeroed();
+    libc::sigprocmask(SIG_SETMASK, &empty, std::ptr::null_mut());
+    // New session + controlling terminal
+    libc::setsid();
+    libc::ioctl(0, TIOCSCTTY, 0);
+    // Close leaked FDs (macOS Big Sur+ issue)
+    close_random_fds();
+    Ok(())
+});
+```
+
+**Swift equivalent:** Foundation's `Process` has no `pre_exec` hook. To get this capability in Swift, you must use `fork/exec` directly or write a C helper.
 
 **Workaround when using Foundation's Process:** Call `tcsetpgrp()` from the parent after `process.run()` to set the child as the terminal's foreground group. This prevents bash/sh from stopping itself with SIGTSTP.
 
@@ -79,6 +113,16 @@ tcsetpgrp(pty.primary.rawValue, process.processIdentifier)
 
 This works because the parent calls it immediately after `process.run()`, before the shell has a chance to check and stop itself.
 
+**wezterm's approach (in-child via pre_exec):** No explicit `tcsetpgrp()` needed — `setsid()` + `TIOCSCTTY` in the child establishes the shell as session leader with a controlling terminal, so job control works naturally.
+
+## Signal Handling in Child Processes
+
+Two strategies observed:
+
+**iTerm2 (block in parent):** Block SIGTTIN/SIGTTOU/SIGTSTP/SIGCHLD before `tcsetpgrp()`, restore after. Prevents race conditions when the parent sets the foreground group.
+
+**wezterm (reset in child):** Reset all signal handlers to `SIG_DFL` and unblock all signals in the child's `pre_exec` hook. Simpler, and ensures the shell starts with a clean signal state regardless of what the parent was doing. Also handles signals inherited from the terminal emulator's own signal handling (e.g., custom SIGCHLD handler).
+
 ## XPC Services and Terminal Processes
 
 **XPC services cannot properly host terminal sessions.** The issues:
@@ -104,6 +148,8 @@ This works because the parent calls it immediately after `process.run()`, before
 | `xterm-256color` | Full 256-color support (iTerm2's default) |
 
 iTerm2 also sets: `COLORTERM=truecolor`, `TERM_PROGRAM=iTerm.app`, `LC_TERMINAL=iTerm2`, custom `TERMINFO_DIRS` for bundled terminfo.
+
+wezterm also sets: `COLORTERM=truecolor`, `TERM_PROGRAM=WezTerm`, `TERM_PROGRAM_VERSION=<version>`.
 
 ## Termios Configuration
 
@@ -137,9 +183,61 @@ iTerm2 also passes:
 
 All other FDs should be closed in the child (`closefrom(3)` or equivalent).
 
+## File Descriptor Leaks (macOS Big Sur+)
+
+**Discovered by wezterm:** macOS Big Sur and later leak file descriptors to child processes (from system frameworks, Cocoa, etc.). If not closed, leaked FDs can cause issues — security concerns, resource exhaustion, and unexpected behavior in shells.
+
+**wezterm's fix:** In the child's pre_exec hook, enumerate `/dev/fd` and close everything above FD 2:
+
+```rust
+fn close_random_fds() {
+    if let Ok(dir) = std::fs::read_dir("/dev/fd") {
+        let fds: Vec<c_int> = dir.filter_map(|e| {
+            e.ok()?.file_name().into_string().ok()?.parse().ok()
+        }).filter(|&fd| fd > 2).collect();
+        for fd in fds { unsafe { libc::close(fd); } }
+    }
+}
+```
+
+**Prevention:** Set `FD_CLOEXEC` on all FDs you create (both PTY ends, sockets, pipes). This ensures they auto-close on exec. Only explicitly dup'd FDs (0, 1, 2) survive.
+
+## Performance: tcgetpgrp() Is Expensive
+
+**Discovered by wezterm:** `tcgetpgrp()` takes ~700μs per call. With multiple tabs, querying foreground process for each tab (e.g., to update tab titles) causes visible stuttering.
+
+**Solution:** Cache the foreground PID and CWD with a 300ms TTL:
+
+```
+struct CachedLeaderInfo {
+    updated: Instant
+    pid: pid_t
+    path: String?
+    cwd: String?
+}
+// Only refresh if > 300ms since last update
+```
+
 ## Future Considerations for rTerm
 
-1. **Replace Foundation's Process with fork/exec** — Enables proper setsid()/TIOCSCTTY in the child, full job control, and signal handling.
-2. **Consider a daemon architecture** — If XPC limitations become blocking (e.g., for Ctrl+Z support), a standalone daemon like iTerm2's approach would be more robust.
+1. **Replace Foundation's Process with fork/exec** — Enables proper setsid()/TIOCSCTTY in the child, full job control, and signal handling. Both iTerm2 and wezterm do their own fork/exec (wezterm via Rust's Command + pre_exec, iTerm2 via raw fork).
+2. **Consider a daemon architecture** — If XPC limitations become blocking (e.g., for Ctrl+Z support), a standalone daemon like iTerm2's approach would be more robust. wezterm uses a mux server daemon with double-fork for daemonization.
 3. **Custom termios initialization** — Set explicit termios flags rather than relying on PTY defaults. Ensures consistent behavior across macOS versions.
 4. **Signal blocking around tcsetpgrp()** — Block SIGTTIN/SIGTTOU/SIGTSTP before calling tcsetpgrp() to avoid race conditions (iTerm2 does this, copied from bash).
+5. **Close leaked FDs in child** — macOS Big Sur+ leaks FDs. Enumerate /dev/fd and close all > 2 after fork (wezterm pattern).
+6. **Cache tcgetpgrp() results** — Implement a TTL cache (~300ms) for foreground process queries to avoid UI stuttering with multiple tabs (wezterm pattern).
+7. **Set FD_CLOEXEC eagerly** — On all FDs created by the app to prevent accidental inheritance.
+
+## Reference: Comparison of Approaches
+
+| Aspect | rTerm (Swift) | iTerm2 (Obj-C) | wezterm (Rust) |
+|--------|--------------|----------------|----------------|
+| PTY creation | posix_openpt | openpty() | openpty() |
+| Process spawn | Foundation Process | fork/exec | Command + pre_exec |
+| setsid() | Cannot (posix_spawn) | In child | In child pre_exec |
+| TIOCSCTTY | Removed (failed) | In child | In child pre_exec |
+| Foreground group | tcsetpgrp() from parent | In child | Implicit via setsid |
+| Signal handling | None | Block in parent | Reset in child |
+| FD cleanup | Manual close secondary | closefrom(3) | Enumerate /dev/fd |
+| Process isolation | XPC service | Standalone daemon | In-process (mux server optional) |
+| TERM default | dumb | xterm (configurable) | xterm-256color |
