@@ -29,7 +29,7 @@ import XPCOverlay
 
 // MARK: - Configuration
 
-private let serviceName = "group.com.ronnyf.rterm.rtermd"
+private let serviceName = "com.ronnyf.rterm.rtermd"
 private let idleExitDelay: TimeInterval = 5
 private let log = Logger(subsystem: "com.ronnyf.rtermd", category: "main")
 
