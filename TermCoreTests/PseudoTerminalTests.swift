@@ -79,4 +79,53 @@ struct PseudoTerminalTests {
         #expect(result != nil)
         #expect(result!.count > 0)
     }
+
+    @Test("shell echo reaches ScreenModel through parser pipeline")
+    func test_shell_echo_through_parser_to_screen() async throws {
+        let pt = try PseudoTerminal(shell: .sh)
+        let _ = try pt.start()
+
+        let screenModel = ScreenModel(cols: 80, rows: 24)
+
+        // Send a command that produces known output
+        pt.write(Data("echo hello\r".utf8))
+
+        // Single consumer with timeout — AsyncStream is single-consumer,
+        // so we must not create multiple `for await` iterators.
+        let found = try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var parser = TerminalParser()
+                for await data in pt.outputStream {
+                    let events = parser.parse(data)
+                    await screenModel.apply(events)
+
+                    let snap = await screenModel.snapshot()
+                    let text = (0..<snap.rows).map { row in
+                        (0..<snap.cols).map { col in
+                            String(snap[row, col].character)
+                        }.joined()
+                    }.joined()
+
+                    if text.contains("hello") {
+                        return true
+                    }
+                }
+                return false
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(3))
+                return false
+            }
+
+            let first = try await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+
+        if !found {
+            let snap = await screenModel.snapshot()
+            let firstRowText = (0..<snap.cols).map { String(snap[0, $0].character) }.joined()
+            Issue.record("Expected 'hello' in screen model, first row: '\(firstRowText.trimmingCharacters(in: .whitespaces))'")
+        }
+    }
 }
