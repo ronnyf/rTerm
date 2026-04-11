@@ -427,7 +427,7 @@ v1: no client identity validation (sandbox disabled, local only). Note: `XPCList
 - `Shell` enum (add `Codable` + `Sendable` conformance; resolve `.custom` case; remove `+m` flag)
 - `CircularCollection`, `ScreenBuffer`, `RingBuffer`
 - `DaemonRequest`/`DaemonResponse`/`DaemonError`/`SessionInfo` (new, replaces `RemoteCommand`/`RemoteResponse`)
-- `XPCOverlay` dependency (still using XPC)
+- `import XPC` (public XPC framework, macOS 14+)
 
 Use `package` access for framework-internal types. `public` only for the true external API surface.
 

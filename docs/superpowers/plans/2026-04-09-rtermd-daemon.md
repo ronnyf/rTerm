@@ -777,7 +777,7 @@ Each Session owns a spawned shell, reads PTY output, parses through TerminalPars
 import Foundation
 import TermCore
 import os
-import XPCOverlay
+import XPC
 
 final class Session: @unchecked Sendable {
     let id: SessionID
@@ -959,7 +959,7 @@ git commit -m "feat(rtermd): add Session class — owns forkpty'd shell, PTY I/O
 import Foundation
 import TermCore
 import os
-import XPCOverlay
+import XPC
 
 actor SessionManager {
     private var sessions: [SessionID: Session] = [:]
@@ -1063,13 +1063,13 @@ git commit -m "feat(rtermd): add SessionManager actor — session registry, chil
 
 - [ ] **Step 1: Implement DaemonPeerHandler**
 
-Conforms directly to `XPCPeerHandler` with typed `Input = DaemonRequest`. XPCOverlay's accept overload supports `Input: Decodable` — it handles the XPC message decoding for us. This also handles cancellation (client disconnect) in one type.
+Conforms directly to `XPCPeerHandler` with typed `Input = DaemonRequest`. The XPC framework's accept overload supports `Input: Decodable` — it handles the XPC message decoding for us. This also handles cancellation (client disconnect) in one type.
 
 ```swift
 // rtermd/DaemonPeerHandler.swift
 import Foundation
 import TermCore
-import XPCOverlay
+import XPC
 import os
 
 final class DaemonPeerHandler: XPCPeerHandler {
@@ -1144,7 +1144,7 @@ final class DaemonPeerHandler: XPCPeerHandler {
 // rtermd/main.swift
 import Foundation
 import TermCore
-import XPCOverlay
+import XPC
 import os
 
 let log = Logger(subsystem: "rtermd", category: "main")
@@ -1244,7 +1244,7 @@ git commit -m "feat(rtermd): add DaemonPeerHandler and daemon entry point with s
 ```swift
 // TermCore/DaemonClient.swift
 import Foundation
-import XPCOverlay
+import XPC
 import os
 
 public final class DaemonClient: Sendable {

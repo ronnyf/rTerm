@@ -98,7 +98,7 @@ Metal-based terminal rendering with glyph atlas:
 
 - **AsyncAlgorithms** (apple/swift-async-algorithms v1.1.3) — used in TermCore for `AsyncChannel` and `merge`
 - **swift-collections** (apple/swift-collections v1.4.1) — transitive dependency of AsyncAlgorithms
-- **XPCOverlay** — XPC session/listener abstractions (`XPCSession`, `XPCListener`, `XPCPeerHandler`, `XPCReceivedMessage`)
+- **XPC** (system framework, `import XPC`, macOS 14+) — `XPCSession`, `XPCListener`, `XPCPeerHandler`, `XPCReceivedMessage`
 
 ### Logging
 
