@@ -135,7 +135,7 @@ extension Shell {
         // Set close-on-exec so the primary FD does not leak into future children.
         let currentFlags = fcntl(primaryFD, F_GETFD)
         if currentFlags >= 0 {
-            fcntl(primaryFD, F_SETFD, currentFlags | FD_CLOEXEC)
+            _ = fcntl(primaryFD, F_SETFD, currentFlags | FD_CLOEXEC)
         }
 
         let ttyName = String(cString: ttyNameBuf)

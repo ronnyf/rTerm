@@ -272,6 +272,10 @@ final class SessionManager {
         guard let session = sessions.removeValue(forKey: sessionID) else {
             return  // Already reaped by SIGCHLD — nothing to do.
         }
+        // Notify clients before stopping — clients need to know the session ended.
+        // Exit code is unavailable at PTY EOF time (process may still be running);
+        // use -1 as a sentinel. If SIGCHLD fires later, the session is already gone.
+        session.notifyClientsEnded(exitCode: -1)
         session.stop()
         Self.log.info("Session \(sessionID): ended via PTY EOF")
         checkEmpty()
