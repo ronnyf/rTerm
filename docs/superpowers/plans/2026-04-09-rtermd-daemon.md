@@ -41,7 +41,9 @@
 
 ---
 
-## Phase A: Foundation Types
+## Phase A: Foundation Types ✅ COMPLETE
+
+> All tasks in Phase A are implemented and tested. Do not re-implement.
 
 ### Task 1: Shell Enum — Codable, Sendable, Fix Arguments
 
@@ -547,7 +549,11 @@ In `Session.attach()`: add client to fan-out list BEFORE taking the snapshot, so
 
 ## Phase B: Daemon Core
 
-### Task 5: Create rtermd Xcode Target
+> **Tasks 5-6:** ✅ COMPLETE — target configured, ShellSpawner implemented. Do not re-implement.
+>
+> **Tasks 7-9:** ⚠️ NEED REWORK per the Architecture Revision above. The existing code uses actors + semaphores. Rewrite Session, SessionManager, DaemonPeerHandler, and main.swift to use the single-queue model.
+
+### Task 5: Create rtermd Xcode Target ✅ COMPLETE
 
 **Files:**
 - Create rtermd target in Xcode project (command-line tool)
@@ -627,7 +633,7 @@ git commit -m "feat: add rtermd command-line tool target with LaunchAgent plist"
 
 ---
 
-### Task 6: ShellSpawner — forkpty Wrapper
+### Task 6: ShellSpawner — forkpty Wrapper ✅ COMPLETE
 
 **Files:**
 - Create: `rtermd/ShellSpawner.swift`
@@ -751,7 +757,7 @@ git commit -m "feat(rtermd): add ShellSpawner with forkpty, signal blocking, FD 
 
 ---
 
-### Task 7: Session Class
+### Task 7: Session Class ⚠️ REWORK — see Architecture Revision
 
 **Files:**
 - Create: `rtermd/Session.swift`
@@ -935,7 +941,7 @@ git commit -m "feat(rtermd): add Session class — owns forkpty'd shell, PTY I/O
 
 ---
 
-### Task 8: SessionManager Actor
+### Task 8: SessionManager Actor ⚠️ REWORK — becomes plain class, see Architecture Revision
 
 **Files:**
 - Create: `rtermd/SessionManager.swift`
@@ -1043,7 +1049,7 @@ git commit -m "feat(rtermd): add SessionManager actor — session registry, chil
 
 ---
 
-### Task 9: DaemonPeerHandler + Daemon main.swift
+### Task 9: DaemonPeerHandler + Daemon main.swift ⚠️ REWORK — actor with custom executor, see Architecture Revision
 
 **Files:**
 - Create: `rtermd/DaemonPeerHandler.swift`
@@ -1222,7 +1228,7 @@ git commit -m "feat(rtermd): add DaemonPeerHandler and daemon entry point with s
 
 > **See "Architecture Revision" section above** for the XPC API patterns (constructor with handlers, deferred replies, `import XPC`). The code samples below predate the revision — use them for functional intent, not as literal implementation guides.
 
-### Task 10: DaemonClient — Replacing RemotePTY
+### Task 10: DaemonClient — Replacing RemotePTY ⚠️ REWORK — use constructor pattern, see Architecture Revision
 
 **Files:**
 - Create: `TermCore/DaemonClient.swift`
@@ -1339,7 +1345,7 @@ git commit -m "feat(TermCore): add DaemonClient — XPC client for rtermd with c
 
 ---
 
-### Task 11: Update TerminalSession to Use DaemonClient
+### Task 11: Update TerminalSession to Use DaemonClient ⚠️ REWORK — separate create + attach calls, see Architecture Revision
 
 **Files:**
 - Modify: `rTerm/ContentView.swift`
@@ -1450,7 +1456,7 @@ git commit -m "feat(rTerm): update TerminalSession to use DaemonClient for rterm
 
 ---
 
-### Task 12: App Entitlements Update
+### Task 12: App Entitlements Update ✅ COMPLETE
 
 **Files:**
 - Modify: `rTerm/rTerm.entitlements`
