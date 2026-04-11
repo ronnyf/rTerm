@@ -31,22 +31,30 @@ import XPC
 
 /// Central coordinator for all terminal sessions running inside the daemon.
 ///
-/// The `SessionManager` actor owns the authoritative mapping from
-/// ``SessionID`` to ``Session``. Every mutating operation — create, destroy,
-/// reap — goes through this actor, which guarantees data-race freedom without
-/// external locks.
+/// `SessionManager` is a plain class — not an actor, not Sendable. All access
+/// is serialized by the daemon's serial dispatch queue, so no locks or
+/// async/await are needed. Every method is synchronous.
+///
+/// ## Why not an actor?
+///
+/// The original implementation used an actor, which required a semaphore-based
+/// GCD-to-async bridge in `DaemonPeerHandler`. That bridge was the root cause
+/// of a deadlock: blocking a GCD thread with a semaphore while a Task on the
+/// cooperative pool tried to send on the same blocked queue. Making
+/// `SessionManager` a plain class eliminates the bridge entirely —
+/// `DaemonPeerHandler` calls methods directly on the daemon queue.
 ///
 /// ## Lifecycle
 ///
 /// 1. The daemon's `main.swift` creates a single `SessionManager` and passes
 ///    it to each ``DaemonPeerHandler`` spawned for incoming XPC connections.
 /// 2. Clients send ``DaemonRequest`` messages, which the peer handler
-///    translates into calls on this actor.
+///    translates into direct synchronous calls on this class.
 /// 3. When a shell process exits, the daemon's `SIGCHLD` handler calls
 ///    ``reapChildren()`` to collect the exit status and clean up.
 /// 4. When the last session is removed, the ``onEmpty`` callback fires so
 ///    the daemon can exit gracefully if configured to do so.
-actor SessionManager {
+final class SessionManager {
 
     // MARK: - State
 
@@ -58,9 +66,9 @@ actor SessionManager {
 
     /// Called when the last session is removed. The daemon uses this to
     /// schedule a graceful exit when no sessions remain.
-    private var onEmpty: (@Sendable () -> Void)?
+    var onEmpty: (() -> Void)?
 
-    private let log = Logger(subsystem: "com.ronnyf.rtermd", category: "SessionManager")
+    private static let log = Logger(subsystem: "com.ronnyf.rtermd", category: "SessionManager")
 
     // MARK: - Session count
 
@@ -73,29 +81,35 @@ actor SessionManager {
 
     /// Spawn a new terminal session with the given shell and initial size.
     ///
-    /// The session is assigned a unique ``SessionID``, added to the registry,
-    /// and its output consumer task is started immediately.
+    /// Allocates a unique ``SessionID``, creates a ``Session`` on the daemon
+    /// queue, wires the `onEnded` callback for PTY EOF handling, stores the
+    /// session in the registry, and starts the output read source.
     ///
     /// - Parameters:
     ///   - shell: Which shell to launch.
     ///   - rows: Initial terminal row count.
     ///   - cols: Initial terminal column count.
+    ///   - queue: The daemon's serial dispatch queue for read source targeting.
     /// - Returns: Metadata about the newly created session.
     /// - Throws: ``DaemonError/spawnFailed(_:)`` if the shell cannot be spawned.
-    func createSession(shell: Shell, rows: UInt16, cols: UInt16) throws -> SessionInfo {
+    func createSession(shell: Shell, rows: UInt16, cols: UInt16, queue: DispatchQueue) throws -> SessionInfo {
         let id = nextID
         nextID += 1
 
         let session: Session
         do {
-            session = try Session(id: id, shell: shell, rows: rows, cols: cols)
+            session = try Session(id: id, shell: shell, rows: rows, cols: cols, queue: queue)
         } catch {
             throw DaemonError.spawnFailed(errno)
         }
 
+        session.onEnded = { [weak self] sessionID in
+            self?.handleSessionEnded(sessionID)
+        }
+
         sessions[id] = session
-        session.startOutputConsumer()
-        log.info("Created session \(id): shell=\(shell.executable), pid=\(session.pid)")
+        session.startOutputHandler()
+        Self.log.info("Created session \(id): shell=\(shell.executable), pid=\(session.pid)")
         return session.info
     }
 
@@ -112,7 +126,7 @@ actor SessionManager {
             throw DaemonError.sessionNotFound(sessionID)
         }
         session.stop()
-        log.info("Destroyed session \(sessionID)")
+        Self.log.info("Destroyed session \(sessionID)")
         checkEmpty()
     }
 
@@ -129,11 +143,11 @@ actor SessionManager {
     ///   - client: The XPC session representing the attaching client.
     /// - Returns: A snapshot of the current terminal screen.
     /// - Throws: ``DaemonError/sessionNotFound(_:)`` if no such session exists.
-    func attach(sessionID: SessionID, client: XPCSession) async throws -> ScreenSnapshot {
+    func attach(sessionID: SessionID, client: XPCSession) throws -> ScreenSnapshot {
         guard let session = sessions[sessionID] else {
             throw DaemonError.sessionNotFound(sessionID)
         }
-        return await session.attach(client: client)
+        return session.attach(client: client)
     }
 
     /// Detach an XPC client from a session.
@@ -191,10 +205,15 @@ actor SessionManager {
 
     /// Reap exited child processes via `waitpid`.
     ///
-    /// Called from the daemon's `SIGCHLD` signal handler. Loops with
-    /// `WNOHANG` to collect all children that have exited since the last
-    /// call, matches each PID to a session, notifies attached clients, and
-    /// removes the session from the registry.
+    /// Called from the daemon's `SIGCHLD` signal handler (which targets the
+    /// daemon queue). Loops with `WNOHANG` to collect all children that have
+    /// exited since the last call, matches each PID to a session, notifies
+    /// attached clients, and removes the session from the registry.
+    ///
+    /// Uses inline bit arithmetic for WIFEXITED/WEXITSTATUS because Swift
+    /// cannot call the C function-like macros directly:
+    /// - `(status & 0x7F) == 0` for WIFEXITED
+    /// - `(status >> 8) & 0xFF` for WEXITSTATUS
     ///
     /// When the last session is reaped, the ``onEmpty`` callback fires.
     func reapChildren() {
@@ -203,22 +222,40 @@ actor SessionManager {
             let pid = waitpid(-1, &status, WNOHANG)
             if pid <= 0 { break }
 
-            // WIFEXITED / WEXITSTATUS are C macros unavailable in Swift; inline the
-            // POSIX bit-arithmetic definitions directly.
             let exited = (status & 0x7F) == 0
             let exitCode: Int32 = exited ? (status >> 8) & 0xFF : -1
 
             guard let (id, session) = sessions.first(where: { $0.value.pid == pid }) else {
-                log.warning("Reaped unknown child pid=\(pid), exit=\(exitCode)")
+                Self.log.warning("Reaped unknown child pid=\(pid), exit=\(exitCode)")
                 continue
             }
 
-            log.info("Session \(id): shell exited with code \(exitCode)")
+            Self.log.info("Session \(id): shell exited with code \(exitCode)")
             session.markExited(exitCode: exitCode)
             session.notifyClientsEnded(exitCode: exitCode)
             sessions.removeValue(forKey: id)
             checkEmpty()
         }
+    }
+
+    // MARK: - Session EOF
+
+    /// Handle PTY EOF for a session.
+    ///
+    /// Called via the session's `onEnded` callback when the read source
+    /// detects EOF or an unrecoverable read error. This is the PTY-driven
+    /// counterpart to ``reapChildren()`` (which is SIGCHLD-driven). Whichever
+    /// fires first removes the session; the other is a no-op because the
+    /// session is already gone.
+    ///
+    /// - Parameter sessionID: The session that ended.
+    private func handleSessionEnded(_ sessionID: SessionID) {
+        guard let session = sessions.removeValue(forKey: sessionID) else {
+            return  // Already reaped by SIGCHLD — nothing to do.
+        }
+        session.stop()
+        Self.log.info("Session \(sessionID): ended via PTY EOF")
+        checkEmpty()
     }
 
     // MARK: - Client disconnect
@@ -243,24 +280,11 @@ actor SessionManager {
     /// Sends `SIGTERM` to every shell, closes all PTYs, and clears the
     /// session registry. Called during daemon shutdown.
     func shutdownAll() {
-        log.info("Shutting down all \(self.sessions.count) sessions")
+        Self.log.info("Shutting down all \(self.sessions.count) sessions")
         for session in sessions.values {
             session.stop()
         }
         sessions.removeAll()
-    }
-
-    // MARK: - On-empty callback
-
-    /// Register a callback invoked when the last session is removed.
-    ///
-    /// The daemon typically uses this to schedule a graceful exit after an
-    /// idle timeout.
-    ///
-    /// - Parameter handler: Closure called on the actor's executor when
-    ///   the session count drops to zero.
-    func setOnEmpty(_ handler: @escaping @Sendable () -> Void) {
-        onEmpty = handler
     }
 
     // MARK: - Private
@@ -268,7 +292,7 @@ actor SessionManager {
     /// Fire the ``onEmpty`` callback if no sessions remain.
     private func checkEmpty() {
         if sessions.isEmpty {
-            log.info("No sessions remaining")
+            Self.log.info("No sessions remaining")
             onEmpty?()
         }
     }
