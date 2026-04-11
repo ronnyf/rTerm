@@ -30,9 +30,9 @@ if [ ! -f "$RTERMD_BIN" ]; then
 fi
 
 # Unload existing daemon before replacing
-if [ -f "$DEST" ]; then
-    launchctl unload "$DEST" 2>/dev/null || true
-fi
+DOMAIN="gui/$(id -u)"
+SERVICE_TARGET="${DOMAIN}/${PLIST_NAME}"
+launchctl bootout "$SERVICE_TARGET" 2>/dev/null || true
 
 # Copy plist and rewrite BundleProgram → Program for direct launchd loading
 cp "$SOURCE" "$DEST"
@@ -43,7 +43,7 @@ cp "$SOURCE" "$DEST"
 /usr/libexec/PlistBuddy -c "Add :ProgramArguments: string ${RTERMD_BIN}" "$DEST"
 
 # Load the daemon
-launchctl load "$DEST"
+launchctl bootstrap "$DOMAIN" "$DEST"
 
 echo "Installed debug daemon: ${RTERMD_BIN}"
 echo "Plist: ${DEST}"
