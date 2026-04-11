@@ -24,9 +24,6 @@
 		E342B09F2F89BA9200AE8AE8 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
 		E342B0A02F89BA9200AE8AE8 /* TermCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E352C4192C2A851400A15DE9 /* AsyncAlgorithms in Frameworks */ = {isa = PBXBuildFile; productRef = E352C4182C2A851400A15DE9 /* AsyncAlgorithms */; };
-		E35D37A92C2B5DEA00F6CF07 /* XPCRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35D37A82C2B5DEA00F6CF07 /* XPCRequest.swift */; };
-		E35D37AD2C2B5E6300F6CF07 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
-		E35D37AF2C2B61E700F6CF07 /* RemotePTY.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35D37AE2C2B61E700F6CF07 /* RemotePTY.swift */; };
 		E36EA6F92C73BECC00F9A403 /* RingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E36EA6F82C73BECC00F9A403 /* RingBuffer.swift */; };
 		E3984D1D2F881BBA00E1859B /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
 		E3984D1E2F881BBA00E1859B /* TermCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -42,7 +39,6 @@
 		E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */; };
 		E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E3BB01102C80B10000BB0001 /* Shaders.metal */; };
 		E3C634DC2C34B23D00BF09C7 /* TermMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C634DB2C34B23D00BF09C7 /* TermMessage.swift */; };
-		E3C634DD2C34B29900BF09C7 /* SessionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35D37B02C2B973200F6CF07 /* SessionHandler.swift */; };
 		E3C634DF2C34BDEB00BF09C7 /* Logging.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C634DE2C34BDEB00BF09C7 /* Logging.swift */; };
 		E3C634E12C3507E800BF09C7 /* ScreenBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C634E02C3507E800BF09C7 /* ScreenBuffer.swift */; };
 		E3C6C9142C251E8600D1AC70 /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C6C9132C251E8600D1AC70 /* Shell.swift */; };
@@ -50,11 +46,6 @@
 		E3CC01022F87A10000CC0001 /* PseudoTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */; };
 		E3DC01012F89B10000DC0001 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DC01002F89B10000DC0001 /* DaemonClient.swift */; };
 		E3DD01012F88C10000DD0001 /* CodableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DD01002F88C10000DD0001 /* CodableTests.swift */; };
-		E3E00E522C27574F00DE1213 /* PTYResponder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00E512C27574F00DE1213 /* PTYResponder.swift */; };
-		E3E00E562C27574F00DE1213 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00E552C27574F00DE1213 /* main.swift */; };
-		E3E00E5B2C27574F00DE1213 /* rTermSupport.xpc in Embed XPC Services */ = {isa = PBXBuildFile; fileRef = E3E00E4F2C27574F00DE1213 /* rTermSupport.xpc */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		E3E00E7C2C27770B00DE1213 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00E7B2C27770B00DE1213 /* main.swift */; };
-		E3E00EDD2C277F0300DE1213 /* SessionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EDC2C277F0300DE1213 /* SessionHandler.swift */; };
 		E3E00EDF2C277F8E00DE1213 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EDE2C277F8E00DE1213 /* Agent.swift */; };
 		E3E00EE32C27816600DE1213 /* PseudoTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */; };
 		E3E00EE52C2781CC00DE1213 /* PTY.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE42C2781CC00DE1213 /* PTY.swift */; };
@@ -120,26 +111,12 @@
 			remoteGlobalIDString = E30920D42C23FF7800B6D264;
 			remoteInfo = TermUI;
 		};
-		E35D37AA2C2B5E5C00F6CF07 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = E30920792C23FF0600B6D264 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = E30920B32C23FF6800B6D264;
-			remoteInfo = TermCore;
-		};
 		E3CDC3042F89597200B5D830 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E30920792C23FF0600B6D264 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = E3CD420E2F88B8D200B5D830;
 			remoteInfo = rtermd;
-		};
-		E3E00E592C27574F00DE1213 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = E30920792C23FF0600B6D264 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = E3E00E4E2C27574F00DE1213;
-			remoteInfo = rTermSupport;
 		};
 		E3FF01022F89A10000FF0003 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -186,23 +163,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 1;
 		};
-		E3E00E5F2C27574F00DE1213 /* Embed XPC Services */ = {
-			isa = PBXCopyFilesBuildPhase;
-			dstPath = "$(CONTENTS_FOLDER_PATH)/XPCServices";
-			dstSubfolder = Product;
-			files = (
-				E3E00E5B2C27574F00DE1213 /* rTermSupport.xpc in Embed XPC Services */,
-			);
-			name = "Embed XPC Services";
-		};
-		E3E00E772C27770B00DE1213 /* CopyFiles */ = {
-			isa = PBXCopyFilesBuildPhase;
-			dstPath = /usr/share/man/man1/;
-			dstSubfolder = None;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 1;
-		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -224,9 +184,6 @@
 		E30920D72C23FF7800B6D264 /* TermUI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TermUI.h; sourceTree = "<group>"; };
 		E30920DC2C23FF7800B6D264 /* TermUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TermUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E30920E32C23FF7800B6D264 /* TermUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermUITests.swift; sourceTree = "<group>"; };
-		E35D37A82C2B5DEA00F6CF07 /* XPCRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XPCRequest.swift; sourceTree = "<group>"; };
-		E35D37AE2C2B61E700F6CF07 /* RemotePTY.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePTY.swift; sourceTree = "<group>"; };
-		E35D37B02C2B973200F6CF07 /* SessionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHandler.swift; sourceTree = "<group>"; };
 		E36EA6F82C73BECC00F9A403 /* RingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingBuffer.swift; sourceTree = "<group>"; };
 		E39E64772C3DC7BA0035B75D /* CircularCollection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CircularCollection.swift; sourceTree = "<group>"; };
 		E3AA01012C80A10000AA0001 /* TerminalEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalEvent.swift; sourceTree = "<group>"; };
@@ -250,15 +207,6 @@
 		E3CD94012F882B4200B5D830 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		E3DC01002F89B10000DC0001 /* DaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonClient.swift; sourceTree = "<group>"; };
 		E3DD01002F88C10000DD0001 /* CodableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableTests.swift; sourceTree = "<group>"; };
-		E3E00E4F2C27574F00DE1213 /* rTermSupport.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = rTermSupport.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
-		E3E00E512C27574F00DE1213 /* PTYResponder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTYResponder.swift; sourceTree = "<group>"; };
-		E3E00E552C27574F00DE1213 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		E3E00E572C27574F00DE1213 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		E3E00E582C27574F00DE1213 /* rTermSupport.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rTermSupport.entitlements; sourceTree = "<group>"; };
-		E3E00E792C27770B00DE1213 /* rTermLauncher */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = rTermLauncher; sourceTree = BUILT_PRODUCTS_DIR; };
-		E3E00E7B2C27770B00DE1213 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		E3E00E802C27773600DE1213 /* com.ronnyf.rTermLauncher.agent.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.ronnyf.rTermLauncher.agent.plist; sourceTree = "<group>"; };
-		E3E00EDC2C277F0300DE1213 /* SessionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHandler.swift; sourceTree = "<group>"; };
 		E3E00EDE2C277F8E00DE1213 /* Agent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Agent.swift; sourceTree = "<group>"; };
 		E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminal.swift; sourceTree = "<group>"; };
 		E3E00EE42C2781CC00DE1213 /* PTY.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTY.swift; sourceTree = "<group>"; };
@@ -343,17 +291,6 @@
 				E3FF01002F89A10000FF0001 /* TermCore.framework in Frameworks */,
 			);
 		};
-		E3E00E4C2C27574F00DE1213 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			files = (
-				E35D37AD2C2B5E6300F6CF07 /* TermCore.framework in Frameworks */,
-			);
-		};
-		E3E00E762C27770B00DE1213 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			files = (
-			);
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -370,8 +307,6 @@
 				E30920C12C23FF6800B6D264 /* TermCoreTests */,
 				E30920D62C23FF7800B6D264 /* TermUI */,
 				E30920E22C23FF7800B6D264 /* TermUITests */,
-				E3E00E502C27574F00DE1213 /* rTermSupport */,
-				E3E00E7A2C27770B00DE1213 /* rTermLauncher */,
 				E3CD42102F88B8D200B5D830 /* rtermd */,
 				E30920822C23FF0600B6D264 /* Products */,
 				E35D37AC2C2B5E6300F6CF07 /* Frameworks */,
@@ -388,8 +323,6 @@
 				E30920BB2C23FF6800B6D264 /* TermCoreTests.xctest */,
 				E30920D52C23FF7800B6D264 /* TermUI.framework */,
 				E30920DC2C23FF7800B6D264 /* TermUITests.xctest */,
-				E3E00E4F2C27574F00DE1213 /* rTermSupport.xpc */,
-				E3E00E792C27770B00DE1213 /* rTermLauncher */,
 				E3CD420F2F88B8D200B5D830 /* rtermd */,
 			);
 			name = Products;
@@ -445,10 +378,7 @@
 				E3E00EDE2C277F8E00DE1213 /* Agent.swift */,
 				E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */,
 				E3E00EE42C2781CC00DE1213 /* PTY.swift */,
-				E35D37A82C2B5DEA00F6CF07 /* XPCRequest.swift */,
 				E3C634DB2C34B23D00BF09C7 /* TermMessage.swift */,
-				E35D37AE2C2B61E700F6CF07 /* RemotePTY.swift */,
-				E35D37B02C2B973200F6CF07 /* SessionHandler.swift */,
 				E3C634DE2C34BDEB00BF09C7 /* Logging.swift */,
 				E3C634E02C3507E800BF09C7 /* ScreenBuffer.swift */,
 				E39E64772C3DC7BA0035B75D /* CircularCollection.swift */,
@@ -499,27 +429,6 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
-		E3E00E502C27574F00DE1213 /* rTermSupport */ = {
-			isa = PBXGroup;
-			children = (
-				E3E00E552C27574F00DE1213 /* main.swift */,
-				E3E00E512C27574F00DE1213 /* PTYResponder.swift */,
-				E3E00E572C27574F00DE1213 /* Info.plist */,
-				E3E00E582C27574F00DE1213 /* rTermSupport.entitlements */,
-			);
-			path = rTermSupport;
-			sourceTree = "<group>";
-		};
-		E3E00E7A2C27770B00DE1213 /* rTermLauncher */ = {
-			isa = PBXGroup;
-			children = (
-				E3E00E802C27773600DE1213 /* com.ronnyf.rTermLauncher.agent.plist */,
-				E3E00E7B2C27770B00DE1213 /* main.swift */,
-				E3E00EDC2C277F0300DE1213 /* SessionHandler.swift */,
-			);
-			path = rTermLauncher;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -546,7 +455,6 @@
 				E309207E2C23FF0600B6D264 /* Frameworks */,
 				E309207F2C23FF0600B6D264 /* Resources */,
 				E30920C92C23FF6800B6D264 /* Embed Frameworks */,
-				E3E00E5F2C27574F00DE1213 /* Embed XPC Services */,
 				E3CD0BBC2F89882100B5D830 /* Copy launchd plist */,
 				E3CD0BC42F898CB100B5D830 /* Copy launchd plist - debug only */,
 			);
@@ -556,7 +464,6 @@
 				E3CDC3052F89597200B5D830 /* PBXTargetDependency */,
 				E30920C62C23FF6800B6D264 /* PBXTargetDependency */,
 				E30920E72C23FF7800B6D264 /* PBXTargetDependency */,
-				E3E00E5A2C27574F00DE1213 /* PBXTargetDependency */,
 			);
 			name = rTerm;
 			productName = rTerm;
@@ -694,39 +601,6 @@
 			productReference = E3CD420F2F88B8D200B5D830 /* rtermd */;
 			productType = "com.apple.product-type.tool";
 		};
-		E3E00E4E2C27574F00DE1213 /* rTermSupport */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = E3E00E5C2C27574F00DE1213 /* Build configuration list for PBXNativeTarget "rTermSupport" */;
-			buildPhases = (
-				E3E00E4B2C27574F00DE1213 /* Sources */,
-				E3E00E4C2C27574F00DE1213 /* Frameworks */,
-				E3E00E4D2C27574F00DE1213 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				E35D37AB2C2B5E5C00F6CF07 /* PBXTargetDependency */,
-			);
-			name = rTermSupport;
-			productName = rTermSupport;
-			productReference = E3E00E4F2C27574F00DE1213 /* rTermSupport.xpc */;
-			productType = "com.apple.product-type.xpc-service";
-		};
-		E3E00E782C27770B00DE1213 /* rTermLauncher */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = E3E00E7D2C27770B00DE1213 /* Build configuration list for PBXNativeTarget "rTermLauncher" */;
-			buildPhases = (
-				E3E00E752C27770B00DE1213 /* Sources */,
-				E3E00E762C27770B00DE1213 /* Frameworks */,
-				E3E00E772C27770B00DE1213 /* CopyFiles */,
-			);
-			buildRules = (
-			);
-			name = rTermLauncher;
-			productName = rTermLauncher;
-			productReference = E3E00E792C27770B00DE1213 /* rTermLauncher */;
-			productType = "com.apple.product-type.tool";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -767,12 +641,6 @@
 					E3CD420E2F88B8D200B5D830 = {
 						CreatedOnToolsVersion = 27.0;
 					};
-					E3E00E4E2C27574F00DE1213 = {
-						CreatedOnToolsVersion = 16.0;
-					};
-					E3E00E782C27770B00DE1213 = {
-						CreatedOnToolsVersion = 16.0;
-					};
 				};
 			};
 			buildConfigurationList = E309207C2C23FF0600B6D264 /* Build configuration list for PBXProject "rTerm" */;
@@ -798,8 +666,6 @@
 				E30920BA2C23FF6800B6D264 /* TermCoreTests */,
 				E30920D42C23FF7800B6D264 /* TermUI */,
 				E30920DB2C23FF7800B6D264 /* TermUITests */,
-				E3E00E4E2C27574F00DE1213 /* rTermSupport */,
-				E3E00E782C27770B00DE1213 /* rTermLauncher */,
 				E3CD420E2F88B8D200B5D830 /* rtermd */,
 			);
 		};
@@ -839,11 +705,6 @@
 			);
 		};
 		E30920DA2C23FF7800B6D264 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			files = (
-			);
-		};
-		E3E00E4D2C27574F00DE1213 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -903,15 +764,12 @@
 				E3C634DC2C34B23D00BF09C7 /* TermMessage.swift in Sources */,
 				E3C634E12C3507E800BF09C7 /* ScreenBuffer.swift in Sources */,
 				E39E64782C3DC7BA0035B75D /* CircularCollection.swift in Sources */,
-				E3C634DD2C34B29900BF09C7 /* SessionHandler.swift in Sources */,
 				E3C6C9142C251E8600D1AC70 /* Shell.swift in Sources */,
 				E36EA6F92C73BECC00F9A403 /* RingBuffer.swift in Sources */,
 				E3E00EE52C2781CC00DE1213 /* PTY.swift in Sources */,
 				E3E00EDF2C277F8E00DE1213 /* Agent.swift in Sources */,
-				E35D37AF2C2B61E700F6CF07 /* RemotePTY.swift in Sources */,
 				E3E00EE32C27816600DE1213 /* PseudoTerminal.swift in Sources */,
 				E3C634DF2C34BDEB00BF09C7 /* Logging.swift in Sources */,
-				E35D37A92C2B5DEA00F6CF07 /* XPCRequest.swift in Sources */,
 				E3AA01022C80A10000AA0001 /* TerminalEvent.swift in Sources */,
 				E3AA01042C80A10000AA0001 /* TerminalParser.swift in Sources */,
 				E3AA01062C80A10000AA0001 /* Cell.swift in Sources */,
@@ -945,20 +803,6 @@
 		E3CD420B2F88B8D200B5D830 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
-			);
-		};
-		E3E00E4B2C27574F00DE1213 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			files = (
-				E3E00E522C27574F00DE1213 /* PTYResponder.swift in Sources */,
-				E3E00E562C27574F00DE1213 /* main.swift in Sources */,
-			);
-		};
-		E3E00E752C27770B00DE1213 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			files = (
-				E3E00E7C2C27770B00DE1213 /* main.swift in Sources */,
-				E3E00EDD2C277F0300DE1213 /* SessionHandler.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -1004,20 +848,10 @@
 			target = E30920D42C23FF7800B6D264 /* TermUI */;
 			targetProxy = E30920E62C23FF7800B6D264 /* PBXContainerItemProxy */;
 		};
-		E35D37AB2C2B5E5C00F6CF07 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = E30920B32C23FF6800B6D264 /* TermCore */;
-			targetProxy = E35D37AA2C2B5E5C00F6CF07 /* PBXContainerItemProxy */;
-		};
 		E3CDC3052F89597200B5D830 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = E3CD420E2F88B8D200B5D830 /* rtermd */;
 			targetProxy = E3CDC3042F89597200B5D830 /* PBXContainerItemProxy */;
-		};
-		E3E00E5A2C27574F00DE1213 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = E3E00E4E2C27574F00DE1213 /* rTermSupport */;
-			targetProxy = E3E00E592C27574F00DE1213 /* PBXContainerItemProxy */;
 		};
 		E3FF01042F89A10000FF0005 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1588,88 +1422,6 @@
 			};
 			name = Release;
 		};
-		E3E00E5D2C27574F00DE1213 /* Debug configuration for PBXNativeTarget "rTermSupport" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = rTermSupport/rTermSupport.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = rTermSupport/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = rTermSupport;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@loader_path/../../../../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rTermSupport;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SKIP_INSTALL = YES;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Debug;
-		};
-		E3E00E5E2C27574F00DE1213 /* Release configuration for PBXNativeTarget "rTermSupport" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = rTermSupport/rTermSupport.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = rTermSupport/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = rTermSupport;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@loader_path/../../../../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rTermSupport;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SKIP_INSTALL = YES;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Release;
-		};
-		E3E00E7E2C27770B00DE1213 /* Debug configuration for PBXNativeTarget "rTermLauncher" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALLOW_TARGET_PLATFORM_SPECIALIZATION = YES;
-				CODE_SIGN_STYLE = Automatic;
-				DEAD_CODE_STRIPPING = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_VERSION = 5.0;
-			};
-			name = Debug;
-		};
-		E3E00E7F2C27770B00DE1213 /* Release configuration for PBXNativeTarget "rTermLauncher" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALLOW_TARGET_PLATFORM_SPECIALIZATION = YES;
-				CODE_SIGN_STYLE = Automatic;
-				DEAD_CODE_STRIPPING = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_VERSION = 5.0;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1742,22 +1494,6 @@
 			buildConfigurations = (
 				E3CD42142F88B8D200B5D830 /* Debug configuration for PBXNativeTarget "rtermd" */,
 				E3CD42152F88B8D200B5D830 /* Release configuration for PBXNativeTarget "rtermd" */,
-			);
-			defaultConfigurationName = Release;
-		};
-		E3E00E5C2C27574F00DE1213 /* Build configuration list for PBXNativeTarget "rTermSupport" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				E3E00E5D2C27574F00DE1213 /* Debug configuration for PBXNativeTarget "rTermSupport" */,
-				E3E00E5E2C27574F00DE1213 /* Release configuration for PBXNativeTarget "rTermSupport" */,
-			);
-			defaultConfigurationName = Release;
-		};
-		E3E00E7D2C27770B00DE1213 /* Build configuration list for PBXNativeTarget "rTermLauncher" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				E3E00E7E2C27770B00DE1213 /* Debug configuration for PBXNativeTarget "rTermLauncher" */,
-				E3E00E7F2C27770B00DE1213 /* Release configuration for PBXNativeTarget "rTermLauncher" */,
 			);
 			defaultConfigurationName = Release;
 		};
