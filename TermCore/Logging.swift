@@ -17,6 +17,7 @@ extension Logger {
         static let screenBuffer = Logger(subsystem: subsystem, category: "ScreenBuffer")
         static let pseudoTerminal = Logger(subsystem: subsystem, category: "PseudoTerminal")
         static let screenModel = Logger(subsystem: subsystem, category: "ScreenModel")
+        static let daemonClient = Logger(subsystem: subsystem, category: "DaemonClient")
     }
 //    static let general = Logger(subsystem: subsystem, category: "TermCore")
 }

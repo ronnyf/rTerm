@@ -203,6 +203,62 @@ struct ScreenModelTests {
         #expect(lockSnap == actorSnap, "Lock-based latestSnapshot must equal actor-isolated snapshot after apply")
     }
 
+    // MARK: - Restore from snapshot
+
+    @Test func restoreFromSnapshot() async {
+        let model = ScreenModel(cols: 4, rows: 3)
+        await model.apply([.printable("A"), .printable("B"), .newline, .printable("C")])
+        let saved = await model.snapshot()
+
+        // Mutate the model further so state diverges from the saved snapshot.
+        await model.apply([.printable("Z"), .printable("Z")])
+
+        // Restore should reset the model to the saved state.
+        await model.restore(from: saved)
+        let restored = await model.snapshot()
+
+        #expect(restored == saved, "Restored snapshot must equal the saved snapshot")
+        #expect(restored.cursor == Cursor(row: 1, col: 1))
+        #expect(restored[0, 0].character == "A")
+        #expect(restored[0, 1].character == "B")
+        #expect(restored[1, 0].character == "C")
+    }
+
+    @Test func restoreUpdatesLatestSnapshot() async {
+        let model = ScreenModel(cols: 4, rows: 3)
+        await model.apply([.printable("X")])
+
+        // Build a snapshot to restore from.
+        let target = ScreenSnapshot(
+            cells: ContiguousArray(repeating: Cell(character: "Q"), count: 12),
+            cols: 4,
+            rows: 3,
+            cursor: Cursor(row: 2, col: 3)
+        )
+
+        await model.restore(from: target)
+
+        // The lock-based latestSnapshot must also reflect the restore.
+        let lockSnap = model.latestSnapshot()
+        #expect(lockSnap == target, "latestSnapshot() must match after restore")
+    }
+
+    @Test func restoreAllowsFurtherApply() async {
+        let model = ScreenModel(cols: 4, rows: 3)
+        await model.apply([.printable("A"), .printable("B")])
+        let saved = await model.snapshot()
+
+        // Restore and then apply more events on top.
+        await model.restore(from: saved)
+        await model.apply([.printable("C")])
+        let snap = await model.snapshot()
+
+        #expect(snap[0, 0].character == "A")
+        #expect(snap[0, 1].character == "B")
+        #expect(snap[0, 2].character == "C", "Apply after restore writes at the restored cursor")
+        #expect(snap.cursor == Cursor(row: 0, col: 3))
+    }
+
     // MARK: - Deferred wrap then newline moves one row
 
     @Test func deferredWrapThenNewline() async {

@@ -7,7 +7,7 @@
 
 import Foundation
 import System
-import XPCOverlay
+import XPC
 
 public struct XPCRequest {
     

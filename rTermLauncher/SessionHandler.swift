@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import XPCOverlay
+import XPC
 import OSLog
 import TermCore
 
