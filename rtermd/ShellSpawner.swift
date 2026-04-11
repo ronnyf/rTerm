@@ -43,37 +43,37 @@ enum SpawnError: Error {
     case forkFailed(Int32)
 }
 
-// MARK: - ShellSpawner
+// MARK: - Shell + Spawn
 
-/// Pure-Swift `forkpty` wrapper that spawns a shell with proper job control,
-/// file descriptor hygiene, and pre-fork environment construction.
-///
-/// Design constraints enforced here:
-/// - All `argv` and `envp` C strings are allocated **before** `fork` so the
-///   child never touches the Swift runtime (no String bridging, no allocation).
-/// - File descriptors above stderr are closed in the child.
-/// - SIGTTIN / SIGTTOU / SIGTSTP are blocked around `tcsetpgrp` in the child.
-/// - `FD_CLOEXEC` is set on the primary FD in the parent.
-/// - `execve` (not `execvp`) is used for explicit path control.
-enum ShellSpawner {
+extension Shell {
 
     /// Spawn a shell process inside a new PTY with the given window dimensions.
     ///
+    /// Pure-Swift `forkpty` wrapper with proper job control, file descriptor
+    /// hygiene, and pre-fork environment construction.
+    ///
+    /// Design constraints enforced here:
+    /// - All `argv` and `envp` C strings are allocated **before** `fork` so the
+    ///   child never touches the Swift runtime (no String bridging, no allocation).
+    /// - File descriptors above stderr are closed in the child.
+    /// - SIGTTIN / SIGTTOU / SIGTSTP are blocked around `tcsetpgrp` in the child.
+    /// - `FD_CLOEXEC` is set on the primary FD in the parent.
+    /// - `execve` (not `execvp`) is used for explicit path control.
+    ///
     /// - Parameters:
-    ///   - shell: Which shell to launch (determines executable path and default arguments).
     ///   - rows: Initial terminal row count.
     ///   - cols: Initial terminal column count.
     /// - Returns: A ``SpawnResult`` containing the child PID, primary FD, and TTY device name.
     /// - Throws: ``SpawnError/forkFailed(_:)`` if `forkpty` fails.
-    static func spawn(shell: Shell, rows: UInt16, cols: UInt16) throws -> SpawnResult {
+    func spawn(rows: UInt16, cols: UInt16) throws -> SpawnResult {
 
         // ---------------------------------------------------------------
         // 1. Build argv and envp BEFORE fork.
         //    After fork the child must not call into the Swift runtime.
         // ---------------------------------------------------------------
 
-        let executablePath = shell.executable
-        let args = [executablePath] + shell.defaultArguments
+        let executablePath = self.executable
+        let args = [executablePath] + self.defaultArguments
 
         // strdup each argument so we hold C-heap pointers the child can use directly.
         let cArgs = args.map { strdup($0)! }
@@ -83,7 +83,7 @@ enum ShellSpawner {
         var argv: [UnsafeMutablePointer<CChar>?] = cArgs.map { $0 }
         argv.append(nil)
 
-        let envPairs = buildEnvironment(shell: shell)
+        let envPairs = Self.buildEnvironment(shell: self)
         let cEnv = envPairs.map { strdup($0)! }
         defer { cEnv.forEach { free($0) } }
 
@@ -97,7 +97,7 @@ enum ShellSpawner {
         var ws = winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
 
         // ---------------------------------------------------------------
-        // 3. forkpty — creates the PTY pair, forks, and in the child sets
+        // 3. forkpty -- creates the PTY pair, forks, and in the child sets
         //    up setsid + login_tty (opens secondary on stdin/stdout/stderr).
         // ---------------------------------------------------------------
 
@@ -108,15 +108,15 @@ enum ShellSpawner {
 
         if pid == 0 {
             // =============================================================
-            // CHILD — async-signal-safe only from here on.
+            // CHILD -- async-signal-safe only from here on.
             // No Swift String, no ARC, no allocation.
             // =============================================================
 
-            closeFDsAboveStderr()
-            blockSignalsAndSetForeground()
+            Self.closeFDsAboveStderr()
+            Self.blockSignalsAndSetForeground()
 
             // execve replaces the process image.  Use cArgs[0] (a C pointer),
-            // never executablePath (a Swift String — bridging would allocate).
+            // never executablePath (a Swift String -- bridging would allocate).
             execve(cArgs[0], &argv, &envp)
 
             // If execve returns, the exec failed. _exit avoids running Swift
@@ -206,7 +206,7 @@ enum ShellSpawner {
             }
 
             if let fd, fd != dirFD {
-                close(fd)
+                Darwin.close(fd)
             }
         }
 

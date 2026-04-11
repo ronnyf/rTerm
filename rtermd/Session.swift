@@ -32,7 +32,7 @@ import XPC
 /// Per-session state for a terminal managed by the daemon.
 ///
 /// Each `Session` owns:
-/// - A shell process spawned via `forkpty` (through ``ShellSpawner``)
+/// - A shell process spawned via `forkpty` (through ``Shell/spawn(rows:cols:)``)
 /// - The primary file descriptor of the PTY pair
 /// - A `TerminalParser` that converts raw bytes into `TerminalEvent` values
 /// - A `ScreenModel` actor that maintains the current terminal grid
@@ -40,7 +40,7 @@ import XPC
 ///
 /// ## Concurrency model
 ///
-/// Session is a plain class — not Sendable, not an actor. All access is
+/// Session is a plain class -- not Sendable, not an actor. All access is
 /// serialized by the daemon queue. No locks, no async streams, no tasks
 /// for output consumption. The PTY read source targets the daemon queue
 /// directly, so output handling runs inline with all other state mutations.
@@ -93,7 +93,7 @@ final class Session {
     /// daemon state access.
     private var readSource: DispatchSourceRead?
 
-    /// The daemon's serial queue — stored for read source targeting.
+    /// The daemon's serial queue -- stored for read source targeting.
     private let queue: DispatchQueue
 
     // MARK: - Logging
@@ -112,7 +112,7 @@ final class Session {
     ///   - queue: The daemon's serial dispatch queue for read source targeting.
     /// - Throws: ``SpawnError`` if `forkpty` fails.
     init(id: SessionID, shell: Shell, rows: UInt16, cols: UInt16, queue: DispatchQueue) throws {
-        let result = try ShellSpawner.spawn(shell: shell, rows: rows, cols: cols)
+        let result = try shell.spawn(rows: rows, cols: cols)
 
         self.id = id
         self.shell = shell
@@ -130,8 +130,14 @@ final class Session {
     }
 
     deinit {
-        guard !isStopped else { return }
-        teardown()
+        if readSource == nil && !isStopped {
+            // startOutputHandler() was never called, so no cancel handler
+            // will close the FD. Close it directly as a fallback.
+            close(primaryFD)
+        }
+        if !isStopped {
+            kill(pid, SIGTERM)
+        }
     }
 
     // MARK: - Output handler
@@ -145,9 +151,11 @@ final class Session {
     /// 4. Fire-and-forget applies events to `ScreenModel` for reattach snapshots
     /// 5. Fans out `DaemonResponse.output` to all attached XPC clients
     ///
-    /// Call once after `init`. Preconditions that no source is already installed.
+    /// Call once after `init`. Preconditions that no source is already installed
+    /// and that `onEnded` has been set.
     func startOutputHandler() {
         precondition(readSource == nil, "startOutputHandler() called twice")
+        precondition(onEnded != nil, "onEnded must be set before starting output handler")
 
         let source = DispatchSource.makeReadSource(fileDescriptor: primaryFD, queue: queue)
 
@@ -156,9 +164,9 @@ final class Session {
             self.handleReadEvent()
         }
 
-        source.setCancelHandler { [weak self] in
-            guard let self else { return }
-            Self.log.debug("Session \(self.id): read source cancelled")
+        source.setCancelHandler { [primaryFD] in
+            close(primaryFD)
+            Self.log.debug("Session read source cancelled, FD \(primaryFD) closed")
         }
 
         self.readSource = source
@@ -169,25 +177,34 @@ final class Session {
     private func handleReadEvent() {
         // Read into a stack buffer. 16 KiB matches typical PTY chunk sizes
         // and avoids heap allocation for the common case.
-        let bufferSize = 16_384
-        let data: Data = withUnsafeTemporaryAllocation(
-            byteCount: bufferSize, alignment: MemoryLayout<UInt8>.alignment
-        ) { buffer in
-            let bytesRead = Darwin.read(primaryFD, buffer.baseAddress!, bufferSize)
-            if bytesRead <= 0 {
-                return Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        let bytesRead = Darwin.read(primaryFD, &buffer, buffer.count)
+
+        if bytesRead < 0 {
+            let readErrno = errno
+            switch readErrno {
+            case EINTR, EAGAIN, EWOULDBLOCK:
+                // Transient condition -- the source will fire again.
+                return
+            default:
+                Self.log.error("Session \(self.id): PTY read failed: errno=\(readErrno)")
+                readSource?.cancel()
+                readSource = nil
+                onEnded?(id)
+                return
             }
-            return Data(bytes: buffer.baseAddress!, count: bytesRead)
         }
 
-        if data.isEmpty {
-            // EOF or error — shell closed the PTY secondary.
+        if bytesRead == 0 {
+            // Genuine EOF -- shell closed the PTY secondary.
             readSource?.cancel()
             readSource = nil
             Self.log.info("Session \(self.id): PTY EOF")
             onEnded?(id)
             return
         }
+
+        let data = Data(bytes: buffer, count: bytesRead)
 
         // 1. Parse raw bytes into terminal events.
         let events = parser.parse(data)
@@ -205,7 +222,7 @@ final class Session {
 
     /// Send raw output data to all currently attached XPC clients.
     ///
-    /// Send failures are logged but do not remove the client — the client's
+    /// Send failures are logged but do not remove the client -- the client's
     /// XPC cancellation handler drives cleanup via `detach`.
     private func fanOutToClients(_ data: Data) {
         guard !attachedClients.isEmpty else { return }
@@ -226,7 +243,7 @@ final class Session {
     /// The client is added to the fan-out list **first**, then a screen
     /// snapshot is taken. This ordering ensures that output arriving between
     /// the add and the snapshot is delivered to the client (it may receive
-    /// some data twice — once via fan-out, once baked into the snapshot —
+    /// some data twice -- once via fan-out, once baked into the snapshot --
     /// but `restore(from:)` on the client side overwrites with the
     /// authoritative snapshot, so this is harmless). The alternative
     /// (snapshot-then-add) risks losing output in the gap.
@@ -242,7 +259,7 @@ final class Session {
 
     /// Detach an XPC client from this session.
     ///
-    /// The client is removed by identity. The session continues running —
+    /// The client is removed by identity. The session continues running --
     /// detach does not terminate the shell.
     ///
     /// - Parameter client: The XPC session to detach.
@@ -305,7 +322,7 @@ final class Session {
     /// Record that the shell process has exited.
     ///
     /// Called by ``SessionManager`` when `waitpid` reaps the child. This
-    /// updates internal state but does not notify clients — call
+    /// updates internal state but does not notify clients -- call
     /// ``notifyClientsEnded(exitCode:)`` separately after bookkeeping.
     ///
     /// - Parameter exitCode: The shell's exit status.
@@ -353,8 +370,8 @@ final class Session {
 
     // MARK: - Teardown
 
-    /// Stop the session: cancel the read source, send SIGTERM to the shell,
-    /// and close the primary FD.
+    /// Stop the session: cancel the read source (whose cancel handler closes
+    /// the primary FD) and send SIGTERM to the shell.
     ///
     /// After `stop()`, the session is inert and should be removed from
     /// ``SessionManager``.
@@ -364,12 +381,15 @@ final class Session {
         Self.log.info("Session \(self.id): stopped")
     }
 
-    /// Shared teardown logic for `stop()` and `deinit`.
+    /// Shared teardown logic for `stop()`.
+    ///
+    /// The primary FD is closed by the dispatch source's cancel handler,
+    /// not directly here, to avoid use-after-close races where the source's
+    /// event handler could fire on a recycled FD.
     private func teardown() {
         isStopped = true
         readSource?.cancel()
         readSource = nil
         kill(pid, SIGTERM)
-        close(primaryFD)
     }
 }
