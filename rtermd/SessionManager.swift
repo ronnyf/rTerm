@@ -64,11 +64,26 @@ final class SessionManager {
     /// Monotonically increasing counter for session IDs.
     private var nextID: SessionID = 0
 
+    /// The daemon's serial dispatch queue. All access to this class is
+    /// serialized on this queue; it is also used as the target queue for
+    /// per-session dispatch sources.
+    private let queue: DispatchQueue
+
     /// Called when the last session is removed. The daemon uses this to
     /// schedule a graceful exit when no sessions remain.
-    var onEmpty: (() -> Void)?
+    private(set) var onEmpty: (() -> Void)?
 
     private static let log = Logger(subsystem: "com.ronnyf.rtermd", category: "SessionManager")
+
+    // MARK: - Init
+
+    /// Create a new session manager.
+    ///
+    /// - Parameter queue: The daemon's serial dispatch queue. Passed through
+    ///   to each ``Session`` for dispatch source targeting.
+    init(queue: DispatchQueue) {
+        self.queue = queue
+    }
 
     // MARK: - Session count
 
@@ -89,18 +104,22 @@ final class SessionManager {
     ///   - shell: Which shell to launch.
     ///   - rows: Initial terminal row count.
     ///   - cols: Initial terminal column count.
-    ///   - queue: The daemon's serial dispatch queue for read source targeting.
     /// - Returns: Metadata about the newly created session.
     /// - Throws: ``DaemonError/spawnFailed(_:)`` if the shell cannot be spawned.
-    func createSession(shell: Shell, rows: UInt16, cols: UInt16, queue: DispatchQueue) throws -> SessionInfo {
+    func createSession(shell: Shell, rows: UInt16, cols: UInt16) throws -> SessionInfo {
         let id = nextID
         nextID += 1
 
         let session: Session
         do {
             session = try Session(id: id, shell: shell, rows: rows, cols: cols, queue: queue)
+        } catch let spawnError as SpawnError {
+            switch spawnError {
+            case .forkFailed(let errNo):
+                throw DaemonError.spawnFailed(errNo)
+            }
         } catch {
-            throw DaemonError.spawnFailed(errno)
+            throw DaemonError.internalError(error.localizedDescription)
         }
 
         session.onEnded = { [weak self] sessionID in
@@ -281,10 +300,12 @@ final class SessionManager {
     /// session registry. Called during daemon shutdown.
     func shutdownAll() {
         Self.log.info("Shutting down all \(self.sessions.count) sessions")
-        for session in sessions.values {
+        let allSessions = Array(sessions.values)
+        sessions.removeAll()
+        for session in allSessions {
+            session.onEnded = nil  // prevent callback into empty dictionary
             session.stop()
         }
-        sessions.removeAll()
     }
 
     // MARK: - Private
