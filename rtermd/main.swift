@@ -37,15 +37,21 @@ private let log = Logger(subsystem: "com.ronnyf.rtermd", category: "main")
 
 log.info("rtermd starting (pid=\(getpid()))")
 
-let sessionManager = SessionManager()
+// Single serial queue -- the backbone of the daemon's concurrency model.
+// Every piece of mutable state is accessed exclusively from this queue:
+// SessionManager, Session instances, DaemonPeerHandler actors (via custom
+// executor), signal handlers, and the idle-exit timer.
+let daemonQueue = DispatchQueue(label: "com.ronnyf.rtermd.daemon")
+
+let sessionManager = SessionManager(queue: daemonQueue)
 
 // MARK: - XPC Listener
 
 let listener: XPCListener
 do {
-    listener = try XPCListener(service: serviceName) { request in
+    listener = try XPCListener(service: serviceName, targetQueue: daemonQueue) { request in
         request.accept { session in
-            DaemonPeerHandler(session: session, manager: sessionManager)
+            DaemonPeerHandler(session: session, manager: sessionManager, queue: daemonQueue)
         }
     }
 } catch {
@@ -55,69 +61,56 @@ do {
 
 log.info("XPC listener active on \(serviceName)")
 
-// MARK: - Signal handling: SIGTERM
+// MARK: - Signal handling
 
-/// Graceful shutdown on SIGTERM. Stops all sessions, then exits.
-let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+// Block default signal handling before installing dispatch sources.
 signal(SIGTERM, SIG_IGN)
+signal(SIGCHLD, SIG_IGN)
+
+// SIGTERM: graceful shutdown -- stop all sessions, then exit.
+let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: daemonQueue)
 sigtermSource.setEventHandler {
-    log.info("Received SIGTERM — shutting down")
-    Task {
-        await sessionManager.shutdownAll()
-        log.info("Shutdown complete, exiting")
-        exit(EXIT_SUCCESS)
-    }
+    log.info("Received SIGTERM -- shutting down")
+    sessionManager.shutdownAll()
+    log.info("Shutdown complete, exiting")
+    exit(EXIT_SUCCESS)
 }
 sigtermSource.activate()
 
-// MARK: - Signal handling: SIGCHLD
-
-/// Reap child processes when they exit. This prevents zombie accumulation
-/// and triggers session cleanup inside SessionManager.
-let sigchldSource = DispatchSource.makeSignalSource(signal: SIGCHLD, queue: .main)
-signal(SIGCHLD, SIG_IGN)
+// SIGCHLD: reap child processes -- prevents zombies, triggers session cleanup.
+let sigchldSource = DispatchSource.makeSignalSource(signal: SIGCHLD, queue: daemonQueue)
 sigchldSource.setEventHandler {
-    Task {
-        await sessionManager.reapChildren()
-    }
+    sessionManager.reapChildren()
 }
 sigchldSource.activate()
 
 // MARK: - Exit-when-empty
 
-/// When the last session is removed, wait `idleExitDelay` seconds and exit
-/// if no new sessions have been created in the meantime. This allows the
-/// daemon to be relaunched on demand by launchd rather than lingering idle.
-let exitTimer = OSAllocatedUnfairLock<DispatchWorkItem?>(initialState: nil)
+// When the last session is removed, wait idleExitDelay seconds and exit
+// if no new sessions were created. Prevents the daemon from lingering idle.
+//
+// exitWorkItem is a simple var in main scope -- safe because main.swift is
+// top-level single-threaded init and the onEmpty callback runs exclusively
+// on the daemon queue. No lock needed.
+var exitWorkItem: DispatchWorkItem?
 
-Task {
-    await sessionManager.setOnEmpty {
-        let item = DispatchWorkItem {
-            Task {
-                let count = await sessionManager.sessionCount
-                if count == 0 {
-                    log.info("Idle timeout reached with no sessions — exiting")
-                    exit(EXIT_SUCCESS)
-                } else {
-                    log.info("Idle timeout fired but \(count) session(s) exist — staying alive")
-                }
-            }
+sessionManager.onEmpty = {
+    // Cancel any previously scheduled idle exit (e.g. if a session was
+    // created and destroyed rapidly).
+    exitWorkItem?.cancel()
+
+    let item = DispatchWorkItem {
+        if sessionManager.sessionCount == 0 {
+            log.info("Idle timeout reached with no sessions -- exiting")
+            exit(EXIT_SUCCESS)
+        } else {
+            log.info("Idle timeout fired but \(sessionManager.sessionCount) session(s) exist -- staying alive")
         }
-
-        // Cancel any previously scheduled idle exit (e.g. if a session was
-        // created and destroyed rapidly).
-        exitTimer.withLock { pending in
-            pending?.cancel()
-            pending = item
-        }
-
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + idleExitDelay,
-            execute: item
-        )
-
-        log.info("Idle exit scheduled in \(idleExitDelay)s")
     }
+
+    exitWorkItem = item
+    daemonQueue.asyncAfter(deadline: .now() + idleExitDelay, execute: item)
+    log.info("Idle exit scheduled in \(idleExitDelay)s")
 }
 
 // MARK: - Run loop

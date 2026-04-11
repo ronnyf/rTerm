@@ -26,6 +26,141 @@ import os
 import TermCore
 import XPC
 
+// MARK: - DaemonPeerHandler
+
+/// XPC peer handler for the daemon side of a client connection.
+///
+/// Each incoming XPC connection gets its own `DaemonPeerHandler` instance,
+/// created by the `XPCListener` accept closure in `main.swift`. The handler
+/// receives auto-decoded ``DaemonRequest`` messages and routes them to the
+/// shared ``SessionManager``.
+///
+/// ## Custom executor
+///
+/// This actor uses a custom `SerialExecutor` backed by the daemon's serial
+/// dispatch queue. This means the actor's isolation context IS the XPC
+/// callback context — the `XPCListener`'s target queue is the same serial
+/// queue. Because `XPCPeerHandler` methods are called synchronously on that
+/// queue, `assumeIsolated` safely enters actor context without suspension.
+///
+/// ## No semaphores, no Task bridging
+///
+/// The previous implementation used `DispatchSemaphore` + `Task` to bridge
+/// from GCD to async (`blockingAwait` / `blockingAwaitResult`). That pattern
+/// risked deadlocks when the semaphore blocked the same queue a Task needed.
+/// Now all `SessionManager` methods are synchronous, called directly from
+/// actor-isolated context on the daemon queue. No bridging needed.
+actor DaemonPeerHandler: XPCPeerHandler {
+    typealias Input = DaemonRequest
+    typealias Output = any Encodable
+
+    /// Per-client XPC session, used for identity and push messages.
+    private let session: XPCSession
+
+    /// Shared session manager — all methods are synchronous.
+    private let manager: SessionManager
+
+    /// The daemon's serial dispatch queue, backing this actor's executor.
+    private let queue: DispatchSerialQueue
+
+    private static let log = Logger(subsystem: "com.ronnyf.rtermd", category: "DaemonPeerHandler")
+
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        queue.asUnownedSerialExecutor()
+    }
+
+    init(session: XPCSession, manager: SessionManager, queue: DispatchQueue) {
+        self.session = session
+        self.manager = manager
+        // A serial DispatchQueue IS a DispatchSerialQueue at runtime.
+        // DispatchSerialQueue conforms to SerialExecutor.
+        self.queue = queue as! DispatchSerialQueue
+        Self.log.info("Client connected")
+    }
+
+    // MARK: - XPCPeerHandler
+
+    // These methods are nonisolated because XPCPeerHandler protocol methods
+    // are called synchronously from XPC's dispatch queue. Since the actor's
+    // custom executor IS that same queue, we use assumeIsolated to enter
+    // actor context without suspension.
+
+    nonisolated func handleIncomingRequest(_ request: DaemonRequest) -> (any Encodable)? {
+        self.assumeIsolated { handler in
+            handler.processRequest(request)
+        }
+    }
+
+    nonisolated func handleCancellation(error: XPCRichError) {
+        self.assumeIsolated { handler in
+            handler.processCancel(error: error)
+        }
+    }
+
+    // MARK: - Private (actor-isolated)
+
+    /// Route a decoded request to the appropriate SessionManager method.
+    ///
+    /// Returns a ``DaemonResponse`` for request-reply messages, or `nil` for
+    /// fire-and-forget messages where no reply is needed.
+    private func processRequest(_ request: DaemonRequest) -> (any Encodable)? {
+        switch request {
+        case .listSessions:
+            return DaemonResponse.sessions(manager.listSessions())
+
+        case .createSession(let shell, let rows, let cols):
+            do {
+                let info = try manager.createSession(shell: shell, rows: rows, cols: cols)
+                return DaemonResponse.sessionCreated(info)
+            } catch {
+                return DaemonResponse.error(error.asDaemonError)
+            }
+
+        case .attach(let sessionID):
+            do {
+                let snapshot = try manager.attach(sessionID: sessionID, client: session)
+                return DaemonResponse.screenSnapshot(sessionID: sessionID, snapshot: snapshot)
+            } catch {
+                return DaemonResponse.error(error.asDaemonError)
+            }
+
+        case .detach(let sessionID):
+            manager.detach(sessionID: sessionID, client: session)
+            return nil
+
+        case .input(let sessionID, let data):
+            do {
+                try manager.handleInput(sessionID: sessionID, data: data)
+            } catch {
+                Self.log.error("Input failed for session \(sessionID): \(error)")
+            }
+            return nil
+
+        case .resize(let sessionID, let rows, let cols):
+            do {
+                try manager.resize(sessionID: sessionID, rows: rows, cols: cols)
+            } catch {
+                Self.log.error("Resize failed for session \(sessionID): \(error)")
+            }
+            return nil
+
+        case .destroySession(let sessionID):
+            do {
+                try manager.destroySession(sessionID: sessionID)
+            } catch {
+                Self.log.error("Destroy failed for session \(sessionID): \(error)")
+            }
+            return nil
+        }
+    }
+
+    /// Handle XPC peer disconnection by detaching from all sessions.
+    private func processCancel(error: XPCRichError) {
+        Self.log.info("Client disconnected: \(String(describing: error))")
+        manager.clientDisconnected(session)
+    }
+}
+
 // MARK: - Error conversion
 
 private extension Error {
@@ -35,171 +170,5 @@ private extension Error {
     /// Otherwise wrap the description in `.internalError`.
     var asDaemonError: DaemonError {
         (self as? DaemonError) ?? .internalError(localizedDescription)
-    }
-}
-
-// MARK: - DaemonPeerHandler
-
-/// XPC peer handler for the daemon side of a client connection.
-///
-/// Each incoming XPC connection gets its own `DaemonPeerHandler` instance,
-/// created by the `XPCListener` accept closure in `main.swift`. The handler
-/// decodes ``DaemonRequest`` messages and routes them to the shared
-/// ``SessionManager`` actor.
-///
-/// ## Threading model
-///
-/// `XPCPeerHandler.handleIncomingRequest` is called on a GCD queue managed
-/// by the XPC subsystem, not on the cooperative thread pool. Requests that
-/// need a reply (list, create, attach) must block the GCD thread to await
-/// the actor result. Fire-and-forget requests (detach, input, resize,
-/// destroy) dispatch a `Task` and return `nil` immediately.
-///
-/// The `blockingAwait` helper bridges from GCD to async. This is safe here
-/// because the XPC dispatch queue has unbounded concurrency -- blocking one
-/// thread does not starve the system.
-final class DaemonPeerHandler: XPCPeerHandler {
-
-    private let session: XPCSession
-    private let manager: SessionManager
-    private let log = Logger(subsystem: "com.ronnyf.rtermd", category: "DaemonPeerHandler")
-
-    init(session: XPCSession, manager: SessionManager) {
-        self.session = session
-        self.manager = manager
-        log.info("Client connected")
-    }
-
-    // MARK: - XPCPeerHandler
-
-    func handleIncomingRequest(_ message: XPCReceivedMessage) -> (any Encodable)? {
-        let request: DaemonRequest
-        do {
-            request = try message.decode(as: DaemonRequest.self)
-        } catch {
-            log.error("Failed to decode DaemonRequest: \(error)")
-            return DaemonResponse.error(.internalError("Failed to decode request"))
-        }
-
-        log.info("Received request: \(String(describing: request))")
-
-        switch request {
-        // -- Request-reply: block the GCD thread and return a DaemonResponse --
-
-        case .listSessions:
-            let sessions = blockingAwait { await self.manager.listSessions() }
-            return DaemonResponse.sessions(sessions)
-
-        case .createSession(let shell, let rows, let cols):
-            switch blockingAwaitResult({
-                try await self.manager.createSession(shell: shell, rows: rows, cols: cols)
-            }) {
-            case .success(let info):
-                // Attach in a separate Task — don't block the XPC reply.
-                // The client will send .attach after receiving sessionCreated.
-                return DaemonResponse.sessionCreated(info)
-            case .failure(let error):
-                return DaemonResponse.error(error)
-            }
-
-        case .attach(let sessionID):
-            switch blockingAwaitResult({
-                try await self.manager.attach(sessionID: sessionID, client: self.session)
-            }) {
-            case .success(let snapshot):
-                return DaemonResponse.screenSnapshot(sessionID: sessionID, snapshot: snapshot)
-            case .failure(let error):
-                return DaemonResponse.error(error)
-            }
-
-        // -- Fire-and-forget: dispatch a Task and return nil --
-
-        case .detach(let sessionID):
-            Task { await self.manager.detach(sessionID: sessionID, client: self.session) }
-            return nil
-
-        case .input(let sessionID, let data):
-            Task {
-                do {
-                    try await self.manager.handleInput(sessionID: sessionID, data: data)
-                } catch {
-                    self.log.error("Input failed for session \(sessionID): \(error)")
-                }
-            }
-            return nil
-
-        case .resize(let sessionID, let rows, let cols):
-            Task {
-                do {
-                    try await self.manager.resize(sessionID: sessionID, rows: rows, cols: cols)
-                } catch {
-                    self.log.error("Resize failed for session \(sessionID): \(error)")
-                }
-            }
-            return nil
-
-        case .destroySession(let sessionID):
-            Task {
-                do {
-                    try await self.manager.destroySession(sessionID: sessionID)
-                } catch {
-                    self.log.error("Destroy failed for session \(sessionID): \(error)")
-                }
-            }
-            return nil
-        }
-    }
-
-    func handleCancellation(error: XPCRichError) {
-        log.info("Client disconnected: \(String(describing: error))")
-        Task {
-            await self.manager.clientDisconnected(self.session)
-        }
-    }
-
-    // MARK: - Async bridging
-
-    /// Block the current (GCD) thread to await an async closure that cannot
-    /// throw.
-    ///
-    /// Uses `OSAllocatedUnfairLock` to transfer the result across isolation
-    /// boundaries safely. This is intentionally used only on XPC dispatch
-    /// queues, which have unbounded concurrency. Never call this from the
-    /// cooperative thread pool or `@MainActor`.
-    private func blockingAwait<T: Sendable>(
-        _ work: @escaping @Sendable () async -> T
-    ) -> T {
-        let semaphore = DispatchSemaphore(value: 0)
-        let box = OSAllocatedUnfairLock<T?>(initialState: nil)
-        Task {
-            let value = await work()
-            box.withLock { $0 = value }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return box.withLock { $0! }
-    }
-
-    /// Block the current (GCD) thread to await an async throwing closure,
-    /// returning the result or a ``DaemonError``.
-    ///
-    /// The thrown error is immediately converted to `DaemonError` so the
-    /// result type is fully `Sendable` and can be stored in a lock.
-    private func blockingAwaitResult<T: Sendable>(
-        _ work: @escaping @Sendable () async throws -> T
-    ) -> Result<T, DaemonError> {
-        let semaphore = DispatchSemaphore(value: 0)
-        let box = OSAllocatedUnfairLock<Result<T, DaemonError>?>(initialState: nil)
-        Task {
-            do {
-                let value = try await work()
-                box.withLock { $0 = .success(value) }
-            } catch {
-                box.withLock { $0 = .failure(error.asDaemonError) }
-            }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return box.withLock { $0! }
     }
 }

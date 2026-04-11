@@ -71,7 +71,7 @@ final class SessionManager {
 
     /// Called when the last session is removed. The daemon uses this to
     /// schedule a graceful exit when no sessions remain.
-    private(set) var onEmpty: (() -> Void)?
+    var onEmpty: (() -> Void)?
 
     private static let log = Logger(subsystem: "com.ronnyf.rtermd", category: "SessionManager")
 
