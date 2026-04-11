@@ -6,7 +6,7 @@
 
 **Architecture:** A standalone daemon binary registered as a LaunchAgent, communicating with the app via Mach service XPC. The daemon owns shell processes (via `forkpty()`), `TerminalParser`, and `ScreenModel` per session. Sessions survive app quit/crash.
 
-**Tech Stack:** Swift 5, XPCOverlay (system XPC Swift overlay), Darwin (`forkpty`, `execve`, signal handling), Swift Testing framework, Xcode project (no SPM).
+**Tech Stack:** Swift 5, `import XPC` (public XPC framework, macOS 14+), Darwin (`forkpty`, `execve`, signal handling), Swift Testing framework, Xcode project (no SPM).
 
 **Spec:** `docs/superpowers/specs/2026-04-09-daemon-architecture-design.md`
 
@@ -478,6 +478,70 @@ public func restore(from snapshot: ScreenSnapshot) {
 git add TermCore/ScreenModel.swift TermCoreTests/ScreenModelTests.swift
 git commit -m "feat(TermCore): add ScreenModel.restore(from:) for reattach support"
 ```
+
+---
+
+## Architecture Revision: Single-Queue Concurrency (applies to Phases B and C)
+
+> This revision supersedes the actor-based concurrency model in the original Phase B/C tasks below. The original task descriptions for ShellSpawner (Task 6), Session (Task 7), and the foundation work remain valid. The concurrency model for SessionManager, DaemonPeerHandler, and DaemonClient changes as described here.
+
+### Problem
+
+The original design used `SessionManager` as a Swift actor and bridged from GCD (XPC callbacks) to the actor using `DispatchSemaphore` + `Task`. This is fundamentally broken:
+
+- **Tasks are not threads** — they run on the cooperative thread pool and cannot interact with dispatch semaphores without risking pool starvation and deadlocks.
+- **XPC sends on the blocked queue** — `XPCSession.send()` may need the same GCD queue that the semaphore is blocking, causing deadlock.
+- **Violates forward-progress guarantees** — Swift Concurrency requires that cooperative threads never block on external synchronization primitives.
+
+### Solution: Single Dispatch Queue
+
+One shared serial `DispatchQueue` serializes all daemon state access. No actors (except DaemonPeerHandler with custom executor), no semaphores, no GCD-to-async bridging.
+
+**Daemon queue ownership:**
+- `rtermd/main.swift` creates the serial queue and passes it to `XPCListener` as `targetQueue`
+- All XPC callbacks arrive on this queue
+- `SessionManager` is a plain class — the queue serializes all access
+- `Session` is a class — PTY readability handler also targets this queue
+- `DaemonPeerHandler` is an actor with a custom `SerialExecutor` backed by this queue — since XPC callbacks are already on the queue, the actor is already isolated
+
+**DaemonPeerHandler pattern:**
+- Implements `XPCPeerHandler` protocol
+- Uses `assumeIsolated` from the XPC callback to enter actor context (callback is on the actor's queue)
+- For request-reply operations: uses `XPCReceivedMessage.reply()` for deferred replies — returns `nil` from the handler, does the work, calls `message.reply(response)` when done
+- For fire-and-forget operations: does the work directly (already on the right queue)
+- No semaphores, no Task bridging, no blocking
+
+**SessionManager:**
+- Plain class, not an actor
+- All methods are synchronous — called directly from DaemonPeerHandler
+- No locks, no `@unchecked Sendable`, no async/await
+
+**Session:**
+- Class (Dictionary requires Copyable values; needs deinit for FD/process cleanup)
+- FileHandle readabilityHandler targets the daemon queue — all state access is single-threaded
+- No `OSAllocatedUnfairLock` needed
+
+### XPC API Notes (`import XPC`, macOS 14+)
+
+**Client-side session creation (DaemonClient):**
+- Use `XPCSession(machService:targetQueue:options:incomingMessageHandler:cancellationHandler:)` constructor
+- Pass handlers in the constructor — session auto-activates, no need for `.inactive` + manual `activate()`
+- **Never call `setIncomingMessageHandler` on an active session** — crashes with "XPC API Misuse"
+- `targetQueue: nil` uses the system default
+
+**Server-side listener (main.swift):**
+- `XPCListener(service:targetQueue:incomingSessionHandler:)` with the daemon queue as targetQueue
+- `request.accept { session in DaemonPeerHandler(...) }` for per-client handler objects
+
+**Deferred replies:**
+- `XPCReceivedMessage.reply(_:)` sends a reply asynchronously after returning `nil` from the handler
+- The client's `sendSync` blocks until `reply()` is called — this is documented XPC behavior
+
+### Race Condition Fix
+
+The client sends `.createSession` and `.attach` as **two separate XPC calls**. After `.createSession` returns `sessionCreated(info)`, the client sends `.attach(sessionID:)` which returns `screenSnapshot`. The snapshot captures whatever the shell produced between creation and attach.
+
+In `Session.attach()`: add client to fan-out list BEFORE taking the snapshot, so no output is lost between those two operations.
 
 ---
 
@@ -1155,6 +1219,8 @@ git commit -m "feat(rtermd): add DaemonPeerHandler and daemon entry point with s
 ---
 
 ## Phase C: Client Side
+
+> **See "Architecture Revision" section above** for the XPC API patterns (constructor with handlers, deferred replies, `import XPC`). The code samples below predate the revision — use them for functional intent, not as literal implementation guides.
 
 ### Task 10: DaemonClient — Replacing RemotePTY
 
