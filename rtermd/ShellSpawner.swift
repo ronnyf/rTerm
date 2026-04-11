@@ -83,7 +83,7 @@ extension Shell {
         var argv: [UnsafeMutablePointer<CChar>?] = cArgs.map { $0 }
         argv.append(nil)
 
-        let envPairs = Self.buildEnvironment(shell: self)
+        let envPairs = self.buildEnvironment()
         let cEnv = envPairs.map { strdup($0)! }
         defer { cEnv.forEach { free($0) } }
 
@@ -134,7 +134,9 @@ extension Shell {
 
         // Set close-on-exec so the primary FD does not leak into future children.
         let currentFlags = fcntl(primaryFD, F_GETFD)
-        fcntl(primaryFD, F_SETFD, currentFlags | FD_CLOEXEC)
+        if currentFlags >= 0 {
+            fcntl(primaryFD, F_SETFD, currentFlags | FD_CLOEXEC)
+        }
 
         let ttyName = String(cString: ttyNameBuf)
         return SpawnResult(pid: pid, primaryFD: primaryFD, ttyName: ttyName)
@@ -145,11 +147,11 @@ extension Shell {
     /// Construct the environment variable array as `["KEY=VALUE", ...]` strings.
     ///
     /// This runs in the parent before fork, so Swift String operations are safe.
-    private static func buildEnvironment(shell: Shell) -> [String] {
+    private func buildEnvironment() -> [String] {
         var env: [String] = []
 
         env.append("TERM=xterm-256color")
-        env.append("SHELL=\(shell.executable)")
+        env.append("SHELL=\(self.executable)")
 
         // HOME from the password database (more reliable than NSHomeDirectory
         // which depends on Foundation and may behave differently under launchd).

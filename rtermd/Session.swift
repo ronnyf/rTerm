@@ -130,14 +130,8 @@ final class Session {
     }
 
     deinit {
-        if readSource == nil && !isStopped {
-            // startOutputHandler() was never called, so no cancel handler
-            // will close the FD. Close it directly as a fallback.
-            close(primaryFD)
-        }
-        if !isStopped {
-            kill(pid, SIGTERM)
-        }
+        guard !isStopped else { return }
+        teardown()
     }
 
     // MARK: - Output handler
@@ -175,49 +169,39 @@ final class Session {
 
     /// Process a readability event from the dispatch source.
     private func handleReadEvent() {
-        // Read into a stack buffer. 16 KiB matches typical PTY chunk sizes
-        // and avoids heap allocation for the common case.
-        var buffer = [UInt8](repeating: 0, count: 16_384)
-        let bytesRead = Darwin.read(primaryFD, &buffer, buffer.count)
+        let bufferSize = 16_384
 
-        if bytesRead < 0 {
-            let readErrno = errno
-            switch readErrno {
-            case EINTR, EAGAIN, EWOULDBLOCK:
-                // Transient condition -- the source will fire again.
-                return
-            default:
-                Self.log.error("Session \(self.id): PTY read failed: errno=\(readErrno)")
+        withUnsafeTemporaryAllocation(byteCount: bufferSize, alignment: 1) { buffer in
+            let bytesRead = Darwin.read(primaryFD, buffer.baseAddress!, bufferSize)
+
+            if bytesRead < 0 {
+                let readErrno = errno
+                switch readErrno {
+                case EINTR, EAGAIN, EWOULDBLOCK:
+                    return  // Transient — source will fire again.
+                default:
+                    Self.log.error("Session \(self.id): PTY read failed: errno=\(readErrno)")
+                    readSource?.cancel()
+                    readSource = nil
+                    onEnded?(id)
+                    return
+                }
+            }
+
+            if bytesRead == 0 {
                 readSource?.cancel()
                 readSource = nil
+                Self.log.info("Session \(self.id): PTY EOF")
                 onEnded?(id)
                 return
             }
+
+            let data = Data(bytes: buffer.baseAddress!, count: bytesRead)
+            let events = parser.parse(data)
+            let model = screenModel
+            Task { await model.apply(events) }
+            fanOutToClients(data)
         }
-
-        if bytesRead == 0 {
-            // Genuine EOF -- shell closed the PTY secondary.
-            readSource?.cancel()
-            readSource = nil
-            Self.log.info("Session \(self.id): PTY EOF")
-            onEnded?(id)
-            return
-        }
-
-        let data = Data(bytes: buffer, count: bytesRead)
-
-        // 1. Parse raw bytes into terminal events.
-        let events = parser.parse(data)
-
-        // 2. Apply events to the screen model for reattach snapshots.
-        //    ScreenModel is an actor; this fire-and-forget Task updates the
-        //    daemon's cached screen state asynchronously. The latestSnapshot()
-        //    nonisolated accessor remains available synchronously.
-        let model = screenModel
-        Task { await model.apply(events) }
-
-        // 3. Fan out raw output to all attached clients.
-        fanOutToClients(data)
     }
 
     /// Send raw output data to all currently attached XPC clients.
@@ -226,12 +210,16 @@ final class Session {
     /// XPC cancellation handler drives cleanup via `detach`.
     private func fanOutToClients(_ data: Data) {
         guard !attachedClients.isEmpty else { return }
-        let response = DaemonResponse.output(sessionID: id, data: data)
+        broadcast(.output(sessionID: id, data: data))
+    }
+
+    /// Send a response to all attached clients. Failures are logged, not propagated.
+    private func broadcast(_ response: DaemonResponse) {
         for client in attachedClients {
             do {
                 try client.send(response)
             } catch {
-                Self.log.error("Session \(self.id): failed to send output to client: \(error)")
+                Self.log.error("Session \(self.id): send failed: \(error)")
             }
         }
     }
@@ -339,14 +327,7 @@ final class Session {
     ///
     /// - Parameter exitCode: The shell's exit status to report.
     func notifyClientsEnded(exitCode: Int32) {
-        let response = DaemonResponse.sessionEnded(sessionID: id, exitCode: exitCode)
-        for client in attachedClients {
-            do {
-                try client.send(response)
-            } catch {
-                Self.log.error("Session \(self.id): failed to notify client of exit: \(error)")
-            }
-        }
+        broadcast(.sessionEnded(sessionID: id, exitCode: exitCode))
         attachedClients.removeAll()
     }
 
@@ -364,7 +345,7 @@ final class Session {
             title: nil,
             rows: rows,
             cols: cols,
-            hasClient: !attachedClients.isEmpty
+            hasClient: hasClients
         )
     }
 
@@ -383,13 +364,17 @@ final class Session {
 
     /// Shared teardown logic for `stop()`.
     ///
-    /// The primary FD is closed by the dispatch source's cancel handler,
-    /// not directly here, to avoid use-after-close races where the source's
-    /// event handler could fire on a recycled FD.
+    /// If the dispatch source was installed, cancelling it closes the primary FD
+    /// via the cancel handler. If no source was installed (e.g. `startOutputHandler()`
+    /// was never called), the FD is closed directly to prevent leaks.
     private func teardown() {
         isStopped = true
-        readSource?.cancel()
-        readSource = nil
+        if let source = readSource {
+            source.cancel()  // cancel handler closes the FD
+            readSource = nil
+        } else {
+            close(primaryFD)  // no source installed — close directly
+        }
         kill(pid, SIGTERM)
     }
 }
