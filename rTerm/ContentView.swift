@@ -74,6 +74,13 @@ class TerminalSession {
 
             if case .sessionCreated(let info) = reply {
                 sessionID = info.id
+
+                // Attach to receive output. The snapshot covers any output
+                // produced between session creation and attach.
+                let attachReply = try client.sendSync(.attach(sessionID: info.id))
+                if case .screenSnapshot(_, let snapshot) = attachReply {
+                    await screenModel.restore(from: snapshot)
+                }
             }
         } catch {
             log.error("connect error: \(error.localizedDescription)")
