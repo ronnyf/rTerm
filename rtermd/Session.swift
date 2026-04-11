@@ -123,7 +123,7 @@ final class Session {
         self.rows = rows
         self.cols = cols
         self.queue = queue
-        self.screenModel = ScreenModel(cols: Int(cols), rows: Int(rows))
+        self.screenModel = ScreenModel(cols: Int(cols), rows: Int(rows), queue: queue)
         self.parser = TerminalParser()
 
         Self.log.info("Session \(id) created: shell=\(shell.executable), pid=\(result.pid), tty=\(result.ttyName)")
@@ -142,7 +142,8 @@ final class Session {
     /// 1. Reads available data via POSIX `read`
     /// 2. On EOF: cancels the source and invokes `onEnded`
     /// 3. Parses bytes through `TerminalParser` into `[TerminalEvent]`
-    /// 4. Fire-and-forget applies events to `ScreenModel` for reattach snapshots
+    /// 4. Applies events to `ScreenModel` synchronously via `assumeIsolated`
+    ///    (the actor's executor is the daemon queue we are already running on)
     /// 5. Fans out `DaemonResponse.output` to all attached XPC clients
     ///
     /// Call once after `init`. Preconditions that no source is already installed
@@ -198,8 +199,9 @@ final class Session {
 
             let data = Data(bytes: buffer.baseAddress!, count: bytesRead)
             let events = parser.parse(data)
-            let model = screenModel
-            Task { await model.apply(events) }
+            screenModel.assumeIsolated { model in
+                model.apply(events)
+            }
             fanOutToClients(data)
         }
     }

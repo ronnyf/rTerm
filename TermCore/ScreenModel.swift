@@ -20,6 +20,7 @@
 //  along with Terminal App. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import Dispatch
 import os
 
 /// The terminal screen model: owns a grid of cells, processes terminal events,
@@ -29,7 +30,22 @@ import os
 /// renderer thread (which cannot `await`), call ``latestSnapshot()`` -- a
 /// `nonisolated` method that reads from a lock-protected cache updated after
 /// every `apply(_:)`.
+///
+/// ## Custom Executor
+///
+/// By default the actor runs on a private serial dispatch queue. Callers may
+/// pass an existing `DispatchQueue` at init time to pin the actor to that
+/// queue. This allows the daemon to call `assumeIsolated` from the daemon
+/// queue without an async hop, while app-side and test code continue to use
+/// normal `await`-based access.
 public actor ScreenModel {
+
+    /// Serial dispatch queue that backs the actor's executor.
+    ///
+    /// When a caller provides a queue at init, the actor runs on that queue
+    /// and `assumeIsolated` is legal from its dispatch context. When no queue
+    /// is provided, a private serial queue is created automatically.
+    private let executorQueue: DispatchSerialQueue
 
     /// Flat row-major grid storage: `grid[row * cols + col]`.
     private var grid: ContiguousArray<Cell>
@@ -48,6 +64,12 @@ public actor ScreenModel {
 
     private let log = Logger.TermCore.screenModel
 
+    // MARK: - Custom executor
+
+    nonisolated public var unownedExecutor: UnownedSerialExecutor {
+        executorQueue.asUnownedSerialExecutor()
+    }
+
     // MARK: - Initialization
 
     /// Creates a screen model with the given dimensions.
@@ -55,7 +77,14 @@ public actor ScreenModel {
     /// - Parameters:
     ///   - cols: Number of columns (default 80).
     ///   - rows: Number of rows (default 24).
-    public init(cols: Int = 80, rows: Int = 24) {
+    ///   - queue: Optional serial dispatch queue to use as the actor's
+    ///     executor. When `nil`, a private serial queue is created. Pass the
+    ///     daemon queue here to enable synchronous `assumeIsolated` access
+    ///     from the daemon's dispatch context.
+    public init(cols: Int = 80, rows: Int = 24, queue: DispatchQueue? = nil) {
+        let q = queue ?? DispatchQueue(label: "com.ronnyf.TermCore.ScreenModel")
+        // swiftlint:disable:next force_cast
+        self.executorQueue = q as! DispatchSerialQueue
         self.cols = cols
         self.rows = rows
         let cursor = Cursor(row: 0, col: 0)
