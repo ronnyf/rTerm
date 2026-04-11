@@ -762,24 +762,61 @@ git commit -m "feat(rtermd): add ShellSpawner with forkpty, signal blocking, FD 
 **Files:**
 - Modify: `rtermd/Session.swift`
 
-**Rework notes:**
-- Use a **static logger** — no reason to allocate a Logger per instance when subsystem/category are identical across all sessions.
-- Rename `lock` → `state` — the name should describe the contents, not the synchronization mechanism.
-- **No AsyncStream, no Task** — with the daemon queue model, the FileHandle readabilityHandler targets the daemon queue and calls parse → apply → fanOut synchronously. The readability handler IS the consumer.
-- Remove `OSAllocatedUnfairLock` if all access is on the daemon queue — use plain stored properties.
-- `attach()`: add client to fan-out list BEFORE taking the snapshot (closes the race window).
-- `stop()`: kill before close (SIGTERM gives shell a chance to clean up before FD is pulled).
-- `deinit`: guard against double-cleanup if `stop()` was already called.
-
 **Behavioral description:**
 
-Session is a class that owns a spawned shell process. On init, it calls `ShellSpawner.spawn()` and wraps the primary FD in a FileHandle. The readability handler is installed targeting the daemon queue, so when PTY output arrives it's processed synchronously on the same queue as everything else:
+Session is a class that represents a single terminal session in the daemon. It owns a spawned shell process, the PTY file descriptor, a TerminalParser, a ScreenModel, and the list of attached XPC clients. Each Session is created by SessionManager and stored in its dictionary.
 
-1. Parse raw bytes through TerminalParser → [TerminalEvent]
-2. Apply events to ScreenModel (daemon keeps screen state for reattach)
-3. Encode DaemonResponse.output and send to each attached client
+**Why a class (not a struct, not an actor, not ~Copyable):**
 
-Clients are tracked in a simple array. `attach` adds a client and returns a ScreenSnapshot. `detach` removes by identity (`===`). `write` does a full-write loop with EINTR handling. `resize` sends TIOCSWINSZ. `stop` tears down everything (nil handler, kill, close). `info` returns a SessionInfo snapshot.
+Session needs reference semantics — SessionManager holds it in a Dictionary and passes references to DaemonPeerHandler. It needs `deinit` for deterministic resource cleanup (close FD, kill process). We explored `~Copyable` structs for unique ownership enforcement, but `Dictionary` requires `Copyable` values in Swift 6.4. An actor is unnecessary because the daemon queue already serializes all access.
+
+**Initialization:**
+
+`init(id:shell:rows:cols:)` calls `ShellSpawner.spawn()` to create the PTY and shell process. Wraps the primary FD in a `FileHandle`. Stores immutable identity (id, shell, tty, pid, createdAt) and creates a `TerminalParser` and `ScreenModel`.
+
+**PTY output — the critical data path:**
+
+The FileHandle readability handler is installed targeting the **daemon queue** (not Foundation's default queue). This is the key single-queue design decision: when PTY output arrives, the handler runs synchronously on the daemon queue — the same queue as all other daemon state access. No AsyncStream, no Task, no cross-queue synchronization needed.
+
+The readability handler does three things synchronously:
+1. Parse raw bytes through `TerminalParser` → `[TerminalEvent]`
+2. Apply events to `ScreenModel` (the daemon maintains screen state so it can provide a snapshot when a client reattaches)
+3. Encode `DaemonResponse.output(sessionID:data:)` and send to each attached client via `XPCSession.send()`
+
+On EOF (empty data from `availableData`), nil the handler and notify SessionManager that the session ended.
+
+**Client management:**
+
+Clients (XPCSession references) are tracked in a plain array. No lock needed — all access is on the daemon queue.
+
+`attach(client:)` — adds the client to the array FIRST, then takes a `ScreenSnapshot` from `ScreenModel` and returns it. The ordering matters: if the client is added first, any output that arrives between the add and the snapshot will be both fanned out to the client AND captured in the snapshot. The client may receive some data twice (once via fan-out, once in the snapshot), but `restore(from:)` on the client side overwrites with the authoritative snapshot. If we took the snapshot first and then added the client, output arriving in the gap would be lost.
+
+`detach(client:)` — removes by identity (`===`).
+
+`hasClients` — simple emptiness check on the array.
+
+**PTY write:**
+
+`write(_ data: Data)` performs a full-write loop using `Darwin.write` with EINTR retry and partial-write handling. Same pattern as `PseudoTerminal.write()` in TermCore.
+
+**Resize:**
+
+`resize(rows:cols:)` sends `TIOCSWINSZ` via `ioctl` to the PTY. Updates stored rows/cols so `info` reports correct dimensions.
+
+**Exit handling:**
+
+`markExited(exitCode:)` records the exit status. `notifyClientsEnded(exitCode:)` sends `.sessionEnded` to all clients and clears the client list. These are called by SessionManager when `waitpid` reaps the child.
+
+**Teardown:**
+
+`stop()` — nil the readability handler, send SIGTERM (gives shell a chance to save history/run traps), then close the FD. Guard against double-stop with a flag.
+
+`deinit` — safety net that performs the same cleanup if `stop()` wasn't called. Check the flag to avoid double-close/double-kill.
+
+**Style notes:**
+- Use a **static logger** (`private static let log`) — subsystem/category are identical across all sessions, no reason to allocate per instance.
+- If mutable state needs protection beyond queue serialization, name the lock `state` not `lock` — describe the contents, not the mechanism.
+- `info` computed property returns a `SessionInfo` snapshot with current dimensions, client count, etc.
 
 - [ ] **Step 1: Rewrite Session per architecture revision**
 - [ ] **Step 2: Build**
@@ -794,19 +831,53 @@ Clients are tracked in a simple array. `attach` adds a client and returns a Scre
 
 **Behavioral description:**
 
-SessionManager is a **plain class** (not an actor). The daemon queue serializes all access — no locks, no async/await. All methods are synchronous.
+SessionManager is the central registry for all terminal sessions in the daemon. It's a **plain class** — not an actor. The daemon queue serializes all access, so no locks, no `@unchecked Sendable`, no async/await are needed. Every method is synchronous.
 
-It holds a `[SessionID: Session]` dictionary, a monotonic ID counter, and an optional `onEmpty` callback.
+**Why not an actor?**
 
-Methods:
-- `createSession(shell:rows:cols:)` — allocate ID, create Session, start output consumer, return SessionInfo
-- `destroySession(sessionID:)` — stop session, remove from dictionary, check empty
-- `attach(sessionID:client:)` — delegate to Session.attach, return ScreenSnapshot
-- `detach(sessionID:client:)` — delegate to Session.detach
-- `handleInput(sessionID:data:)` — delegate to Session.write
-- `resize(sessionID:rows:cols:)` — delegate to Session.resize
-- `listSessions()` — map sessions to SessionInfo array
-- `reapChildren()` — loop waitpid(-1, WNOHANG), extract exit code (inline bit arithmetic, not WIFEXITED macro — Swift can't use C function-like macros), notify clients, remove session, check empty
+The original implementation used `SessionManager` as a Swift actor, which required a semaphore-based GCD-to-async bridge in `DaemonPeerHandler`. This was the root cause of the deadlock: blocking a GCD thread with a semaphore while a Task on the cooperative pool tried to send on the same blocked queue. By making SessionManager a plain class on the daemon queue, all calls from DaemonPeerHandler are direct synchronous method calls — no bridging, no hopping, no deadlock risk.
+
+**State:**
+
+- `[SessionID: Session]` dictionary — the session registry
+- `nextID: SessionID` — monotonic counter, starts at 0
+- `onEmpty: (() -> Void)?` — callback fired when the last session is removed
+
+**Session lifecycle methods:**
+
+`createSession(shell:rows:cols:)` — allocates the next ID, creates a `Session` (which spawns the shell via `ShellSpawner`), stores it in the dictionary, starts the output consumer (installs the FileHandle readability handler), and returns `SessionInfo`. Wraps `SpawnError` into `DaemonError.spawnFailed`.
+
+`destroySession(sessionID:)` — looks up the session, calls `stop()` on it (SIGTERM + close FD), removes from dictionary, checks empty. Throws `.sessionNotFound` for unknown IDs.
+
+**Client routing methods:**
+
+These are thin wrappers that look up the session by ID and delegate to the corresponding `Session` method. All throw `.sessionNotFound` for unknown IDs.
+
+- `attach(sessionID:client:)` → `session.attach(client:)` → returns `ScreenSnapshot`
+- `detach(sessionID:client:)` → `session.detach(client:)`
+- `handleInput(sessionID:data:)` → `session.write(data)`
+- `resize(sessionID:rows:cols:)` → `session.resize(rows:cols:)`
+- `listSessions()` → `sessions.values.map(\.info)`
+
+**Child reaping:**
+
+`reapChildren()` — called from the SIGCHLD signal handler (which runs on the daemon queue via DispatchSource). Loops `waitpid(-1, &status, WNOHANG)` to collect all exited children in one pass. Extracts exit code using inline bit arithmetic (`(status & 0x7F) == 0` for WIFEXITED, `(status >> 8) & 0xFF` for WEXITSTATUS — Swift cannot use C function-like macros). For each reaped PID, finds the matching session, calls `markExited` + `notifyClientsEnded`, removes the session from the dictionary, and calls `checkEmpty`. Logs a warning for unknown PIDs (shouldn't happen but defensive).
+
+**Client disconnect:**
+
+`clientDisconnected(client:)` — called when an XPC connection drops (app quit, crash). Iterates all sessions and calls `detach(client:)` on each. The session continues running — disconnect doesn't terminate it.
+
+**Shutdown:**
+
+`shutdownAll()` — stops every session (SIGTERM + close), clears the dictionary. Called from SIGTERM handler.
+
+**Empty check:**
+
+`checkEmpty()` — private method called after any session removal. If the dictionary is empty, fires the `onEmpty` callback. The callback (set by main.swift) starts a 5-second grace period before exiting.
+
+- [ ] **Step 1: Rewrite SessionManager as plain class**
+- [ ] **Step 2: Build**
+- [ ] **Step 3: Commit**
 - `clientDisconnected(client:)` — detach from all sessions
 - `shutdownAll()` — stop all, clear dictionary
 
@@ -826,30 +897,56 @@ All methods throw `DaemonError.sessionNotFound` for unknown IDs.
 
 **Behavioral description:**
 
-**main.swift:**
+**main.swift — the daemon entry point:**
 
-Creates a serial DispatchQueue (the "daemon queue"). Creates SessionManager. Creates XPCListener with the daemon queue as targetQueue and service name `"com.ronnyf.rterm.rtermd"`. In the accept closure, creates a DaemonPeerHandler per client connection. Sets up SIGTERM handler (graceful shutdown — call shutdownAll, then exit). Sets up SIGCHLD handler (call reapChildren on the daemon queue). Sets up exit-when-empty callback with a cancellable 5s grace period. Calls dispatchMain().
+Creates a serial `DispatchQueue` — the "daemon queue." This single queue is the backbone of the entire daemon's concurrency model. Every piece of mutable state in the daemon is accessed exclusively from this queue, eliminating the need for locks, actors, or async/await bridging.
 
-Signal handlers should use DispatchSource targeting the daemon queue so the callbacks run on the same queue as everything else — no async bridging needed.
+Creates `SessionManager` (a plain class). Creates `XPCListener` with the daemon queue as `targetQueue` and service name `"com.ronnyf.rterm.rtermd"`. The `targetQueue` parameter is critical — it means ALL XPC callbacks (incoming messages, session accept, cancellation) arrive on the daemon queue. In the accept closure, creates a `DaemonPeerHandler` per client connection, passing it the XPC session, the session manager, and the daemon queue.
 
-**DaemonPeerHandler:**
+Signal handling: uses `DispatchSource.makeSignalSource` for both SIGTERM and SIGCHLD, targeting the daemon queue. This ensures signal handler callbacks also run on the daemon queue — no separate synchronization needed.
 
-An **actor with a custom SerialExecutor** backed by the daemon queue. Since XPC callbacks arrive on the daemon queue and the actor's executor IS that queue, the handler is already isolated when XPC calls it.
+- SIGTERM: call `sessionManager.shutdownAll()`, then exit after a brief delay
+- SIGCHLD: call `sessionManager.reapChildren()` to collect zombie processes
 
-Conforms to `XPCPeerHandler`. Uses `XPCReceivedMessage` as input.
+Exit-when-empty: register an `onEmpty` callback on SessionManager that fires when the last session is removed. The callback starts a cancellable 5-second grace period — if no new session is created within 5 seconds, the daemon exits. This prevents the daemon from running indefinitely when the user has closed all terminals. Use a `DispatchWorkItem` scheduled on the daemon queue for the timer (not `Task.sleep` — we're avoiding the cooperative pool).
+
+Calls `dispatchMain()` as the run loop.
+
+**DaemonPeerHandler — the core design insight:**
+
+DaemonPeerHandler is an **actor with a custom `SerialExecutor`** backed by the daemon queue. This is the key architectural decision that eliminates all GCD-to-async bridging.
+
+**Why an actor with custom executor?**
+
+The XPC framework delivers `handleIncomingRequest` callbacks on a GCD dispatch queue. Swift actors normally run on the cooperative thread pool. Bridging between these two worlds is where the original semaphore anti-pattern came from — blocking a cooperative thread with a semaphore to wait for an actor.
+
+By giving the actor a custom executor backed by the daemon queue, we make the actor's isolation context the SAME as the XPC callback context. When XPC calls `handleIncomingRequest`, we're already on the actor's queue. No hop, no bridge, no semaphore. The actor can use `assumeIsolated` to enter its isolation context synchronously from the XPC callback.
+
+**Why not just a plain class?**
+
+A plain class conforming to `XPCPeerHandler` would work functionally — all access is on the same queue. But Swift's type system doesn't know that. The actor + custom executor makes the single-queue isolation visible to the compiler, enabling proper Sendable checking and preventing accidental off-queue access.
+
+**XPCPeerHandler conformance:**
+
+Conforms to `XPCPeerHandler`. The `handleIncomingRequest` method receives `XPCReceivedMessage`, decodes `DaemonRequest`, and routes to SessionManager.
 
 For **request-reply** operations (listSessions, createSession, attach):
-- Return `nil` from `handleIncomingRequest` (deferred reply)
-- Do the work (call SessionManager methods — synchronous, same queue)
-- Call `message.reply(response)` to send the response
+- Do the work immediately — SessionManager methods are synchronous, we're on the same queue
+- Call `message.reply(response)` to send the deferred reply
+- Return `nil` from the handler (tells XPC runtime the reply will come later via `reply()`)
+- The client's `sendSync` blocks until `reply()` is called — this is documented XPC behavior
 
 For **fire-and-forget** operations (detach, input, resize, destroySession):
-- Do the work directly (already on the right queue)
-- Return `nil`
+- Do the work directly — already on the right queue
+- Return `nil` (no reply expected)
 
-`handleCancellation`: call `sessionManager.clientDisconnected(session)`
+**Why deferred reply instead of returning the response directly?**
 
-**No semaphores. No Task bridging. No blocking.**
+The `handleIncomingRequest` protocol method returns `(any Encodable)?`. We COULD return the response directly for request-reply operations since SessionManager is synchronous. However, using `message.reply()` gives us flexibility to handle errors uniformly and keeps the pattern consistent. If we later need async work (e.g., awaiting a ScreenModel actor for snapshots), the deferred reply pattern already supports it without changing the handler structure.
+
+`handleCancellation`: called when the XPC connection drops (client quit, crash). Calls `sessionManager.clientDisconnected(session)` to detach the client from all sessions. Runs on the daemon queue (same as everything else).
+
+**No semaphores. No Task bridging. No blocking. No cooperative pool involvement.**
 
 - [ ] **Step 1: Rewrite DaemonPeerHandler as actor with custom executor**
 - [ ] **Step 2: Rewrite main.swift with daemon queue**
