@@ -92,7 +92,10 @@ final class DaemonPeerHandler: XPCPeerHandler {
 
         case .createSession(let shell, let rows, let cols):
             switch blockingAwaitResult({
-                try await self.manager.createSession(shell: shell, rows: rows, cols: cols)
+                let info = try await self.manager.createSession(shell: shell, rows: rows, cols: cols)
+                // Auto-attach the creating client so it receives output immediately.
+                _ = try await self.manager.attach(sessionID: info.id, client: self.session)
+                return info
             }) {
             case .success(let info):
                 return DaemonResponse.sessionCreated(info)
