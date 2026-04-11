@@ -760,471 +760,101 @@ git commit -m "feat(rtermd): add ShellSpawner with forkpty, signal blocking, FD 
 ### Task 7: Session Class ⚠️ REWORK — see Architecture Revision
 
 **Files:**
-- Create: `rtermd/Session.swift`
-
-Each Session owns a spawned shell, reads PTY output, parses through TerminalParser, updates ScreenModel, and fans out raw bytes to attached clients.
+- Modify: `rtermd/Session.swift`
 
 **Rework notes:**
-- Use a **static logger** (`private static let log`) — no reason to allocate a Logger per instance when subsystem/category are identical across all sessions.
-- Rename `private let lock` → `private let state` — the name should describe the contents, not the synchronization mechanism. The `OSAllocatedUnfairLock<SessionState>` type already communicates locking.
-- **Split output consumption** into sync and async parts. With the daemon queue model, the FileHandle readabilityHandler targets the daemon queue and calls parse → apply → fanOut **synchronously** — no AsyncStream, no Task needed. The stream/task machinery was only needed when crossing isolation boundaries. On a single queue, the readability handler IS the consumer.
-- If `OSAllocatedUnfairLock` is no longer needed (all access on daemon queue), remove it and use plain stored properties.
+- Use a **static logger** — no reason to allocate a Logger per instance when subsystem/category are identical across all sessions.
+- Rename `lock` → `state` — the name should describe the contents, not the synchronization mechanism.
+- **No AsyncStream, no Task** — with the daemon queue model, the FileHandle readabilityHandler targets the daemon queue and calls parse → apply → fanOut synchronously. The readability handler IS the consumer.
+- Remove `OSAllocatedUnfairLock` if all access is on the daemon queue — use plain stored properties.
+- `attach()`: add client to fan-out list BEFORE taking the snapshot (closes the race window).
+- `stop()`: kill before close (SIGTERM gives shell a chance to clean up before FD is pulled).
+- `deinit`: guard against double-cleanup if `stop()` was already called.
 
-- [ ] **Step 1: Implement Session**
+**Behavioral description:**
 
-```swift
-// rtermd/Session.swift
-import Foundation
-import TermCore
-import os
-import XPC
+Session is a class that owns a spawned shell process. On init, it calls `ShellSpawner.spawn()` and wraps the primary FD in a FileHandle. The readability handler is installed targeting the daemon queue, so when PTY output arrives it's processed synchronously on the same queue as everything else:
 
-final class Session: @unchecked Sendable {
-    let id: SessionID
-    let shell: Shell
-    let tty: String
-    let pid: pid_t
-    let primaryFD: Int32
-    let createdAt: Date
-    let screenModel: ScreenModel
-    private var parser: TerminalParser
-    private let log = Logger(subsystem: "rtermd", category: "Session")
+1. Parse raw bytes through TerminalParser → [TerminalEvent]
+2. Apply events to ScreenModel (daemon keeps screen state for reattach)
+3. Encode DaemonResponse.output and send to each attached client
 
-    // PTY read via FileHandle.readabilityHandler → AsyncStream (same pattern as PseudoTerminal)
-    private let primaryHandle: FileHandle
-    private let outputStream: AsyncStream<Data>
-    private let outputContinuation: AsyncStream<Data>.Continuation
-    private var outputTask: Task<Void, Never>?
+Clients are tracked in a simple array. `attach` adds a client and returns a ScreenSnapshot. `detach` removes by identity (`===`). `write` does a full-write loop with EINTR handling. `resize` sends TIOCSWINSZ. `stop` tears down everything (nil handler, kill, close). `info` returns a SessionInfo snapshot.
 
-    private let lock = OSAllocatedUnfairLock<SessionState>(initialState: .init())
-
-    struct SessionState: Sendable {
-        var attachedClients: [XPCSession] = []
-        var shellExited = false
-        var exitCode: Int32 = 0
-    }
-
-    init(id: SessionID, shell: Shell, rows: UInt16, cols: UInt16) throws {
-        let result = try ShellSpawner.spawn(shell: shell, rows: rows, cols: cols)
-        self.id = id
-        self.shell = shell
-        self.tty = result.ttyName
-        self.pid = result.pid
-        self.primaryFD = result.primaryFD
-        self.createdAt = Date()
-        self.screenModel = ScreenModel(cols: Int(cols), rows: Int(rows))
-        self.parser = TerminalParser()
-        self.primaryHandle = FileHandle(fileDescriptor: result.primaryFD, closeOnDealloc: false)
-
-        let (stream, continuation) = AsyncStream<Data>.makeStream()
-        self.outputStream = stream
-        self.outputContinuation = continuation
-
-        // FileHandle.readabilityHandler runs on a background queue (Foundation manages it)
-        self.primaryHandle.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                self?.outputContinuation.finish()
-                handle.readabilityHandler = nil
-            } else {
-                self?.outputContinuation.yield(data)
-            }
-        }
-    }
-
-    /// Consume the output stream: parse → screen model → fan-out to clients.
-    func startOutputConsumer() {
-        outputTask = Task { [weak self] in
-            guard let self else { return }
-            for await data in self.outputStream {
-                // Parse into screen model FIRST (ordering invariant)
-                let events = self.parser.parse(data)
-                await self.screenModel.apply(events)
-
-                // Fan out raw bytes to all attached clients
-                self.lock.withLock { state in
-                    for client in state.attachedClients {
-                        do {
-                            try client.send(DaemonResponse.output(sessionID: self.id, data: data))
-                        } catch {
-                            self.log.error("Failed to send output to client: \(error)")
-                        }
-                    }
-                }
-            }
-            self.log.info("Session \(self.id): output stream ended")
-        }
-    }
-
-    func attach(client: XPCSession) async -> ScreenSnapshot {
-        let snapshot = await screenModel.snapshot()
-        lock.withLock { state in
-            state.attachedClients.append(client)
-        }
-        return snapshot
-    }
-
-    func detach(client: XPCSession) {
-        lock.withLock { state in
-            state.attachedClients.removeAll { $0 === client }
-        }
-    }
-
-    func write(_ data: Data) {
-        data.withUnsafeBytes { buffer in
-            guard let ptr = buffer.baseAddress else { return }
-            var offset = 0
-            while offset < buffer.count {
-                let written = Darwin.write(primaryFD, ptr + offset, buffer.count - offset)
-                if written < 0 {
-                    if errno == EINTR { continue }
-                    log.error("PTY write failed: \(errno)")
-                    return
-                }
-                offset += written
-            }
-        }
-    }
-
-    func resize(rows: UInt16, cols: UInt16) {
-        var ws = winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
-        ioctl(primaryFD, TIOCSWINSZ, &ws)
-    }
-
-    func markExited(exitCode: Int32) {
-        lock.withLock { state in
-            state.shellExited = true
-            state.exitCode = exitCode
-        }
-    }
-
-    var hasClients: Bool {
-        lock.withLock { !$0.attachedClients.isEmpty }
-    }
-
-    var info: SessionInfo {
-        let clientCount = lock.withLock { $0.attachedClients.count }
-        return SessionInfo(
-            id: id, shell: shell, tty: tty, pid: Int32(pid),
-            createdAt: createdAt, title: nil,
-            rows: UInt16(screenModel.rows), cols: UInt16(screenModel.cols),
-            hasClient: clientCount > 0
-        )
-    }
-
-    func notifyClientsEnded(exitCode: Int32) {
-        lock.withLock { state in
-            for client in state.attachedClients {
-                try? client.send(DaemonResponse.sessionEnded(sessionID: id, exitCode: exitCode))
-            }
-            state.attachedClients.removeAll()
-        }
-    }
-
-    func stop() {
-        primaryHandle.readabilityHandler = nil
-        outputContinuation.finish()
-        outputTask?.cancel()
-        close(primaryFD)
-        kill(pid, SIGTERM)
-    }
-
-    deinit {
-        primaryHandle.readabilityHandler = nil
-        outputContinuation.finish()
-        outputTask?.cancel()
-    }
-}
-```
-
+- [ ] **Step 1: Rewrite Session per architecture revision**
 - [ ] **Step 2: Build**
 - [ ] **Step 3: Commit**
-
-```
-git add rtermd/Session.swift
-git commit -m "feat(rtermd): add Session class — owns forkpty'd shell, PTY I/O, screen model"
-```
 
 ---
 
-### Task 8: SessionManager Actor ⚠️ REWORK — becomes plain class, see Architecture Revision
+### Task 8: SessionManager ⚠️ REWORK — becomes plain class, see Architecture Revision
 
 **Files:**
-- Create: `rtermd/SessionManager.swift`
+- Modify: `rtermd/SessionManager.swift`
 
-- [ ] **Step 1: Implement SessionManager**
+**Behavioral description:**
 
-```swift
-// rtermd/SessionManager.swift
-import Foundation
-import TermCore
-import os
-import XPC
+SessionManager is a **plain class** (not an actor). The daemon queue serializes all access — no locks, no async/await. All methods are synchronous.
 
-actor SessionManager {
-    private var sessions: [SessionID: Session] = [:]
-    private var nextID: SessionID = 0
-    var onEmpty: (@Sendable () -> Void)?
-    private let log = Logger(subsystem: "rtermd", category: "SessionManager")
+It holds a `[SessionID: Session]` dictionary, a monotonic ID counter, and an optional `onEmpty` callback.
 
-    func createSession(shell: Shell, rows: UInt16, cols: UInt16) throws -> SessionInfo {
-        let id = nextID
-        nextID += 1
-        let session = try Session(id: id, shell: shell, rows: rows, cols: cols)
-        sessions[id] = session
-        session.startOutputConsumer()
-        log.info("Created session \(id), shell=\(shell.executable), pid=\(session.pid)")
-        return session.info
-    }
+Methods:
+- `createSession(shell:rows:cols:)` — allocate ID, create Session, start output consumer, return SessionInfo
+- `destroySession(sessionID:)` — stop session, remove from dictionary, check empty
+- `attach(sessionID:client:)` — delegate to Session.attach, return ScreenSnapshot
+- `detach(sessionID:client:)` — delegate to Session.detach
+- `handleInput(sessionID:data:)` — delegate to Session.write
+- `resize(sessionID:rows:cols:)` — delegate to Session.resize
+- `listSessions()` — map sessions to SessionInfo array
+- `reapChildren()` — loop waitpid(-1, WNOHANG), extract exit code (inline bit arithmetic, not WIFEXITED macro — Swift can't use C function-like macros), notify clients, remove session, check empty
+- `clientDisconnected(client:)` — detach from all sessions
+- `shutdownAll()` — stop all, clear dictionary
 
-    func attach(sessionID: SessionID, client: XPCSession) async throws -> ScreenSnapshot {
-        guard let session = sessions[sessionID] else {
-            throw DaemonError.sessionNotFound(sessionID)
-        }
-        return await session.attach(client: client)
-    }
+All methods throw `DaemonError.sessionNotFound` for unknown IDs.
 
-    func detach(sessionID: SessionID, client: XPCSession) {
-        sessions[sessionID]?.detach(client: client)
-    }
-
-    func handleInput(sessionID: SessionID, data: Data) throws {
-        guard let session = sessions[sessionID] else {
-            throw DaemonError.sessionNotFound(sessionID)
-        }
-        session.write(data)
-    }
-
-    func resize(sessionID: SessionID, rows: UInt16, cols: UInt16) throws {
-        guard let session = sessions[sessionID] else {
-            throw DaemonError.sessionNotFound(sessionID)
-        }
-        session.resize(rows: rows, cols: cols)
-    }
-
-    func listSessions() -> [SessionInfo] {
-        sessions.values.map(\.info)
-    }
-
-    func reapChildren() {
-        var status: Int32 = 0
-        while true {
-            let pid = waitpid(-1, &status, WNOHANG)
-            if pid <= 0 { break }
-            let exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1
-            if let (id, session) = sessions.first(where: { $0.value.pid == pid }) {
-                log.info("Session \(id) shell exited with code \(exitCode)")
-                session.markExited(exitCode: exitCode)
-                session.notifyClientsEnded(exitCode: exitCode)
-                sessions.removeValue(forKey: id)
-                checkEmpty()
-            }
-        }
-    }
-
-    func clientDisconnected(_ client: XPCSession) {
-        for session in sessions.values {
-            session.detach(client: client)
-        }
-    }
-
-    func shutdownAll() {
-        log.info("Shutting down all \(sessions.count) sessions")
-        for session in sessions.values {
-            session.stop()
-        }
-        sessions.removeAll()
-    }
-
-    private func checkEmpty() {
-        if sessions.isEmpty {
-            log.info("No sessions remaining")
-            onEmpty?()
-        }
-    }
-}
-```
-
+- [ ] **Step 1: Rewrite SessionManager as plain class**
 - [ ] **Step 2: Build**
 - [ ] **Step 3: Commit**
-
-```
-git add rtermd/SessionManager.swift
-git commit -m "feat(rtermd): add SessionManager actor — session registry, child reaping, lifecycle"
-```
 
 ---
 
 ### Task 9: DaemonPeerHandler + Daemon main.swift ⚠️ REWORK — actor with custom executor, see Architecture Revision
 
 **Files:**
-- Create: `rtermd/DaemonPeerHandler.swift`
+- Modify: `rtermd/DaemonPeerHandler.swift`
 - Modify: `rtermd/main.swift`
 
-- [ ] **Step 1: Implement DaemonPeerHandler**
+**Behavioral description:**
 
-Conforms directly to `XPCPeerHandler` with typed `Input = DaemonRequest`. The XPC framework's accept overload supports `Input: Decodable` — it handles the XPC message decoding for us. This also handles cancellation (client disconnect) in one type.
+**main.swift:**
 
-```swift
-// rtermd/DaemonPeerHandler.swift
-import Foundation
-import TermCore
-import XPC
-import os
+Creates a serial DispatchQueue (the "daemon queue"). Creates SessionManager. Creates XPCListener with the daemon queue as targetQueue and service name `"com.ronnyf.rterm.rtermd"`. In the accept closure, creates a DaemonPeerHandler per client connection. Sets up SIGTERM handler (graceful shutdown — call shutdownAll, then exit). Sets up SIGCHLD handler (call reapChildren on the daemon queue). Sets up exit-when-empty callback with a cancellable 5s grace period. Calls dispatchMain().
 
-final class DaemonPeerHandler: XPCPeerHandler {
-    typealias Input = DaemonRequest
-    typealias Output = any Encodable
+Signal handlers should use DispatchSource targeting the daemon queue so the callbacks run on the same queue as everything else — no async bridging needed.
 
-    private let session: XPCSession
-    private let manager: SessionManager
-    private let log = Logger(subsystem: "rtermd", category: "DaemonPeerHandler")
+**DaemonPeerHandler:**
 
-    init(session: XPCSession, manager: SessionManager) {
-        self.session = session
-        self.manager = manager
-    }
+An **actor with a custom SerialExecutor** backed by the daemon queue. Since XPC callbacks arrive on the daemon queue and the actor's executor IS that queue, the handler is already isolated when XPC calls it.
 
-    func handleIncomingRequest(_ request: DaemonRequest) -> (any Encodable)? {
-        switch request {
-        // Request-reply: client expects a response
-        case .listSessions:
-            return blockingAwait { await self.manager.listSessions() }
-                .map { DaemonResponse.sessions($0) }
+Conforms to `XPCPeerHandler`. Uses `XPCReceivedMessage` as input.
 
-        case .createSession(let shell, let rows, let cols):
-            return blockingAwait {
-                try await self.manager.createSession(shell: shell, rows: rows, cols: cols)
-            }.map { DaemonResponse.sessionCreated($0) }
-            ?? DaemonResponse.error(.internalError("spawn failed"))
+For **request-reply** operations (listSessions, createSession, attach):
+- Return `nil` from `handleIncomingRequest` (deferred reply)
+- Do the work (call SessionManager methods — synchronous, same queue)
+- Call `message.reply(response)` to send the response
 
-        case .attach(let sessionID):
-            return blockingAwait {
-                try await self.manager.attach(sessionID: sessionID, client: self.session)
-            }.map { DaemonResponse.screenSnapshot(sessionID: sessionID, snapshot: $0) }
-            ?? DaemonResponse.error(.sessionNotFound(sessionID))
+For **fire-and-forget** operations (detach, input, resize, destroySession):
+- Do the work directly (already on the right queue)
+- Return `nil`
 
-        // Fire-and-forget: no reply expected
-        case .detach(let sessionID):
-            Task { await self.manager.detach(sessionID: sessionID, client: self.session) }
-            return nil
+`handleCancellation`: call `sessionManager.clientDisconnected(session)`
 
-        case .input(let sessionID, let data):
-            Task { try? await self.manager.handleInput(sessionID: sessionID, data: data) }
-            return nil
+**No semaphores. No Task bridging. No blocking.**
 
-        case .resize(let sessionID, let rows, let cols):
-            Task { try? await self.manager.resize(sessionID: sessionID, rows: rows, cols: cols) }
-            return nil
-        }
-    }
-
-    func handleCancellation(error: XPCRichError) {
-        log.info("Client disconnected: \(error)")
-        Task { await manager.clientDisconnected(session) }
-    }
-
-    /// Bridge sync XPC handler → async actor. Safe: XPC runs on GCD concurrent queue, not cooperative pool.
-    private func blockingAwait<T>(_ work: @escaping @Sendable () async throws -> T) -> T? {
-        let semaphore = DispatchSemaphore(value: 0)
-        nonisolated(unsafe) var result: T?
-        Task {
-            result = try? await work()
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return result
-    }
-}
-```
-
-- [ ] **Step 2: Update main.swift**
-
-```swift
-// rtermd/main.swift
-import Foundation
-import TermCore
-import XPC
-import os
-
-let log = Logger(subsystem: "rtermd", category: "main")
-log.info("rtermd starting (pid=\(getpid()))")
-
-let sessionManager = SessionManager()
-
-let serviceName = "group.com.ronnyf.rterm.rtermd"
-
-do {
-    let listener = try XPCListener(service: serviceName) { request in
-        request.accept { session in
-            DaemonPeerHandler(session: session, manager: sessionManager)
-        }
-    }
-    _ = listener  // Keep reference alive
-} catch {
-    log.error("Failed to create XPCListener: \(error)")
-    exit(1)
-}
-
-// SIGTERM: graceful shutdown (DispatchSource is the standard macOS signal API — no alternative)
-signal(SIGTERM, SIG_IGN)
-let sigTermSource = DispatchSource.makeSignalSource(signal: SIGTERM)
-sigTermSource.setEventHandler {
-    log.info("Received SIGTERM, shutting down...")
-    Task {
-        await sessionManager.shutdownAll()
-        try? await Task.sleep(for: .seconds(1))
-        exit(0)
-    }
-}
-sigTermSource.activate()
-
-// SIGCHLD: reap children
-signal(SIGCHLD, SIG_IGN)
-let sigChldSource = DispatchSource.makeSignalSource(signal: SIGCHLD)
-sigChldSource.setEventHandler {
-    Task { await sessionManager.reapChildren() }
-}
-sigChldSource.activate()
-
-// Exit when empty (with cancellable 5s grace period)
-Task {
-    await sessionManager.setOnEmpty {
-        log.info("No sessions remaining, exiting in 5s...")
-        Task {
-            try? await Task.sleep(for: .seconds(5))
-            let count = await sessionManager.sessionCount
-            if count == 0 {
-                log.info("Goodbye.")
-                exit(0)
-            } else {
-                log.info("New session created during grace period, staying alive.")
-            }
-        }
-    }
-}
-
-dispatchMain()
-```
-
-Add helpers to SessionManager:
-```swift
-// Add to SessionManager
-func setOnEmpty(_ handler: @escaping @Sendable () -> Void) {
-    onEmpty = handler
-}
-
-var sessionCount: Int { sessions.count }
-```
-
-- [ ] **Step 3: Build the daemon**
-
-Run: `xcodebuild -project rTerm.xcodeproj -scheme rtermd build 2>&1 | tail -10`
-
+- [ ] **Step 1: Rewrite DaemonPeerHandler as actor with custom executor**
+- [ ] **Step 2: Rewrite main.swift with daemon queue**
+- [ ] **Step 3: Build**
 - [ ] **Step 4: Commit**
-
-```
-git add rtermd/DaemonPeerHandler.swift rtermd/main.swift rtermd/SessionManager.swift
 git commit -m "feat(rtermd): add DaemonPeerHandler and daemon entry point with signal handling"
 ```
 
@@ -1232,122 +862,49 @@ git commit -m "feat(rtermd): add DaemonPeerHandler and daemon entry point with s
 
 ## Phase C: Client Side
 
-> **See "Architecture Revision" section above** for the XPC API patterns (constructor with handlers, deferred replies, `import XPC`). The code samples below predate the revision — use them for functional intent, not as literal implementation guides.
-
 ### Task 10: DaemonClient — Replacing RemotePTY ⚠️ REWORK — use constructor pattern, see Architecture Revision
 
 **Files:**
 - Create: `TermCore/DaemonClient.swift`
 
+**Behavioral description:**
+
+DaemonClient is a `Sendable` class in TermCore that manages a single XPC connection to the rtermd daemon's Mach service (`"com.ronnyf.rterm.rtermd"`). It replaces the old `RemotePTY` class which used the XPC Application Service model.
+
+**Sendability and thread safety:**
+
+Mutable state (xpcSession, responseHandler) is protected by `OSAllocatedUnfairLock`. This is necessary because `setResponseHandler` is called from the main thread, while the incoming message handler runs on the XPC dispatch queue. The response handler must be fetched from the lock and called OUTSIDE the lock — calling user code while holding a lock risks deadlock if the user code tries to call back into the client.
+
+**XPC session lifecycle — this is critical, we burned hours on this:**
+
+Use the `XPCSession(machService:targetQueue:options:incomingMessageHandler:cancellationHandler:)` constructor. This constructor accepts handlers at creation time and auto-activates the session. The session is immediately ready to send/receive after construction.
+
+**NEVER call `setIncomingMessageHandler` on an already-active session.** The XPC runtime crashes with "XPC API Misuse: Session must be inactive to set the message handler, not Active". If you need to set handlers after construction, you must create the session with `options: .inactive`, set handlers, then call `activate()`. But the constructor pattern avoids this entirely — prefer it.
+
+`targetQueue: nil` uses the system default queue. Do not pass an explicit GCD queue unless there's a reason to control which queue the incoming message handler runs on.
+
+**Connection retry:**
+
+`connect()` is async. It attempts `connectOnce()` up to 4 times with exponential backoff (1s, 2s, 4s delays between the first three failures). The final attempt propagates the error as `.timeout`. This covers the case where the daemon hasn't started yet when the app launches — launchd starts it on demand when the Mach service is first looked up, but there may be a brief delay.
+
+**Incoming message handler:**
+
+The daemon pushes unsolicited messages to the client (`.output` with PTY data, `.sessionEnded` when a shell exits). The incoming message handler receives these as `DaemonResponse` values and forwards them to whatever response handler the client has registered. The handler closure captures the lock (not `self`) so it can read the current response handler. It returns `nil` (no reply to push messages).
+
+**Public API:**
+- `connect() async throws` — with retry
+- `setResponseHandler(_:)` — register push message handler (can be changed at any time)
+- `send(_: DaemonRequest) throws` — fire-and-forget (keyboard input, resize, detach)
+- `sendSync(_: DaemonRequest) throws -> DaemonResponse` — request-reply (createSession, attach, listSessions)
+- `disconnect()` — cancel session
+- `isConnected: Bool`
+
+`deinit` cancels any active session.
+
 - [ ] **Step 1: Implement DaemonClient**
-
-```swift
-// TermCore/DaemonClient.swift
-import Foundation
-import XPC
-import os
-
-public final class DaemonClient: Sendable {
-    public enum ConnectionError: Error {
-        case notConnected
-        case connectionFailed(String)
-        case timeout
-    }
-
-    private let serviceName: String
-    private let log = Logger(subsystem: "rTerm", category: "DaemonClient")
-    private let state = OSAllocatedUnfairLock<ClientState>(initialState: .init())
-
-    struct ClientState: Sendable {
-        var xpcSession: XPCSession?
-        var responseHandler: (@Sendable (DaemonResponse) -> Void)?
-    }
-
-    public init(serviceName: String = "group.com.ronnyf.rterm.rtermd") {
-        self.serviceName = serviceName
-    }
-
-    /// Connect with retry (1s, 2s, 4s backoff, 10s total timeout)
-    public func connect() async throws {
-        let delays: [UInt64] = [1_000_000_000, 2_000_000_000, 4_000_000_000]
-        var lastError: Error?
-
-        for (i, delay) in delays.enumerated() {
-            do {
-                try connectOnce()
-                log.info("Connected to \(self.serviceName)")
-                return
-            } catch {
-                lastError = error
-                log.warning("Connection attempt \(i + 1) failed: \(error), retrying in \(delay / 1_000_000_000)s")
-                try await Task.sleep(nanoseconds: delay)
-            }
-        }
-
-        // Final attempt
-        do {
-            try connectOnce()
-        } catch {
-            throw ConnectionError.timeout
-        }
-    }
-
-    private func connectOnce() throws {
-        let session = try XPCSession(
-            machService: serviceName,
-            targetQueue: .global(qos: .userInteractive)
-        )
-
-        session.setIncomingMessageHandler { [weak self] (response: DaemonResponse) -> Void in
-            self?.state.withLock { $0.responseHandler?(response) }
-        }
-
-        session.setCancellationHandler { [weak self] error in
-            self?.log.warning("XPC session cancelled: \(error)")
-            self?.state.withLock { $0.xpcSession = nil }
-        }
-
-        state.withLock { $0.xpcSession = session }
-    }
-
-    public func setResponseHandler(_ handler: @escaping @Sendable (DaemonResponse) -> Void) {
-        state.withLock { $0.responseHandler = handler }
-    }
-
-    public func send(_ request: DaemonRequest) throws {
-        guard let session = state.withLock({ $0.xpcSession }) else {
-            throw ConnectionError.notConnected
-        }
-        try session.send(request)
-    }
-
-    public func sendSync(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let session = state.withLock({ $0.xpcSession }) else {
-            throw ConnectionError.notConnected
-        }
-        return try session.sendSync(request)
-    }
-
-    public func disconnect() {
-        state.withLock { state in
-            state.xpcSession?.cancel(reason: "disconnect")
-            state.xpcSession = nil
-        }
-    }
-
-    deinit {
-        state.withLock { $0.xpcSession?.cancel(reason: "deinit") }
-    }
-}
-```
-
-- [ ] **Step 2: Build**
-- [ ] **Step 3: Commit**
-
-```
-git add TermCore/DaemonClient.swift
-git commit -m "feat(TermCore): add DaemonClient — XPC client for rtermd with connection retry"
-```
+- [ ] **Step 2: Add to TermCore target in project.pbxproj**
+- [ ] **Step 3: Build**
+- [ ] **Step 4: Commit**
 
 ---
 
@@ -1356,109 +913,45 @@ git commit -m "feat(TermCore): add DaemonClient — XPC client for rtermd with c
 **Files:**
 - Modify: `rTerm/ContentView.swift`
 
+**Behavioral description:**
+
+TerminalSession is an `@Observable @MainActor` class that manages the connection between the app UI and the daemon. It replaces the old RemotePTY-based flow with DaemonClient.
+
+**Connection flow — two separate XPC calls, not one:**
+
+The client must send `.createSession` and `.attach` as TWO separate `sendSync` calls. The original implementation tried to do both in a single `blockingAwaitResult` closure on the daemon side, which deadlocked because the semaphore blocked the XPC queue while the Task tried to send on the same queue.
+
+1. `Agent().register()` — registers the LaunchAgent (no-op in Debug builds, SMAppService in Release)
+2. `client.connect()` — async with retry, establishes XPC session
+3. Install response handler via `client.setResponseHandler`
+4. `client.sendSync(.createSession(shell:rows:cols:))` — creates the shell session, returns `SessionInfo`
+5. `client.sendSync(.attach(sessionID:))` — attaches to receive output, returns `ScreenSnapshot`
+6. `screenModel.restore(from: snapshot)` — renders the initial shell prompt
+
+The attach snapshot is essential: between `createSession` and `attach`, the shell may have already produced output (its prompt). That output went to the daemon's ScreenModel but wasn't fanned out to any client (no client was attached yet). The snapshot captures whatever the daemon has, so the client doesn't start with a blank screen.
+
+**Response handler threading:**
+
+The response handler closure runs on the XPC dispatch queue, not MainActor. Any work that touches the ScreenModel or other UI state must be dispatched to MainActor. The TerminalParser is a mutating struct — protect it with an `OSAllocatedUnfairLock` for Sendable capture, or dispatch all parsing to MainActor.
+
+Response cases:
+- `.output(sessionID, data)` — parse through TerminalParser → `[TerminalEvent]` → `screenModel.apply(events)` on MainActor
+- `.screenSnapshot(sessionID, snapshot)` — `screenModel.restore(from:)` on MainActor
+- `.sessionEnded(sessionID, exitCode)` — log, clear sessionID
+- `.error(daemonError)` — log
+
+**Input/resize:**
+
+`sendInput(_:)` sends `.input(sessionID:data:)` via fire-and-forget `client.send()`.
+`resize(rows:cols:)` sends `.resize(sessionID:rows:cols:)` via fire-and-forget.
+
+**No deinit detach** — the daemon handles client disconnect via the XPC cancellation handler (`DaemonPeerHandler.handleCancellation` calls `sessionManager.clientDisconnected`). When the app quits or the XPC connection drops, the daemon automatically detaches the client from all sessions. The session continues running for potential reattach.
+
+ContentView stays unchanged — creates TerminalSession, calls connect in `.task`, passes input via `sendInput`.
+
 - [ ] **Step 1: Update TerminalSession**
-
-Replace the existing `TerminalSession` class in `ContentView.swift`. Key changes:
-- Use `DaemonClient` instead of `RemotePTY`
-- Track `sessionID`
-- Handle `DaemonResponse` messages
-- Support reattach via `screenModel.restore(from:)`
-
-```swift
-@Observable @MainActor
-class TerminalSession {
-    let screenModel: ScreenModel
-    private let client: DaemonClient
-    private var parser = TerminalParser()
-    private var outputTask: Task<Void, Never>?
-    private(set) var sessionID: SessionID?
-    private let log = Logger(subsystem: "rTerm", category: "TerminalSession")
-
-    init(rows: Int = 24, cols: Int = 80) {
-        screenModel = ScreenModel(cols: cols, rows: rows)
-        client = DaemonClient()
-    }
-
-    func connect() async {
-        do {
-            try await client.connect()
-
-            // Set up response handler
-            client.setResponseHandler { [weak self] response in
-                Task { @MainActor [weak self] in
-                    await self?.handleResponse(response)
-                }
-            }
-
-            // Create a new session
-            let reply = try client.sendSync(.createSession(
-                shell: .zsh,
-                rows: UInt16(screenModel.rows),
-                cols: UInt16(screenModel.cols)
-            ))
-
-            if case .sessionCreated(let info) = reply {
-                sessionID = info.id
-                log.info("Session \(info.id) created, shell pid=\(info.pid)")
-            } else if case .error(let error) = reply {
-                log.error("Failed to create session: \(error)")
-            }
-        } catch {
-            log.error("Connection failed: \(error)")
-        }
-    }
-
-    private func handleResponse(_ response: DaemonResponse) async {
-        switch response {
-        case .output(let id, let data) where id == sessionID:
-            let events = parser.parse(data)
-            await screenModel.apply(events)
-
-        case .screenSnapshot(let id, let snapshot) where id == sessionID:
-            await screenModel.restore(from: snapshot)
-
-        case .sessionEnded(let id, let exitCode) where id == sessionID:
-            log.info("Session \(id) ended with exit code \(exitCode)")
-            sessionID = nil
-
-        default:
-            break
-        }
-    }
-
-    func sendInput(_ data: Data) {
-        guard let id = sessionID else { return }
-        try? client.send(.input(sessionID: id, data: data))
-    }
-
-    func resize(rows: UInt16, cols: UInt16) {
-        guard let id = sessionID else { return }
-        try? client.send(.resize(sessionID: id, rows: rows, cols: cols))
-    }
-
-    deinit {
-        outputTask?.cancel()
-        if let id = sessionID {
-            try? client.send(.detach(sessionID: id))
-        }
-    }
-}
-```
-
-- [ ] **Step 2: Update ContentView if needed**
-
-The `ContentView` should remain largely unchanged — it creates `TerminalSession` and calls `session.connect()` via `.task`. The `onInput` closure now calls `session.sendInput(data)`.
-
-- [ ] **Step 3: Build the app**
-
-Run: `xcodebuild -project rTerm.xcodeproj -scheme rTerm build 2>&1 | tail -20`
-
-- [ ] **Step 4: Commit**
-
-```
-git add rTerm/ContentView.swift
-git commit -m "feat(rTerm): update TerminalSession to use DaemonClient for rtermd communication"
-```
+- [ ] **Step 2: Build**
+- [ ] **Step 3: Commit**
 
 ---
 
