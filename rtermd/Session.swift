@@ -205,10 +205,12 @@ final class Session: @unchecked Sendable {
     /// - Parameter client: The XPC session representing the attaching client.
     /// - Returns: The current screen snapshot for initial rendering.
     func attach(client: XPCSession) async -> ScreenSnapshot {
-        let snapshot = await screenModel.snapshot()
+        // Add client to fan-out list FIRST so any output arriving during
+        // the snapshot await is also delivered to this client.
         lock.withLock { state in
             state.attachedClients.append(client)
         }
+        let snapshot = await screenModel.snapshot()
         log.info("Session \(self.id): client attached")
         return snapshot
     }
