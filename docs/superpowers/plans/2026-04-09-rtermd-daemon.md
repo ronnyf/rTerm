@@ -764,6 +764,12 @@ git commit -m "feat(rtermd): add ShellSpawner with forkpty, signal blocking, FD 
 
 Each Session owns a spawned shell, reads PTY output, parses through TerminalParser, updates ScreenModel, and fans out raw bytes to attached clients.
 
+**Rework notes:**
+- Use a **static logger** (`private static let log`) — no reason to allocate a Logger per instance when subsystem/category are identical across all sessions.
+- Rename `private let lock` → `private let state` — the name should describe the contents, not the synchronization mechanism. The `OSAllocatedUnfairLock<SessionState>` type already communicates locking.
+- **Split output consumption** into sync and async parts. With the daemon queue model, the FileHandle readabilityHandler targets the daemon queue and calls parse → apply → fanOut **synchronously** — no AsyncStream, no Task needed. The stream/task machinery was only needed when crossing isolation boundaries. On a single queue, the readability handler IS the consumer.
+- If `OSAllocatedUnfairLock` is no longer needed (all access on daemon queue), remove it and use plain stored properties.
+
 - [ ] **Step 1: Implement Session**
 
 ```swift
