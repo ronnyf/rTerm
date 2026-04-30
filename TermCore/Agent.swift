@@ -7,18 +7,18 @@
 
 import Foundation
 import ServiceManagement
-import XPCOverlay
+import XPC
 
 public class Agent {
     
     let service: SMAppService
     
     public convenience init() {
-        self.init(name: "com.ronnyf.rTermLauncher.agent.plist")
+        self.init(name: "com.ronnyf.rterm.rtermd.plist")
     }
     
     init(name: String) {
-        self.service = SMAppService.agent(plistName: "com.xpc.example.agent.plist")
+        self.service = SMAppService.agent(plistName: name)
     }
     
     public var status: SMAppService.Status {
@@ -26,7 +26,9 @@ public class Agent {
     }
     
     public func register() throws {
+        #if !DEBUG
         try service.register()
+        #endif
     }
     
     public func unregister() throws {

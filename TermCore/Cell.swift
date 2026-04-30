@@ -25,7 +25,7 @@
 /// `Cell` is the atomic unit of the screen model. It holds one Unicode
 /// `Character` and is intentionally kept minimal so that
 /// `ContiguousArray<Cell>` is cheap to copy and compare.
-public struct Cell: Sendable, Equatable {
+public struct Cell: Sendable, Equatable, Codable {
     /// The Unicode character occupying this cell.
     public var character: Character
 
@@ -36,6 +36,30 @@ public struct Cell: Sendable, Equatable {
 
     /// A blank cell — a single space character.
     public static let empty = Cell(character: " ")
+
+    // MARK: Codable
+
+    private enum CodingKeys: String, CodingKey {
+        case character
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let string = try container.decode(String.self, forKey: .character)
+        guard let first = string.first, string.count == 1 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .character,
+                in: container,
+                debugDescription: "Expected a single-character string, got \"\(string)\""
+            )
+        }
+        self.character = first
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(String(character), forKey: .character)
+    }
 }
 
 // MARK: - Cursor
@@ -44,7 +68,7 @@ public struct Cell: Sendable, Equatable {
 ///
 /// Row and column are zero-based indices into the grid produced by
 /// `ScreenSnapshot`.
-public struct Cursor: Sendable, Equatable {
+public struct Cursor: Sendable, Equatable, Codable {
     /// Zero-based row index (top = 0).
     public var row: Int
     /// Zero-based column index (left = 0).
@@ -67,7 +91,7 @@ public struct Cursor: Sendable, Equatable {
 ///
 /// - Note: `ScreenSnapshot` is `Sendable` because all stored properties
 ///   are value types that are themselves `Sendable`.
-public struct ScreenSnapshot: Sendable, Equatable {
+public struct ScreenSnapshot: Sendable, Equatable, Codable {
     /// Flat row-major storage: `cells[row * cols + col]`.
     public let cells: ContiguousArray<Cell>
     /// Number of columns in the grid.
@@ -98,5 +122,36 @@ public struct ScreenSnapshot: Sendable, Equatable {
     ///   - col: Zero-based column index.
     public subscript(row: Int, col: Int) -> Cell {
         cells[row * cols + col]
+    }
+
+    // MARK: Codable
+
+    private enum CodingKeys: String, CodingKey {
+        case cells, cols, rows, cursor
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let array = try container.decode([Cell].self, forKey: .cells)
+        self.cols = try container.decode(Int.self, forKey: .cols)
+        self.rows = try container.decode(Int.self, forKey: .rows)
+        self.cursor = try container.decode(Cursor.self, forKey: .cursor)
+        guard array.count == rows * cols else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: "Expected \(rows * cols) cells (\(rows)x\(cols)), got \(array.count)"
+                )
+            )
+        }
+        self.cells = ContiguousArray(array)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Array(cells), forKey: .cells)
+        try container.encode(cols, forKey: .cols)
+        try container.encode(rows, forKey: .rows)
+        try container.encode(cursor, forKey: .cursor)
     }
 }
