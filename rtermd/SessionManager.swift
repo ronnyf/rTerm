@@ -35,15 +35,6 @@ import XPC
 /// is serialized by the daemon's serial dispatch queue, so no locks or
 /// async/await are needed. Every method is synchronous.
 ///
-/// ## Why not an actor?
-///
-/// The original implementation used an actor, which required a semaphore-based
-/// GCD-to-async bridge in `DaemonPeerHandler`. That bridge was the root cause
-/// of a deadlock: blocking a GCD thread with a semaphore while a Task on the
-/// cooperative pool tried to send on the same blocked queue. Making
-/// `SessionManager` a plain class eliminates the bridge entirely —
-/// `DaemonPeerHandler` calls methods directly on the daemon queue.
-///
 /// ## Lifecycle
 ///
 /// 1. The daemon's `main.swift` creates a single `SessionManager` and passes
@@ -113,11 +104,8 @@ final class SessionManager {
         let session: Session
         do {
             session = try Session(id: id, shell: shell, rows: rows, cols: cols, queue: queue)
-        } catch let spawnError as SpawnError {
-            switch spawnError {
-            case .forkFailed(let errNo):
-                throw DaemonError.spawnFailed(errNo)
-            }
+        } catch SpawnError.forkFailed(let errNo) {
+            throw DaemonError.spawnFailed(errNo)
         } catch {
             throw DaemonError.internalError(error.localizedDescription)
         }
@@ -250,7 +238,6 @@ final class SessionManager {
             }
 
             Self.log.info("Session \(id): shell exited with code \(exitCode)")
-            session.markExited(exitCode: exitCode)
             session.notifyClientsEnded(exitCode: exitCode)
             sessions.removeValue(forKey: id)
             checkEmpty()

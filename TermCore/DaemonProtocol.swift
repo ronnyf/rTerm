@@ -22,6 +22,15 @@
 
 import Foundation
 
+// MARK: - DaemonService
+
+/// Shared identifiers for the rtermd XPC service, used by both the client
+/// (`DaemonClient`) and the daemon's `XPCListener`.
+public enum DaemonService {
+    /// Mach service name advertised by rtermd's LaunchAgent plist.
+    public static let machServiceName = "com.ronnyf.rterm.rtermd"
+}
+
 // MARK: - SessionID
 
 /// Unique identifier for a terminal session managed by the daemon.

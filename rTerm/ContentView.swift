@@ -116,7 +116,7 @@ class TerminalSession {
     /// Install the push-based response handler on the daemon client.
     ///
     /// The handler runs on the XPC queue. It parses output data under the
-    /// parser lock, then dispatches screen model updates to `MainActor`.
+    /// parser lock, then hands events to `ScreenModel` via its own executor.
     private func installResponseHandler() {
         let screenModel = self.screenModel
         let parser = self.parser
@@ -127,13 +127,13 @@ class TerminalSession {
             case .output(_, let data):
                 log.debug("Received output: \(data.count) bytes")
                 let events = parser.withLock { $0.parse(data) }
-                Task { @MainActor in
+                Task {
                     await screenModel.apply(events)
                 }
 
             case .screenSnapshot(_, let snapshot):
                 log.info("Received screen snapshot")
-                Task { @MainActor in
+                Task {
                     await screenModel.restore(from: snapshot)
                 }
 

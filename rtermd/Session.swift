@@ -77,9 +77,6 @@ final class Session {
     private var rows: UInt16
     private var cols: UInt16
 
-    /// Exit status recorded by `markExited`, nil while the shell is running.
-    private var exitStatus: Int32?
-
     /// Guards against double teardown in `stop()` / `deinit`.
     private var isStopped = false
 
@@ -308,18 +305,6 @@ final class Session {
     }
 
     // MARK: - Exit handling
-
-    /// Record that the shell process has exited.
-    ///
-    /// Called by ``SessionManager`` when `waitpid` reaps the child. This
-    /// updates internal state but does not notify clients -- call
-    /// ``notifyClientsEnded(exitCode:)`` separately after bookkeeping.
-    ///
-    /// - Parameter exitCode: The shell's exit status.
-    func markExited(exitCode: Int32) {
-        self.exitStatus = exitCode
-        Self.log.info("Session \(self.id): shell exited with code \(exitCode)")
-    }
 
     /// Notify all attached clients that the session has ended, then clear
     /// the client list.

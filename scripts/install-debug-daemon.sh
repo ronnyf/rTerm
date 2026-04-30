@@ -47,12 +47,19 @@ launchctl bootout "$SERVICE_TARGET" 2>/dev/null || true
 # so AssociatedBundleIdentifiers can stay. (If the signing identity is missing
 # and builds fall back to adhoc, the LWCR check fails with the generic
 # "Input/output error" during bootstrap -- strip the key as a workaround then.)
+# Two PlistBuddy invocations: one to drop any pre-existing keys (tolerated if
+# absent), one to add the current ones (must succeed).
 cp "$SOURCE" "$DEST"
-/usr/libexec/PlistBuddy -c "Delete :BundleProgram" "$DEST" 2>/dev/null || true
-/usr/libexec/PlistBuddy -c "Add :Program string ${RTERMD_BIN}" "$DEST"
-/usr/libexec/PlistBuddy -c "Delete :ProgramArguments" "$DEST" 2>/dev/null || true
-/usr/libexec/PlistBuddy -c "Add :ProgramArguments array" "$DEST"
-/usr/libexec/PlistBuddy -c "Add :ProgramArguments: string ${RTERMD_BIN}" "$DEST"
+/usr/libexec/PlistBuddy \
+    -c "Delete :BundleProgram" \
+    -c "Delete :Program" \
+    -c "Delete :ProgramArguments" \
+    "$DEST" 2>/dev/null || true
+/usr/libexec/PlistBuddy \
+    -c "Add :Program string ${RTERMD_BIN}" \
+    -c "Add :ProgramArguments array" \
+    -c "Add :ProgramArguments: string ${RTERMD_BIN}" \
+    "$DEST"
 
 # Load the daemon, then kickstart out of any pre-existing penalty box so
 # subsequent XPC connections spawn the fresh binary immediately.

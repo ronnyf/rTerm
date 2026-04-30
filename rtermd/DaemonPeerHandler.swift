@@ -42,14 +42,6 @@ import XPC
 /// callback context — the `XPCListener`'s target queue is the same serial
 /// queue. Because `XPCPeerHandler` methods are called synchronously on that
 /// queue, `assumeIsolated` safely enters actor context without suspension.
-///
-/// ## No semaphores, no Task bridging
-///
-/// The previous implementation used `DispatchSemaphore` + `Task` to bridge
-/// from GCD to async (`blockingAwait` / `blockingAwaitResult`). That pattern
-/// risked deadlocks when the semaphore blocked the same queue a Task needed.
-/// Now all `SessionManager` methods are synchronous, called directly from
-/// actor-isolated context on the daemon queue. No bridging needed.
 actor DaemonPeerHandler: XPCPeerHandler {
     typealias Input = DaemonRequest
     typealias Output = any Encodable

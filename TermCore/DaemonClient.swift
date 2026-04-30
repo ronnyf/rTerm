@@ -72,8 +72,8 @@ public final class DaemonClient: Sendable {
     /// Creates a daemon client targeting the given Mach service name.
     ///
     /// - Parameter serviceName: The Mach service name registered by the daemon
-    ///   launch agent. Defaults to `"com.ronnyf.rterm.rtermd"`.
-    public init(serviceName: String = "com.ronnyf.rterm.rtermd") {
+    ///   launch agent. Defaults to ``DaemonService/machServiceName``.
+    public init(serviceName: String = DaemonService.machServiceName) {
         self.serviceName = serviceName
         self.state = OSAllocatedUnfairLock(initialState: ClientState())
     }

@@ -29,7 +29,6 @@ import XPC
 
 // MARK: - Configuration
 
-private let serviceName = "com.ronnyf.rterm.rtermd"
 private let idleExitDelay: TimeInterval = 5
 private let log = Logger(subsystem: "com.ronnyf.rtermd", category: "main")
 
@@ -49,7 +48,7 @@ let sessionManager = SessionManager(queue: daemonQueue)
 
 let listener: XPCListener
 do {
-    listener = try XPCListener(service: serviceName, targetQueue: daemonQueue) { request in
+    listener = try XPCListener(service: DaemonService.machServiceName, targetQueue: daemonQueue) { request in
         request.accept { session in
             DaemonPeerHandler(session: session, manager: sessionManager, queue: daemonQueue)
         }
@@ -59,13 +58,14 @@ do {
     exit(EXIT_FAILURE)
 }
 
-log.info("XPC listener active on \(serviceName)")
+log.info("XPC listener active on \(DaemonService.machServiceName)")
 
 // MARK: - Signal handling
 
-// Block default signal handling before installing dispatch sources.
+// Block SIGTERM so the dispatch source handles it instead of terminating us.
+// SIGCHLD is left at the default (SIG_DFL) -- setting it to SIG_IGN would
+// tell the kernel to auto-reap children, defeating waitpid() in reapChildren.
 signal(SIGTERM, SIG_IGN)
-signal(SIGCHLD, SIG_IGN)
 
 // SIGTERM: graceful shutdown -- stop all sessions, then exit.
 let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: daemonQueue)
@@ -88,10 +88,6 @@ sigchldSource.activate()
 
 // When the last session is removed, wait idleExitDelay seconds and exit
 // if no new sessions were created. Prevents the daemon from lingering idle.
-//
-// exitWorkItem is a simple var in main scope -- safe because main.swift is
-// top-level single-threaded init and the onEmpty callback runs exclusively
-// on the daemon queue. No lock needed.
 var exitWorkItem: DispatchWorkItem?
 
 sessionManager.onEmpty = {
