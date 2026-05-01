@@ -22,6 +22,7 @@
 
 import OSLog
 import SwiftUI
+import Synchronization
 import TermCore
 
 @Observable @MainActor
@@ -47,7 +48,7 @@ class TerminalSession {
     /// is a mutating method. The XPC queue serializes calls, but the lock
     /// satisfies the `Sendable` capture requirement.
     @ObservationIgnored
-    private let parser = OSAllocatedUnfairLock(initialState: TerminalParser())
+    private let parser = Mutex(TerminalParser())
 
     private var sessionID: SessionID?
 
@@ -126,9 +127,10 @@ class TerminalSession {
     /// so SwiftUI `.navigationTitle` stays in sync with OSC 0 / OSC 2.
     private func installResponseHandler() {
         let screenModel = self.screenModel
-        let parser = self.parser
         let log = self.log
 
+        // `Mutex` is `~Copyable` so the parser can't be stashed in a local;
+        // the closure captures `self` and reaches `self.parser` through it.
         client.setResponseHandler { [self] response in
             switch response {
             // .output uses ScreenModel.applyAndCurrentTitle to collapse the apply
@@ -138,7 +140,7 @@ class TerminalSession {
             // entirely by publishing windowTitle through the nonisolated snapshot.
             case .output(_, let data):
                 log.debug("Received output: \(data.count) bytes")
-                let events = parser.withLock { $0.parse(data) }
+                let events = self.parser.withLock { $0.parse(data) }
                 Task { @MainActor in
                     self.windowTitle = await screenModel.applyAndCurrentTitle(events)
                 }
