@@ -41,6 +41,10 @@ struct SpawnResult: Sendable {
 enum SpawnError: Error {
     /// `forkpty` returned -1.
     case forkFailed(Int32)
+    /// `forkpty` succeeded but the tty name it wrote back wasn't valid UTF-8.
+    /// In practice this cannot happen — the kernel writes ASCII like
+    /// `/dev/ttys003` — but the decode is fallible so we surface it explicitly.
+    case ttyNameDecodingFailed
 }
 
 // MARK: - Shell + Spawn
@@ -139,8 +143,8 @@ extension Shell {
         }
 
         // Decode the NUL-terminated tty path forkpty wrote into `ttyNameBuf`.
-        let ttyName: String = ttyNameBuf.withUnsafeBytes { bytes in
-            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        guard let ttyName = String(cString: ttyNameBuf, encoding: .utf8) else {
+            throw SpawnError.ttyNameDecodingFailed
         }
         return SpawnResult(pid: pid, primaryFD: primaryFD, ttyName: ttyName)
     }
