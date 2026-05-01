@@ -301,3 +301,68 @@ struct ScreenModelTests {
         #expect(snap.cursor.col == 2)
     }
 }
+
+// MARK: - CSI cursor motion + erase handling
+
+struct ScreenModelCSITests {
+
+    @Test func cursor_position_sets_cursor() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.cursorPosition(row: 5, col: 10))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 5)
+        #expect(snap.cursor.col == 10)
+    }
+
+    @Test func cursor_position_clamps() async {
+        let model = ScreenModel(cols: 10, rows: 5)
+        await model.apply([.csi(.cursorPosition(row: 999, col: 999))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 4)
+        #expect(snap.cursor.col == 9)
+    }
+
+    @Test func cursor_up_clamps_at_top() async {
+        let model = ScreenModel(cols: 10, rows: 5)
+        await model.apply([.csi(.cursorUp(100))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 0)
+    }
+
+    @Test func save_and_restore_cursor() async {
+        let model = ScreenModel(cols: 10, rows: 5)
+        await model.apply([
+            .csi(.cursorPosition(row: 2, col: 3)),
+            .csi(.saveCursor),
+            .csi(.cursorPosition(row: 4, col: 9)),
+            .csi(.restoreCursor)
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 2)
+        #expect(snap.cursor.col == 3)
+    }
+
+    @Test func erase_in_line_to_end() async {
+        let model = ScreenModel(cols: 5, rows: 2)
+        await model.apply([
+            .printable("A"), .printable("B"), .printable("C"), .printable("D"), .printable("E"),
+            .csi(.cursorPosition(row: 0, col: 2)),
+            .csi(.eraseInLine(.toEnd))
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].character == "A")
+        #expect(snap[0, 1].character == "B")
+        #expect(snap[0, 2].character == " ")
+        #expect(snap[0, 4].character == " ")
+    }
+
+    @Test func erase_in_display_all_clears_grid() async {
+        let model = ScreenModel(cols: 3, rows: 2)
+        await model.apply([
+            .printable("A"), .printable("B"), .printable("C"),
+            .csi(.eraseInDisplay(.all))
+        ])
+        let snap = model.latestSnapshot()
+        for r in 0..<2 { for c in 0..<3 { #expect(snap[r, c].character == " ") } }
+    }
+}

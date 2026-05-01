@@ -193,7 +193,7 @@ struct TerminalParserStateMachineTests {
     @Test func esc_then_csi_then_final_emits_unknown_csi() {
         var parser = TerminalParser()
         let events = parser.parse(Data([0x1B, 0x5B, 0x35, 0x3B, 0x31, 0x30, 0x48]))
-        #expect(events == [.csi(.unknown(params: [5, 10], intermediates: [], final: 0x48))])
+        #expect(events == [.csi(.cursorPosition(row: 4, col: 9))])
     }
 
     @Test func csi_split_across_chunks_is_coherent() {
@@ -201,7 +201,7 @@ struct TerminalParserStateMachineTests {
         let first = parser.parse(Data([0x1B, 0x5B, 0x35]))
         let second = parser.parse(Data([0x3B, 0x31, 0x30, 0x48]))
         #expect(first.isEmpty)
-        #expect(second == [.csi(.unknown(params: [5, 10], intermediates: [], final: 0x48))])
+        #expect(second == [.csi(.cursorPosition(row: 4, col: 9))])
     }
 
     @Test func can_mid_csi_returns_to_ground() {
@@ -308,7 +308,7 @@ struct TerminalParserStateMachineTests {
         let events = parser.parse(Data([0x1B, 0x5B, 0x35, 0x08, 0x41]))
         #expect(events == [
             .c0(.backspace),
-            .csi(.unknown(params: [5], intermediates: [], final: 0x41))
+            .csi(.cursorUp(5))
         ])
     }
 
@@ -326,5 +326,61 @@ struct TerminalParserStateMachineTests {
         // .csi(.unknown(params: [25], intermediates: [0x3F], final: 0x68)).
         let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x32, 0x35, 0x68]))
         #expect(events == [.csi(.unknown(params: [25], intermediates: [0x3F], final: 0x68))])
+    }
+}
+
+// MARK: - CSI cursor motion + erase parser tests
+
+struct CSICursorParseTests {
+
+    @Test func cursor_up_default_1() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x41])) == [.csi(.cursorUp(1))])
+    }
+
+    @Test func cursor_up_5() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x35, 0x41])) == [.csi(.cursorUp(5))])
+    }
+
+    @Test func cursor_position_normalizes_origin() {
+        var parser = TerminalParser()
+        // ESC [ 5 ; 10 H  →  (row: 4, col: 9) 0-indexed
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x35, 0x3B, 0x31, 0x30, 0x48]))
+                == [.csi(.cursorPosition(row: 4, col: 9))])
+    }
+
+    @Test func cursor_position_empty_is_origin() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x48]))
+                == [.csi(.cursorPosition(row: 0, col: 0))])
+    }
+
+    @Test func erase_in_display_to_end() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x4A])) == [.csi(.eraseInDisplay(.toEnd))])
+    }
+
+    @Test func erase_in_display_all() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x32, 0x4A])) == [.csi(.eraseInDisplay(.all))])
+    }
+
+    @Test func erase_in_line_to_begin() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x4B])) == [.csi(.eraseInLine(.toBegin))])
+    }
+
+    @Test func save_and_restore_cursor() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x73, 0x1B, 0x5B, 0x75]))
+        #expect(events == [.csi(.saveCursor), .csi(.restoreCursor)])
+    }
+
+    @Test func cursor_horizontal_absolute() {
+        var parser = TerminalParser()
+        // ESC [ 12 G  →  cursorHorizontalAbsolute(12) — parser carries VT 1-indexed value.
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x32, 0x47]))
+                == [.csi(.cursorHorizontalAbsolute(12))])
     }
 }

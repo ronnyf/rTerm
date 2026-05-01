@@ -277,7 +277,7 @@ public struct TerminalParser: Sendable {
             return
         }
         if Self.isCSIFinal(byte) {
-            events.append(.csi(.unknown(params: [], intermediates: [], final: byte)))
+            events.append(.csi(Self.mapCSI(params: [], intermediates: [], final: byte)))
             state = .ground
             return
         }
@@ -349,7 +349,7 @@ public struct TerminalParser: Sendable {
             if let cur = current, flushed.count < Limits.csiParams {
                 flushed.append(cur)
             }
-            events.append(.csi(.unknown(params: flushed, intermediates: intermediates, final: byte)))
+            events.append(.csi(Self.mapCSI(params: flushed, intermediates: intermediates, final: byte)))
             state = .ground
             return
         }
@@ -393,7 +393,7 @@ public struct TerminalParser: Sendable {
             return
         }
         if Self.isCSIFinal(byte) {
-            events.append(.csi(.unknown(params: params, intermediates: intermediates, final: byte)))
+            events.append(.csi(Self.mapCSI(params: params, intermediates: intermediates, final: byte)))
             state = .ground
             return
         }
@@ -562,6 +562,60 @@ public struct TerminalParser: Sendable {
             state = .dcsIgnore(pendingST: true)
         default:
             break  // silently consume payload bytes
+        }
+    }
+
+    // MARK: - CSI mapping
+
+    /// Map collected CSI parameters, intermediates, and final byte into a
+    /// typed ``CSICommand``. Unrecognized finals (and any sequence carrying
+    /// intermediates — including the private markers `< = > ?` we stash in
+    /// intermediates) fall through to `.unknown` so later tasks / phases can
+    /// disambiguate.
+    private static func mapCSI(params: [Int], intermediates: [UInt8], final: UInt8) -> CSICommand {
+        // VT defaults: a missing numeric parameter counts as 1 for motion,
+        // 0 for erase region selectors.
+        func p(_ i: Int, default d: Int) -> Int {
+            guard i < params.count else { return d }
+            return params[i] == 0 ? d : params[i]
+        }
+
+        // Any sequence with intermediates (including private markers we stashed
+        // here — 0x3C-0x3F) is not in this task's typed set. Emit .unknown so
+        // Phase 2 / Task 5 / Task 6 can disambiguate.
+        guard intermediates.isEmpty else {
+            return .unknown(params: params, intermediates: intermediates, final: final)
+        }
+
+        switch final {
+        case 0x41 /* A */: return .cursorUp(p(0, default: 1))
+        case 0x42 /* B */: return .cursorDown(p(0, default: 1))
+        case 0x43 /* C */: return .cursorForward(p(0, default: 1))
+        case 0x44 /* D */: return .cursorBack(p(0, default: 1))
+        case 0x47 /* G */: return .cursorHorizontalAbsolute(p(0, default: 1))
+        case 0x64 /* d */: return .verticalPositionAbsolute(p(0, default: 1))
+        case 0x48, 0x66 /* H, f */:
+            // CSI H / HVP — 1-indexed in VT; subtract to 0-indexed on emit.
+            // Defaults to 1;1 → 0,0 after shift.
+            let row = p(0, default: 1) - 1
+            let col = p(1, default: 1) - 1
+            return .cursorPosition(row: max(0, row), col: max(0, col))
+        case 0x73 /* s */: return .saveCursor
+        case 0x75 /* u */: return .restoreCursor
+        case 0x4A /* J */: return .eraseInDisplay(Self.mapEraseRegion(p(0, default: 0)))
+        case 0x4B /* K */: return .eraseInLine(Self.mapEraseRegion(p(0, default: 0)))
+        default:
+            return .unknown(params: params, intermediates: intermediates, final: final)
+        }
+    }
+
+    private static func mapEraseRegion(_ n: Int) -> EraseRegion {
+        switch n {
+        case 0: return .toEnd
+        case 1: return .toBegin
+        case 2: return .all
+        case 3: return .scrollback
+        default: return .toEnd
         }
     }
 

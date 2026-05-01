@@ -53,6 +53,9 @@ public actor ScreenModel {
     /// Current write position.
     private var cursor: Cursor
 
+    /// CSI s / u save/restore state.
+    private var savedCursor: Cursor?
+
     /// Number of columns.
     public let cols: Int
 
@@ -120,8 +123,8 @@ public actor ScreenModel {
                 handlePrintable(c)
             case .c0(let control):
                 handleC0(control)
-            case .csi:
-                break   // CSI handling lands in Task 4
+            case .csi(let cmd):
+                handleCSI(cmd)
             case .osc:
                 break   // OSC handling lands in Task 6
             case .unrecognized:
@@ -160,6 +163,74 @@ public actor ScreenModel {
             if cursor.row >= rows { scrollUp() }
         case .carriageReturn:
             cursor.col = 0
+        }
+    }
+
+    private func clampCursor() {
+        cursor.row = max(0, min(rows - 1, cursor.row))
+        cursor.col = max(0, min(cols - 1, cursor.col))
+    }
+
+    private func handleCSI(_ cmd: CSICommand) {
+        switch cmd {
+        case .cursorUp(let n):
+            cursor.row -= max(1, n)
+            clampCursor()
+        case .cursorDown(let n):
+            cursor.row += max(1, n)
+            clampCursor()
+        case .cursorForward(let n):
+            cursor.col += max(1, n)
+            clampCursor()
+        case .cursorBack(let n):
+            cursor.col -= max(1, n)
+            clampCursor()
+        case .cursorPosition(let r, let c):
+            cursor.row = r
+            cursor.col = c
+            clampCursor()
+        case .cursorHorizontalAbsolute(let n):
+            // Parser emits VT 1-indexed value; shift to 0-indexed on consume.
+            cursor.col = max(0, n - 1)
+            clampCursor()
+        case .verticalPositionAbsolute(let n):
+            cursor.row = max(0, n - 1)
+            clampCursor()
+        case .saveCursor:
+            savedCursor = cursor
+        case .restoreCursor:
+            if let saved = savedCursor { cursor = saved; clampCursor() }
+        case .eraseInDisplay(let region):
+            eraseInDisplay(region)
+        case .eraseInLine(let region):
+            eraseInLine(region)
+        case .setMode, .setScrollRegion, .sgr, .unknown:
+            break  // Handled in later tasks / phases.
+        }
+    }
+
+    private func eraseInDisplay(_ region: EraseRegion) {
+        let idx = cursor.row * cols + cursor.col
+        switch region {
+        case .toEnd:
+            for i in idx..<(rows * cols) { grid[i] = Cell(character: " ") }
+        case .toBegin:
+            for i in 0...idx where i < rows * cols { grid[i] = Cell(character: " ") }
+        case .all, .scrollback:
+            // .scrollback is Phase 2; treat as .all for Phase 1.
+            for i in 0..<(rows * cols) { grid[i] = Cell(character: " ") }
+        }
+    }
+
+    private func eraseInLine(_ region: EraseRegion) {
+        let rowStart = cursor.row * cols
+        switch region {
+        case .toEnd:
+            for c in cursor.col..<cols { grid[rowStart + c] = Cell(character: " ") }
+        case .toBegin:
+            for c in 0...cursor.col where c < cols { grid[rowStart + c] = Cell(character: " ") }
+        case .all, .scrollback:
+            for c in 0..<cols { grid[rowStart + c] = Cell(character: " ") }
         }
     }
 
