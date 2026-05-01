@@ -19,6 +19,117 @@
 
 ---
 
+## Task 0: Swift 6 toolchain migration + default isolation config
+
+**Spec reference:** Tech Stack (this plan's header) — Phase 1 uses `Mutex<SnapshotBox>` (Swift 6.0+) and `InlineArray<16, RGBA>` (SE-0453, Swift 6.2+). The project currently has `SWIFT_VERSION = 5.0` on every build configuration (16 occurrences in `rTerm.xcodeproj/project.pbxproj`).
+
+**Goal:** Bump every target to Swift 6.0 with `SWIFT_APPROACHABLE_CONCURRENCY = YES`, then set per-target default actor isolation:
+
+- **App-like targets** (`rTerm`, `rTermTests`, `rTermUITests`) → `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`
+- **Framework + daemon + test targets** (`TermCore`, `TermCoreTests`, `TermUI`, `TermUITests`, `rtermd`) → `SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated`
+
+Rationale: UI code in the app benefits from MainActor defaults; the framework + daemon are isolation-explicit by design and shouldn't absorb MainActor assumptions (the daemon has no main runloop servicing MainActor).
+
+**Verified toolchain** (host at plan time): `swift --version` → 6.4; `xcodebuild -version` → Xcode 27.0. Both `-default-isolation MainActor` and `-default-isolation nonisolated` compiler flags typecheck clean. `InlineArray<N, T>(repeating:)` with subscript mutation compiles under `-swift-version 6`.
+
+**Files:**
+- Create: `configs/Base.xcconfig`
+- Create: `configs/AppTarget.xcconfig`
+- Create: `configs/FrameworkTarget.xcconfig`
+- Modify: `rTerm.xcodeproj/project.pbxproj` (bulk bump + wire xcconfigs)
+
+### Steps
+
+- [ ] **Step 1: Create xcconfig files**
+
+Create `configs/Base.xcconfig`:
+
+```
+// Shared by every target.
+SWIFT_VERSION = 6.0
+SWIFT_APPROACHABLE_CONCURRENCY = YES
+```
+
+Create `configs/AppTarget.xcconfig`:
+
+```
+#include "Base.xcconfig"
+
+// App-like targets default to MainActor for new nonisolated declarations.
+SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor
+```
+
+Create `configs/FrameworkTarget.xcconfig`:
+
+```
+#include "Base.xcconfig"
+
+// Frameworks + daemon stay isolation-explicit.
+SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated
+```
+
+- [ ] **Step 2: Bulk-bump `SWIFT_VERSION` in pbxproj**
+
+The xcconfig now owns `SWIFT_VERSION`, but the pbxproj's per-target overrides must not contradict it. Remove the redundant 5.0 settings:
+
+```bash
+sed -i '' 's/SWIFT_VERSION = 5.0;/SWIFT_VERSION = 6.0;/g' rTerm.xcodeproj/project.pbxproj
+rg -c "SWIFT_VERSION = 5.0" rTerm.xcodeproj/project.pbxproj    # → 0
+rg -c "SWIFT_VERSION = 6.0" rTerm.xcodeproj/project.pbxproj    # → 16
+```
+
+- [ ] **Step 3: Wire xcconfig files to each target's build configurations**
+
+This is a pbxproj surgery — each target has two `XCBuildConfiguration` entries (Debug + Release) that need a `baseConfigurationReference` pointing at the appropriate xcconfig. Adding xcconfig refs to pbxproj requires:
+
+1. A new `PBXFileReference` entry for each `.xcconfig` file (registers it in the project)
+2. A `baseConfigurationReference = <uuid>;` line on each build configuration's top level (not inside `buildSettings`)
+
+**Target-to-xcconfig mapping:**
+
+| Target | xcconfig |
+|--------|----------|
+| `rTerm` | `AppTarget.xcconfig` |
+| `rTermTests` | `AppTarget.xcconfig` |
+| `rTermUITests` | `AppTarget.xcconfig` |
+| `TermCore` | `FrameworkTarget.xcconfig` |
+| `TermCoreTests` | `FrameworkTarget.xcconfig` |
+| `TermUI` | `FrameworkTarget.xcconfig` |
+| `TermUITests` | `FrameworkTarget.xcconfig` |
+| `rtermd` | `FrameworkTarget.xcconfig` |
+
+**Editor approach:** Open `rTerm.xcodeproj` in Xcode → in the project navigator, drag the `configs/` folder into the project (don't copy, use group reference) → in the project editor, select each target's Debug and Release configs in the "Based on Configuration File" dropdown and pick the right xcconfig. Xcode writes `baseConfigurationReference` + `PBXFileReference` entries automatically.
+
+**Subagent fallback approach (no Xcode GUI):** dispatch a short-lived "pbxproj surgery" subagent with this exact instruction:
+
+> "Open `rTerm.xcodeproj/project.pbxproj`. For each of the 8 `XCNativeTarget` entries, find its `buildConfigurationList`, resolve to the two `XCBuildConfiguration` entries, and add `baseConfigurationReference = <FileRef UUID>;` before the `buildSettings` block, pointing to the appropriate xcconfig per the table above. Add three `PBXFileReference` entries (one per xcconfig file) in the main group, and add them to the `mainGroup`'s children. Verify by running `xcodebuild -showBuildSettings -target rTerm | rg 'SWIFT_DEFAULT_ACTOR_ISOLATION|SWIFT_APPROACHABLE_CONCURRENCY|SWIFT_VERSION'` and confirming `MainActor` / `YES` / `6.0`, and `xcodebuild -showBuildSettings -target TermCore | rg 'SWIFT_DEFAULT_ACTOR_ISOLATION'` returns `nonisolated`."
+
+- [ ] **Step 4: Controller dispatches `agentic:xcode-build-reporter` to verify**
+
+Dispatch the reporter with: "Run `xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build` and report any strict-concurrency errors or warnings introduced by the Swift 6 bump. Also run `xcodebuild -showBuildSettings -target rTerm -target TermCore` and confirm `SWIFT_VERSION=6.0`, `SWIFT_APPROACHABLE_CONCURRENCY=YES`, and the expected per-target `SWIFT_DEFAULT_ACTOR_ISOLATION` values."
+
+If strict-concurrency errors surface in existing code (likely a handful in `ScreenModel`, `DaemonClient`, `TerminalSession`), dispatch a fix-focused implementer subagent with the reporter's findings. Typical fixes: add explicit `Sendable` / `@unchecked Sendable` where compiler asks; tighten captures in `Task {}` closures; annotate explicit `@MainActor` on UI helpers that were implicitly main-queue before.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add configs/ rTerm.xcodeproj/project.pbxproj
+git commit -m "build: Swift 6.0 + approachable concurrency + per-target isolation
+
+Bump SWIFT_VERSION to 6.0 across all 16 build configs. Enable
+SWIFT_APPROACHABLE_CONCURRENCY = YES globally. App-like targets
+(rTerm, rTermTests, rTermUITests) default to MainActor isolation;
+framework + daemon targets (TermCore, TermCoreTests, TermUI,
+TermUITests, rtermd) stay nonisolated.
+
+Settings live in configs/Base.xcconfig + AppTarget.xcconfig +
+FrameworkTarget.xcconfig, referenced from each target's build
+configurations. Phase 1 needs Swift 6.0 for Mutex<SnapshotBox>
+(Synchronization) and Swift 6.2 for InlineArray<16, RGBA>."
+```
+
+---
+
 ## Task 1: Foundation types — `TerminalColor`, `CellAttributes`, `CellStyle`, `Cell` upgrade
 
 **Spec reference:** §3 Color + Cell
@@ -1646,29 +1757,34 @@ Replace the emit call with `events.append(.osc(Self.mapOSC(ps: ps, pt: accumulat
 }
 ```
 
-- [ ] **Step 3: Add `windowTitle` state to `ScreenModel`**
+- [ ] **Step 3: Add `windowTitle` + `iconName` state to `ScreenModel`**
 
 In `ScreenModel`:
 
 ```swift
 private var windowTitle: String? = nil
+private var iconName: String? = nil
 
 public func currentWindowTitle() -> String? { windowTitle }
+public func currentIconName() -> String? { iconName }
 ```
 
-Add handleOSC:
+Add `handleOSC` — keep window title and icon name **separate** (xterm semantics; window managers distinguish them):
 
 ```swift
 private func handleOSC(_ cmd: OSCCommand) {
     switch cmd {
-    case .setWindowTitle(let t), .setIconName(let t):
-        // OSC 1 / 2 both update window title for now; OSC 1 nicety will diverge later.
+    case .setWindowTitle(let t):
         windowTitle = t
+    case .setIconName(let t):
+        iconName = t
     case .unknown:
         break
     }
 }
 ```
+
+Note: this Task 6 version returns `Void`. Task 7 rewrites it to return `Bool` (window title bumps version; icon name does not, since in Phase 1 it's not rendered). The `Void` form here is fine — Task 2's `apply` dispatch ignores the return value.
 
 Update dispatch:
 
@@ -1929,37 +2045,97 @@ private func publishSnapshot() {
 }
 ```
 
-Update each `handleX` helper to return `Bool`:
+Update each `handleX` helper to return `Bool` — indicating "state changed, version should bump". **Restate full bodies** (do not copy-paste `/* existing body */` placeholders — the Task 5 `applySGR` call must be preserved):
 
 ```swift
+// MARK: - Event handlers (all return Bool; true = state mutated = version bump)
+
 private func handlePrintable(_ char: Character) -> Bool {
-    /* existing body */
-    return true
+    if cursor.col >= cols {
+        cursor.col = 0
+        cursor.row += 1
+        if cursor.row >= rows { scrollUp() }
+    }
+    grid[cursor.row * cols + cursor.col] = Cell(character: char, style: pen)
+    cursor.col += 1
+    return true  // Always a visible change: the cell shifts cursor even if the character
+                 // happens to be identical to what was there.
 }
 
 private func handleC0(_ control: C0Control) -> Bool {
     switch control {
     case .nul, .bell, .shiftOut, .shiftIn, .delete:
         return false
-    /* other cases, return true where state mutates */
+    case .backspace:
+        guard cursor.col > 0 else { return false }
+        cursor.col -= 1
+        return true
+    case .horizontalTab:
+        let next = min(cols - 1, ((cursor.col / 8) + 1) * 8)
+        guard next != cursor.col else { return false }
+        cursor.col = next
+        return true
+    case .lineFeed, .verticalTab, .formFeed:
+        cursor.col = 0
+        cursor.row += 1
+        if cursor.row >= rows { scrollUp() }
+        return true
+    case .carriageReturn:
+        guard cursor.col != 0 else { return false }
+        cursor.col = 0
+        return true
     }
 }
 
 private func handleCSI(_ cmd: CSICommand) -> Bool {
-    /* all the cursor-motion / erase / sgr cases return true; unknown returns false */
+    switch cmd {
+    case .cursorUp(let n):
+        cursor.row -= max(1, n); clampCursor(); return true
+    case .cursorDown(let n):
+        cursor.row += max(1, n); clampCursor(); return true
+    case .cursorForward(let n):
+        cursor.col += max(1, n); clampCursor(); return true
+    case .cursorBack(let n):
+        cursor.col -= max(1, n); clampCursor(); return true
+    case .cursorPosition(let r, let c):
+        cursor.row = r; cursor.col = c; clampCursor(); return true
+    case .cursorHorizontalAbsolute(let n):
+        cursor.col = max(0, n - 1); clampCursor(); return true
+    case .verticalPositionAbsolute(let n):
+        cursor.row = max(0, n - 1); clampCursor(); return true
+    case .saveCursor:
+        savedCursor = cursor; return false   // Model state changed but snapshot unaffected — no bump.
+    case .restoreCursor:
+        guard let saved = savedCursor else { return false }
+        cursor = saved; clampCursor(); return true
+    case .eraseInDisplay(let region):
+        eraseInDisplay(region); return true
+    case .eraseInLine(let region):
+        eraseInLine(region); return true
+    case .sgr(let attrs):
+        applySGR(attrs); return false        // Pen change alone doesn't alter the grid — no bump.
+    case .setMode, .setScrollRegion, .unknown:
+        return false                          // Phase 2+ handles these.
+    }
 }
 
 private func handleOSC(_ cmd: OSCCommand) -> Bool {
     switch cmd {
-    case .setWindowTitle(let t), .setIconName(let t):
+    case .setWindowTitle(let t):
         guard windowTitle != t else { return false }
         windowTitle = t
         return true
+    case .setIconName(let t):
+        guard iconName != t else { return false }
+        iconName = t
+        return false    // Icon name is a snapshot field but not typically a user-visible change in Phase 1.
     case .unknown:
         return false
     }
 }
 ```
+
+Also add `private var iconName: String? = nil` alongside `windowTitle`. See Task 6 for how it's surfaced; for Task 7 just make sure the field exists so the handler compiles.
 
 Replace `latestSnapshot()` (the non-isolated read used by the renderer):
 
@@ -1968,6 +2144,8 @@ public nonisolated func latestSnapshot() -> ScreenSnapshot {
     _latestSnapshot.withLock { $0 }.snapshot
 }
 ```
+
+Note: `_latestSnapshot` is a `private let` on the actor, so it's implicitly nonisolated and the `nonisolated func` can reach it. `Mutex.withLock` is synchronous — no `await` needed.
 
 Add `buildAttachPayload()` for the daemon's attach handler:
 
@@ -1980,32 +2158,41 @@ public func buildAttachPayload() -> AttachPayload {
 
 - [ ] **Step 4: Update daemon protocol enums**
 
-Edit `TermCore/DaemonProtocol.swift` — in `DaemonResponse`, rename the `.snapshot(...)` case to `.attachPayload(sessionID:, payload:)`:
+Edit `TermCore/DaemonProtocol.swift`. `SessionID` is `public typealias SessionID = Int` (existing — `DaemonProtocol.swift:37`). In `DaemonResponse`, rename the existing `.screenSnapshot(...)` case to `.attachPayload(sessionID:, payload:)` and **preserve the `.sessions([SessionInfo])` case** that already exists:
 
 ```swift
 public enum DaemonResponse: Sendable, Codable {
     case sessionInfo(SessionInfo)
-    case attachPayload(sessionID: UUID, payload: AttachPayload)
-    case output(sessionID: UUID, data: Data)
-    case sessionEnded(sessionID: UUID)
+    case sessions([SessionInfo])                                      // preserved
+    case attachPayload(sessionID: SessionID, payload: AttachPayload)  // renamed from .screenSnapshot
+    case output(sessionID: SessionID, data: Data)
+    case sessionEnded(sessionID: SessionID, exitCode: Int32)
     case error(DaemonError)
 }
 ```
+
+**Do not** use `UUID` — every other case in this enum uses the existing `SessionID = Int` typealias. Mismatching would cascade through `DaemonPeerHandler` and `DaemonClient`.
 
 - [ ] **Step 5: Update daemon attach handler**
 
 In `rtermd/DaemonPeerHandler.swift` (and/or `SessionManager.swift`, wherever `.attach` is handled), replace the snapshot construction with `session.screenModel.buildAttachPayload()` and emit `.attachPayload(...)`.
 
-- [ ] **Step 6: Update client consumer**
+- [ ] **Step 6: Update client consumer + replace existing `restore(from:)`**
 
-In `TermCore/DaemonClient.swift` (the XPC client), replace the `.snapshot(_, _)` case in `incomingMessageHandler` with `.attachPayload(_, let payload)`. The client should:
-1. Restore the full `payload.snapshot` into its local `ScreenModel` mirror (call a new `restore(from snapshot:)` method on `ScreenModel`)
-2. Initialize the client-side history from `payload.recentHistory` (empty in Phase 1 — no-op)
+In `TermCore/DaemonClient.swift` (the XPC client), replace the `.screenSnapshot(_, _)` case in the incoming message handler with `.attachPayload(_, let payload)`. The client should:
 
-Add to `ScreenModel`:
+1. Call `await screenModel.restore(from: payload.snapshot)` on its local `ScreenModel` mirror
+2. Initialize the client-side history from `payload.recentHistory` (empty in Phase 1 — no-op; leave the line commented-in for Phase 2)
+
+**Replace** (not add) the existing `restore(from:)` at `TermCore/ScreenModel.swift:171`. The existing version asserts dimensions match; preserve that precondition and extend to restore new fields:
 
 ```swift
 public func restore(from snapshot: ScreenSnapshot) {
+    precondition(
+        snapshot.cols == cols && snapshot.rows == rows,
+        "Cannot restore from snapshot with dimensions \(snapshot.cols)x\(snapshot.rows) " +
+        "into model sized \(cols)x\(rows)"
+    )
     self.grid = snapshot.activeCells
     self.cursor = snapshot.cursor
     self.windowTitle = snapshot.windowTitle
@@ -2014,11 +2201,27 @@ public func restore(from snapshot: ScreenSnapshot) {
 }
 ```
 
-Note the grid size must match — the client sets `cols`/`rows` at construction, and reattach assumes they match what the daemon emits. If mismatch, log and resize (future work).
+The precondition stays — dimension mismatch at reattach is a programmer error, not a runtime-recoverable state. Resize-on-reattach is future work.
 
-- [ ] **Step 7: Update Codable tests**
+- [ ] **Step 7: Update existing Codable tests + add AttachPayload test**
 
-Modify any existing tests in `TermCoreTests/CodableTests.swift` that reference the old `ScreenSnapshot` shape (recentHistory/historyCapacity). Add a new test for `AttachPayload`:
+Update existing tests that reference the old `ScreenSnapshot` shape. The specific hot spots are:
+
+```bash
+# Quick audit before editing:
+rg -n "ScreenSnapshot\(cells:|\.cells\b" TermCoreTests/ TermCore/ rtermd/ rTerm/
+```
+
+Expected hits to update (at plan time):
+
+- `TermCoreTests/CodableTests.swift` — rename `cells:` init label to `activeCells:` at every `ScreenSnapshot(` constructor; any `.cells` access becomes `.activeCells`. Existing `Cell.empty` round-trip tests should still work (Cell shape unchanged).
+- `TermCoreTests/ScreenModelTests.swift` — same renames.
+- `TermCoreTests/DaemonProtocolTests.swift` — update the `.screenSnapshot` case pattern to `.attachPayload`.
+- `rTerm/TermView.swift` — `RenderCoordinator` reads `snapshot.cells` or uses the 2D subscript. 2D subscript still works; direct `.cells` field access becomes `.activeCells`.
+- `rtermd/Session.swift` and `SessionManager.swift` — any direct snapshot field use.
+- `TermCore/Cell.swift` and `TermCore/ScreenModel.swift` — the internal call sites (publishSnapshot construction uses `activeCells:`).
+
+Add a new test for `AttachPayload`:
 
 ```swift
 @Test func attach_payload_roundtrip() throws {
@@ -2268,7 +2471,7 @@ public struct TerminalPalette: Sendable, Equatable, Codable {
 
 - [ ] **Step 4: `AppSettings`**
 
-Create `rTerm/AppSettings.swift`:
+Create `rTerm/AppSettings.swift`. The `rTerm` target is MainActor-default under Task 0's xcconfig, so `@MainActor` is implicit on a new class — but make it **explicit** for readability and to signal intent to future phase-3 readers who may enable other defaults:
 
 ```swift
 //
@@ -2494,47 +2697,68 @@ public enum Variant: Sendable, Equatable {
 Read `rTerm/TermView.swift`. In `RenderCoordinator`:
 
 1. Hold a weak reference to `AppSettings` (or accept current snapshot of depth + palette per frame via `MainActor.assumeIsolated`).
-2. Cache `derivedPalette256` — recompute when `palette` identity changes.
-3. Hold two atlases: `regularAtlas`, `boldAtlas`.
-4. In `draw(in:)`: walk the snapshot cells, resolve fg/bg via `ColorProjection.resolve`, choose atlas based on `cell.style.attributes.contains(.bold)`, emit vertex quads with per-vertex fg/bg.
-5. If any cell has `.underline`, emit a thin line quad in a second draw pass beneath that cell.
+- [ ] **Step 8: Update `RenderCoordinator`**
+
+Read `rTerm/TermView.swift`. In `RenderCoordinator`:
+
+1. Mark the class explicitly `@MainActor` (the `rTerm` target defaults to MainActor under Task 0's xcconfig, but be explicit here since this class implements `MTKViewDelegate`, whose protocol methods aren't `@MainActor`-annotated in the SDK).
+2. Hold a `settings: AppSettings` reference (MainActor, observable).
+3. Cache `derivedPalette256` as a field — recompute when `palette` identity changes.
+4. Hold two atlases: `regularAtlas`, `boldAtlas`.
+5. In `draw(in:)`: walk the snapshot cells, resolve fg/bg via `ColorProjection.resolve`, choose atlas based on `cell.style.attributes.contains(.bold)`, emit vertex quads with per-vertex fg/bg.
+6. If any cell has `.underline`, emit a thin line quad in a second draw pass beneath that cell.
 
 Skip visual treatment of other attributes (italic/dim/reverse/strikethrough/blink) — those land in Phase 2. The data is in `Cell.style.attributes` ready to use.
+
+**Why this design avoids `MainActor.assumeIsolated`:** MTKView dispatches `draw(in:)` on the main runloop in typical configurations. With `RenderCoordinator` annotated `@MainActor`, the delegate method is implicitly isolated to the main actor and can directly read `settings.colorDepth` / `settings.palette` — no `MainActor.assumeIsolated` calls needed. Under `SWIFT_APPROACHABLE_CONCURRENCY = YES`, the Swift 6 compiler accepts a `@MainActor` class conforming to the nonisolated `MTKViewDelegate` protocol without requiring adopter-side `nonisolated` escape hatches.
 
 Pseudocode for the core loop:
 
 ```swift
-func draw(in view: MTKView) {
-    let snapshot = screenModel.latestSnapshot()
-    guard snapshot.version != lastRenderedVersion else { return }   // short-circuit
-    lastRenderedVersion = snapshot.version
+@MainActor
+final class RenderCoordinator: NSObject, MTKViewDelegate {
+    private let screenModel: ScreenModel
+    private let settings: AppSettings
+    private var lastRenderedVersion: UInt64 = 0
+    private var lastPalette: TerminalPalette?
+    private var derivedPalette256: InlineArray<256, RGBA>? = nil
+    private var regularAtlas: GlyphAtlas
+    private var boldAtlas: GlyphAtlas
+    // …
 
-    let (depth, palette) = MainActor.assumeIsolated { (settings.colorDepth, settings.palette) }
-    if palette != lastPalette {
-        lastPalette = palette
-        derivedPalette256 = ColorProjection.derivePalette256(from: palette)
-    }
+    func draw(in view: MTKView) {
+        let snapshot = screenModel.latestSnapshot()   // nonisolated; safe from MainActor
+        guard snapshot.version != lastRenderedVersion else { return }
+        lastRenderedVersion = snapshot.version
 
-    // Build vertex buffer:
-    var verts: [GlyphVertex] = []
-    var underlineQuads: [UnderlineVertex] = []
-    for r in 0..<snapshot.rows {
-        for c in 0..<snapshot.cols {
-            let cell = snapshot[r, c]
-            let atlas = cell.style.attributes.contains(.bold) ? boldAtlas : regularAtlas
-            let fg = ColorProjection.resolve(cell.style.foreground, role: .foreground,
-                                             depth: depth, palette: palette,
-                                             derivedPalette256: derivedPalette256)
-            let bg = ColorProjection.resolve(cell.style.background, role: .background,
-                                             depth: depth, palette: palette,
-                                             derivedPalette256: derivedPalette256)
-            emitCellQuad(&verts, cell: cell, atlas: atlas, fg: fg, bg: bg, row: r, col: c)
-            if cell.style.attributes.contains(.underline) {
-                emitUnderlineQuad(&underlineQuads, row: r, col: c, fg: fg)
+        let depth = settings.colorDepth
+        let palette = settings.palette
+        if palette != lastPalette {
+            lastPalette = palette
+            derivedPalette256 = ColorProjection.derivePalette256(from: palette)
+        }
+        guard let derivedPalette256 else { return }
+
+        var verts: [GlyphVertex] = []
+        var underlineQuads: [UnderlineVertex] = []
+        for r in 0..<snapshot.rows {
+            for c in 0..<snapshot.cols {
+                let cell = snapshot[r, c]
+                let atlas = cell.style.attributes.contains(.bold) ? boldAtlas : regularAtlas
+                let fg = ColorProjection.resolve(cell.style.foreground, role: .foreground,
+                                                 depth: depth, palette: palette,
+                                                 derivedPalette256: derivedPalette256)
+                let bg = ColorProjection.resolve(cell.style.background, role: .background,
+                                                 depth: depth, palette: palette,
+                                                 derivedPalette256: derivedPalette256)
+                emitCellQuad(&verts, cell: cell, atlas: atlas, fg: fg, bg: bg, row: r, col: c)
+                if cell.style.attributes.contains(.underline) {
+                    emitUnderlineQuad(&underlineQuads, row: r, col: c, fg: fg)
+                }
             }
         }
+        // Encode + draw — standard Metal flow, beyond this plan's scope.
     }
-    // Encode + draw — standard Metal flow, beyond this plan's scope.
 }
 ```
 
@@ -2582,79 +2806,88 @@ visually unsupported until Phase 2."
 **Goal:** Byte-stream fixtures covering real-world scenarios, asserted against expected `ScreenSnapshot` shapes.
 
 **Files:**
-- Create: `TermCoreTests/Fixtures/vim-startup.bin`
-- Create: `TermCoreTests/Fixtures/ls-color.bin`
-- Create: `TermCoreTests/Fixtures/clear.bin`
-- Create: `TermCoreTests/TerminalIntegrationTests.swift`
+- Create: `TermCoreTests/TerminalIntegrationTests.swift` (fixtures are inline constants, not bundle resources — keeps Task 9 subagent-friendly with no Xcode-GUI / pbxproj manipulation).
 
 ### Steps
 
-- [ ] **Step 1: Capture or craft fixtures**
+- [ ] **Step 1: Build `TerminalIntegrationTests.swift` with inline fixtures**
 
-For `ls --color` output: run `ls --color=always -la /etc | head -n 3 | xxd` in a terminal to get the hex, save the raw bytes. Or construct manually:
-
-```
-1b 5b 33 34 6d 64 72 77 78 1b 5b 30 6d 20 66 6f 6f 0a
-// ^^^^^^^^^^^^^ ESC[34m     drwx    ESC[0m    foo\n
-```
-
-For `clear`: `\033[2J\033[H` is the minimum.
-
-For `vim-startup`: `\033[?1049h\033[2J\033[H~~\r\n~~` — alt-screen enter (unsupported Phase 1, parsed as `.csi(.setMode(.alternateScreen1049, enabled: true))`; ScreenModel ignores it but test still works by asserting what's reachable).
-
-Because alt-screen isn't implemented in Phase 1, keep Phase 1 fixtures to `ls-color` and `clear`. Add a `vim-alt-screen.bin` fixture but only assert that parsing completes without throwing — semantic behavior waits for Phase 2.
-
-- [ ] **Step 2: Create `TerminalIntegrationTests.swift`**
+Create `TermCoreTests/TerminalIntegrationTests.swift` with byte sequences defined inline as `[UInt8]` literals. Each fixture is commented with the decoded VT meaning so the test is self-documenting:
 
 ```swift
+//
+//  TerminalIntegrationTests.swift
+//  TermCoreTests
+//
+
 import Testing
 import Foundation
 @testable import TermCore
 
 @Suite struct TerminalIntegrationTests {
 
-    private static func loadFixture(_ name: String) throws -> Data {
-        let bundle = Bundle.module
-        guard let url = bundle.url(forResource: name, withExtension: "bin",
-                                   subdirectory: "Fixtures")
-        else { throw CocoaError(.fileNoSuchFile) }
-        return try Data(contentsOf: url)
-    }
+    // MARK: - Inline fixtures
 
-    @Test func clear_resets_screen_and_cursor() async throws {
-        let data = try Self.loadFixture("clear")
+    /// `CSI 2 J` (erase entire display) + `CSI H` (cursor home).
+    private static let clearSequence: [UInt8] = [
+        0x1B, 0x5B, 0x32, 0x4A,   // ESC [ 2 J
+        0x1B, 0x5B, 0x48,          // ESC [ H
+    ]
+
+    /// Minimal `ls --color` excerpt:
+    /// `ESC[34m` → fg blue
+    /// `drwx` → literal text
+    /// `ESC[0m` → reset
+    /// ` foo\n` → literal
+    private static let lsColorSequence: [UInt8] = [
+        0x1B, 0x5B, 0x33, 0x34, 0x6D,                    // ESC [ 34 m
+        0x64, 0x72, 0x77, 0x78,                          // drwx
+        0x1B, 0x5B, 0x30, 0x6D,                          // ESC [ 0 m
+        0x20, 0x66, 0x6F, 0x6F, 0x0A,                    // _foo\n
+    ]
+
+    /// Vim startup prefix — alt screen enter (unhandled in Phase 1; parser must still
+    /// accept it and emit .csi(.setMode(.alternateScreen1049, enabled: true))),
+    /// followed by CSI 2 J and CSI H. Phase 1 ScreenModel ignores the mode event.
+    private static let vimStartupSequence: [UInt8] = [
+        0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68,  // ESC [ ? 1049 h
+        0x1B, 0x5B, 0x32, 0x4A,                          // ESC [ 2 J
+        0x1B, 0x5B, 0x48,                                // ESC [ H
+    ]
+
+    // MARK: - Tests
+
+    @Test func clear_resets_screen_and_cursor() async {
         let model = ScreenModel(cols: 10, rows: 3)
         await model.apply([.printable("X")])  // seed some junk
         var parser = TerminalParser()
-        await model.apply(parser.parse(data))
+        await model.apply(parser.parse(Data(Self.clearSequence)))
         let snap = model.latestSnapshot()
-        // After CSI 2 J then CSI H: cursor at 0,0 and all cells are ' '
         #expect(snap.cursor == Cursor(row: 0, col: 0))
         for r in 0..<snap.rows { for c in 0..<snap.cols {
             #expect(snap[r, c].character == " ")
         }}
     }
 
-    @Test func ls_color_produces_styled_cells() async throws {
-        let data = try Self.loadFixture("ls-color")
+    @Test func ls_color_produces_styled_cells() async {
         let model = ScreenModel(cols: 80, rows: 24)
         var parser = TerminalParser()
-        await model.apply(parser.parse(data))
+        await model.apply(parser.parse(Data(Self.lsColorSequence)))
         let snap = model.latestSnapshot()
-        // Find at least one styled cell with a non-default foreground.
-        let styled = (0..<snap.rows).flatMap { r in
-            (0..<snap.cols).map { c in snap[r, c] }
-        }.first { $0.style.foreground != .default }
-        #expect(styled != nil, "ls --color fixture should produce at least one styled cell")
+        // The first 'd' should have blue fg.
+        #expect(snap[0, 0].character == "d")
+        #expect(snap[0, 0].style.foreground == .ansi16(4))  // ANSI blue
+        // After the reset, " foo" should be default-styled.
+        #expect(snap[0, 4].style.foreground == .default)
     }
 
-    @Test func split_chunks_reach_same_final_state() async throws {
-        let data = try Self.loadFixture("ls-color")
-        // Parse all at once
+    @Test func split_chunks_reach_same_final_state() async {
+        let data = Data(Self.lsColorSequence)
+        // Parse all at once:
         var parserA = TerminalParser()
         let modelA = ScreenModel(cols: 80, rows: 24)
         await modelA.apply(parserA.parse(data))
-        // Parse one byte at a time
+        // Parse one byte at a time:
         var parserB = TerminalParser()
         let modelB = ScreenModel(cols: 80, rows: 24)
         for i in 0..<data.count {
@@ -2662,40 +2895,34 @@ import Foundation
         }
         #expect(modelA.latestSnapshot().activeCells == modelB.latestSnapshot().activeCells)
     }
+
+    @Test func vim_startup_parses_without_throwing() async {
+        // Phase 1: alt-screen mode is parsed but unhandled; the important thing is
+        // that the parser cleanly dispatches the CSI ? 1049 h sequence into
+        // .csi(.setMode(.alternateScreen1049, enabled: true)) and subsequent
+        // erase + home operate on main buffer (since alt is ignored).
+        let model = ScreenModel(cols: 80, rows: 24)
+        var parser = TerminalParser()
+        await model.apply(parser.parse(Data(Self.vimStartupSequence)))
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor == Cursor(row: 0, col: 0))
+    }
 }
 ```
 
-- [ ] **Step 3: Bundle the fixtures**
+**Why inline `[UInt8]` instead of bundle resources:** adding `Fixtures/*.bin` as Copy-Bundle-Resources requires a pbxproj edit that's fragile for subagents. Inline sequences are short, reviewable in PRs, and self-documenting. If the fixture corpus grows beyond a few KB or we capture long real-world traces, Phase 3 can introduce a proper bundle-resources layout.
 
-Add a build-phase reference so the `.bin` files in `TermCoreTests/Fixtures/` ship as resources with the test target. In Xcode: select the TermCoreTests target → Build Phases → Copy Bundle Resources → add the `Fixtures` folder as a directory reference.
-
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 2: Commit**
 
 ```bash
-xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
-    -only-testing TermCoreTests/TerminalIntegrationTests test -quiet
-```
+git add TermCoreTests/TerminalIntegrationTests.swift
+git commit -m "test: integration fixtures (inline) for clear, ls --color, vim startup
 
-Expected: 3 tests pass.
-
-- [ ] **Step 5: Full test + build**
-
-```bash
-xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
-xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
-```
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add TermCoreTests/Fixtures/ \
-        TermCoreTests/TerminalIntegrationTests.swift \
-        rTerm.xcodeproj/
-git commit -m "test: integration fixtures for clear, ls --color, chunk-split
-
-End-to-end tests driving real byte streams through parser + ScreenModel.
-Includes a determinism test that confirms one-byte-at-a-time parsing
-reaches the same state as a single parse() call."
+Byte-stream fixtures as inline [UInt8] constants — no bundle-resource
+wiring. Covers: clear screen + cursor home; ls --color produces styled
+cells; one-byte-at-a-time parsing reaches the same state as a single
+parse(); vim startup (alt-screen mode parses cleanly even though
+Phase 1 ScreenModel ignores the mode event)."
 ```
 
 ---
