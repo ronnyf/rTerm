@@ -64,8 +64,9 @@ public enum DaemonResponse: Codable, Sendable, Equatable {
     case sessions([SessionInfo])
     /// A new session was created successfully.
     case sessionCreated(SessionInfo)
-    /// A screen snapshot for a session (sent after attach or on demand).
-    case screenSnapshot(sessionID: SessionID, snapshot: ScreenSnapshot)
+    /// Attach payload for a session: the current snapshot plus bounded
+    /// scrollback history (empty in Phase 1; Phase 2 fills it).
+    case attachPayload(sessionID: SessionID, payload: AttachPayload)
     /// A session has ended with the given exit code.
     case sessionEnded(sessionID: SessionID, exitCode: Int32)
     /// Raw output data from a session's PTY.

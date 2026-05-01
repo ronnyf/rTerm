@@ -104,8 +104,8 @@ final class DaemonPeerHandler: XPCPeerHandler, @unchecked Sendable {
 
         case .attach(let sessionID):
             do {
-                let snapshot = try manager.attach(sessionID: sessionID, client: session)
-                return DaemonResponse.screenSnapshot(sessionID: sessionID, snapshot: snapshot)
+                let payload = try manager.attach(sessionID: sessionID, client: session)
+                return DaemonResponse.attachPayload(sessionID: sessionID, payload: payload)
             } catch {
                 return DaemonResponse.error(error.asDaemonError)
             }

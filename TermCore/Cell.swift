@@ -79,75 +79,46 @@ public struct Cursor: Sendable, Equatable, Codable {
 
 // MARK: - ScreenSnapshot
 
-/// An immutable snapshot of the full terminal screen at a point in time.
+/// Render-facing snapshot. Published on every state-changing apply; held in
+/// `Mutex<SnapshotBox>` so the lock guards only a pointer swap.
 ///
-/// The grid is stored as a flat, row-major `ContiguousArray<Cell>` for
-/// cache-friendly iteration. Use the `(row:col:)` subscript for
-/// two-dimensional access.
-///
-/// - Note: `ScreenSnapshot` is `Sendable` because all stored properties
-///   are value types that are themselves `Sendable`.
+/// All fields are immutable `let` — readers pull a reference out of the mutex
+/// and use it without further synchronization.
 public struct ScreenSnapshot: Sendable, Equatable, Codable {
-    /// Flat row-major storage: `cells[row * cols + col]`.
-    public let cells: ContiguousArray<Cell>
-    /// Number of columns in the grid.
+    public let activeCells: ContiguousArray<Cell>
     public let cols: Int
-    /// Number of rows in the grid.
     public let rows: Int
-    /// Cursor position at the time of the snapshot.
     public let cursor: Cursor
+    public let cursorVisible: Bool
+    public let activeBuffer: BufferKind
+    public let windowTitle: String?
+    public let version: UInt64
 
-    /// Creates a snapshot with the provided grid data and cursor position.
-    ///
-    /// - Parameters:
-    ///   - cells: Flat row-major array of cells; must have exactly `rows * cols` elements.
-    ///   - cols: Number of columns.
-    ///   - rows: Number of rows.
-    ///   - cursor: Cursor position.
-    public init(cells: ContiguousArray<Cell>, cols: Int, rows: Int, cursor: Cursor) {
-        self.cells = cells
+    public init(activeCells: ContiguousArray<Cell>,
+                cols: Int,
+                rows: Int,
+                cursor: Cursor,
+                cursorVisible: Bool = true,
+                activeBuffer: BufferKind = .main,
+                windowTitle: String? = nil,
+                version: UInt64) {
+        self.activeCells = activeCells
         self.cols = cols
         self.rows = rows
         self.cursor = cursor
+        self.cursorVisible = cursorVisible
+        self.activeBuffer = activeBuffer
+        self.windowTitle = windowTitle
+        self.version = version
     }
 
-    /// Accesses the cell at the specified row and column.
-    ///
-    /// - Parameters:
-    ///   - row: Zero-based row index.
-    ///   - col: Zero-based column index.
+    /// 2D convenience subscript — preserved for existing renderer call sites.
     public subscript(row: Int, col: Int) -> Cell {
-        cells[row * cols + col]
+        activeCells[row * cols + col]
     }
+}
 
-    // MARK: Codable
-
-    private enum CodingKeys: String, CodingKey {
-        case cells, cols, rows, cursor
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let array = try container.decode([Cell].self, forKey: .cells)
-        self.cols = try container.decode(Int.self, forKey: .cols)
-        self.rows = try container.decode(Int.self, forKey: .rows)
-        self.cursor = try container.decode(Cursor.self, forKey: .cursor)
-        guard array.count == rows * cols else {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: container.codingPath,
-                    debugDescription: "Expected \(rows * cols) cells (\(rows)x\(cols)), got \(array.count)"
-                )
-            )
-        }
-        self.cells = ContiguousArray(array)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Array(cells), forKey: .cells)
-        try container.encode(cols, forKey: .cols)
-        try container.encode(rows, forKey: .rows)
-        try container.encode(cursor, forKey: .cursor)
-    }
+@frozen public enum BufferKind: Sendable, Equatable, Codable {
+    case main
+    case alt
 }

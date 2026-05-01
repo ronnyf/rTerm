@@ -230,10 +230,11 @@ struct ScreenModelTests {
 
         // Build a snapshot to restore from.
         let target = ScreenSnapshot(
-            cells: ContiguousArray(repeating: Cell(character: "Q"), count: 12),
+            activeCells: ContiguousArray(repeating: Cell(character: "Q"), count: 12),
             cols: 4,
             rows: 3,
-            cursor: Cursor(row: 2, col: 3)
+            cursor: Cursor(row: 2, col: 3),
+            version: 0
         )
 
         await model.restore(from: target)
@@ -470,5 +471,27 @@ struct ScreenModelOSCTests {
             .osc(.setWindowTitle("combined"))
         ])
         #expect(title == "combined")
+    }
+}
+
+// MARK: - Version counter
+
+struct ScreenModelVersionTests {
+
+    @Test func version_bumps_on_state_change() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.printable("A")])
+        let v1 = model.latestSnapshot().version
+        #expect(v1 == v0 + 1)
+    }
+
+    @Test func version_does_not_bump_on_noop() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([.printable("A")])
+        let v1 = model.latestSnapshot().version
+        await model.apply([.c0(.nul), .unrecognized(0x99)])
+        let v2 = model.latestSnapshot().version
+        #expect(v1 == v2)
     }
 }

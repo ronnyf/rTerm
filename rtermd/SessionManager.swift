@@ -142,15 +142,15 @@ final class SessionManager: @unchecked Sendable {
     /// Attach an XPC client to a session, returning the current screen state.
     ///
     /// The client is added to the session's fan-out list and will receive
-    /// raw PTY output going forward. The returned ``ScreenSnapshot`` allows
+    /// raw PTY output going forward. The returned ``AttachPayload`` allows
     /// the client to render the terminal immediately.
     ///
     /// - Parameters:
     ///   - sessionID: The session to attach to.
     ///   - client: The XPC session representing the attaching client.
-    /// - Returns: A snapshot of the current terminal screen.
+    /// - Returns: The current attach payload (snapshot + recent history).
     /// - Throws: ``DaemonError/sessionNotFound(_:)`` if no such session exists.
-    func attach(sessionID: SessionID, client: XPCSession) throws -> ScreenSnapshot {
+    func attach(sessionID: SessionID, client: XPCSession) throws -> AttachPayload {
         guard let session = sessions[sessionID] else {
             throw DaemonError.sessionNotFound(sessionID)
         }

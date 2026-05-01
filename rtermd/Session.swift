@@ -227,8 +227,8 @@ final class Session {
 
     /// Attach an XPC client to this session.
     ///
-    /// The client is added to the fan-out list **first**, then a screen
-    /// snapshot is taken. This ordering ensures that output arriving between
+    /// The client is added to the fan-out list **first**, then the attach
+    /// payload is built. This ordering ensures that output arriving between
     /// the add and the snapshot is delivered to the client (it may receive
     /// some data twice -- once via fan-out, once baked into the snapshot --
     /// but `restore(from:)` on the client side overwrites with the
@@ -236,12 +236,12 @@ final class Session {
     /// (snapshot-then-add) risks losing output in the gap.
     ///
     /// - Parameter client: The XPC session representing the attaching client.
-    /// - Returns: The current screen snapshot for initial rendering.
-    func attach(client: XPCSession) -> ScreenSnapshot {
+    /// - Returns: The current `AttachPayload` for initial rendering.
+    func attach(client: XPCSession) -> AttachPayload {
         attachedClients.append(client)
-        let snapshot = screenModel.latestSnapshot()
+        let payload = screenModel.buildAttachPayload()
         Self.log.info("Session \(self.id): client attached (count=\(self.attachedClients.count))")
-        return snapshot
+        return payload
     }
 
     /// Detach an XPC client from this session.
