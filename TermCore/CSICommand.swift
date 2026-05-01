@@ -34,14 +34,31 @@
 /// Non-`@frozen`: phases may add cases. `.unknown` is the open-world escape hatch
 /// so consumers still switch exhaustively without `@unknown default`.
 public enum CSICommand: Sendable, Equatable {
-    // Cursor motion — 0-indexed after parser normalization; model clamps to screen.
+    // Cursor motion.
+    //
+    // Index convention is split deliberately to match the VT/ANSI spec:
+    //
+    // - `cursorPosition` (CSI H / HVP) is pre-normalized to 0-indexed at parse
+    //   time — the row/col values already sit in `[0, dim)` bounds.
+    // - `cursorHorizontalAbsolute` (CSI G) and `verticalPositionAbsolute`
+    //   (CSI d) carry the VT 1-indexed value as-received on the wire; the
+    //   ScreenModel subtracts 1 at apply time. This preserves the original
+    //   parameter for logging/debug and avoids info loss when the parameter
+    //   is 0 (which VT treats as "default of 1").
+    // - The relative motions (`cursorUp`/`cursorDown`/`cursorForward`/
+    //   `cursorBack`) carry a positive delta already defaulted to 1 by the
+    //   parser's `p(_:default:)` helper. The model applies them via
+    //   `max(1, n)` defensively but values from `mapCSI` are always ≥ 1.
+    //
+    // `ScreenModel.handleCSI` clamps the final cursor position to the
+    // screen dimensions after each motion.
     case cursorUp(Int)
     case cursorDown(Int)
     case cursorForward(Int)
     case cursorBack(Int)
     case cursorPosition(row: Int, col: Int)
-    case cursorHorizontalAbsolute(Int)
-    case verticalPositionAbsolute(Int)
+    case cursorHorizontalAbsolute(Int)    // VT 1-indexed (see note above)
+    case verticalPositionAbsolute(Int)    // VT 1-indexed (see note above)
     case saveCursor                         // CSI s
     case restoreCursor                      // CSI u
 

@@ -383,4 +383,18 @@ struct CSICursorParseTests {
         #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x32, 0x47]))
                 == [.csi(.cursorHorizontalAbsolute(12))])
     }
+
+    @Test func cursor_up_zero_param_is_default_one() {
+        var parser = TerminalParser()
+        // ESC [ 0 A — VT spec: 0 is equivalent to "no parameter" → default of 1.
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x30, 0x41])) == [.csi(.cursorUp(1))])
+    }
+
+    @Test func cursor_position_zero_col_is_default_one() {
+        var parser = TerminalParser()
+        // ESC [ 5 ; 0 H — second param is 0, should be treated as 1 → col 0 after pre-shift.
+        // Expected: cursorPosition(row: 4, col: 0).
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x35, 0x3B, 0x30, 0x48]))
+                == [.csi(.cursorPosition(row: 4, col: 0))])
+    }
 }
