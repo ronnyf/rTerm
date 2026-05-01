@@ -2324,7 +2324,7 @@ actual state change."
 
 ### Steps
 
-- [ ] **Step 1: `RGBA` struct**
+- [x] **Step 1: `RGBA` struct**
 
 Create `rTerm/RGBA.swift`:
 
@@ -2361,7 +2361,7 @@ public struct RGBA: Sendable, Equatable, Codable {
 }
 ```
 
-- [ ] **Step 2: `ColorDepth`**
+- [x] **Step 2: `ColorDepth`**
 
 Create `rTerm/ColorDepth.swift`:
 
@@ -2380,7 +2380,7 @@ import Foundation
 }
 ```
 
-- [ ] **Step 3: `TerminalPalette`**
+- [x] **Step 3: `TerminalPalette`**
 
 Create `rTerm/TerminalPalette.swift`. Note `InlineArray<16, RGBA>` requires Swift 6.2+ / Xcode 16 (SE-0453). Codable is hand-coded:
 
@@ -2469,7 +2469,7 @@ public struct TerminalPalette: Sendable, Equatable, Codable {
 }
 ```
 
-- [ ] **Step 4: `AppSettings`**
+- [x] **Step 4: `AppSettings`**
 
 Create `rTerm/AppSettings.swift`. The `rTerm` target is MainActor-default under Task 0's xcconfig, so `@MainActor` is implicit on a new class — but make it **explicit** for readability and to signal intent to future phase-3 readers who may enable other defaults:
 
@@ -2488,7 +2488,7 @@ public final class AppSettings {
 }
 ```
 
-- [ ] **Step 5: `ColorProjection`**
+- [x] **Step 5: `ColorProjection`**
 
 Create `rTerm/ColorProjection.swift`:
 
@@ -2593,7 +2593,7 @@ public enum ColorProjection {
 }
 ```
 
-- [ ] **Step 6: Unit tests for projection**
+- [x] **Step 6: Unit tests for projection**
 
 Create `rTermTests/ColorProjectionTests.swift`:
 
@@ -2662,7 +2662,7 @@ import TermCore
 }
 ```
 
-- [ ] **Step 7: Glyph atlas variant support**
+- [x] **Step 7: Glyph atlas variant support**
 
 Read current `rTerm/GlyphAtlas.swift`. It currently produces one atlas texture for a single CoreText font. Refactor to parameterize on an `NSFontDescriptor.SymbolicTraits` (or equivalent) so callers can build regular and bold atlases from the same code:
 
@@ -2692,12 +2692,12 @@ public enum Variant: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 8: Update `RenderCoordinator`**
+- [x] **Step 8: Update `RenderCoordinator`**
 
 Read `rTerm/TermView.swift`. In `RenderCoordinator`:
 
 1. Hold a weak reference to `AppSettings` (or accept current snapshot of depth + palette per frame via `MainActor.assumeIsolated`).
-- [ ] **Step 8: Update `RenderCoordinator`**
+- [x] **Step 8: Update `RenderCoordinator`**
 
 Read `rTerm/TermView.swift`. In `RenderCoordinator`:
 
@@ -2762,13 +2762,13 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
 }
 ```
 
-- [ ] **Step 9: Update Metal shader**
+- [x] **Step 9: Update Metal shader**
 
 In `rTerm/Shaders.metal`, extend the vertex input to include per-cell `fgColor` and `bgColor` (RGBA float4 each), and the fragment shader to composite: `background + glyph.alpha * foreground`. Add a minimal second pipeline for `underlineVertex`/`underlineFragment` that just draws a solid color quad.
 
 Concrete edits depend on the current shader. If the current shader uses a single uniform color, replace with vertex-attribute colors.
 
-- [ ] **Step 10: Run tests + build + smoke**
+- [x] **Step 10: Run tests + build + smoke**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
@@ -2777,7 +2777,7 @@ xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -qu
 
 Launch the app, run `printf '\033[1;31mbold red\033[0m normal\n'` in the shell. Expected: "bold red" renders with the bold atlas + red foreground; " normal" reverts.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add rTerm/RGBA.swift rTerm/ColorDepth.swift rTerm/TerminalPalette.swift \
