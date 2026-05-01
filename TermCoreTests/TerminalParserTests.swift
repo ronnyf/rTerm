@@ -224,17 +224,17 @@ struct TerminalParserStateMachineTests {
         #expect(events == [.csi(.unknown(params: [3], intermediates: [], final: 0x6E))])
     }
 
-    @Test func osc_terminated_by_st_emits_unknown_osc() {
+    @Test func osc_terminated_by_st_emits_window_title() {
         var parser = TerminalParser()
         // ESC ] 0 ; h i ESC \
         let events = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x68, 0x69, 0x1B, 0x5C]))
-        #expect(events == [.osc(.unknown(ps: 0, pt: "hi"))])
+        #expect(events == [.osc(.setWindowTitle("hi"))])
     }
 
-    @Test func osc_terminated_by_bel_emits_unknown_osc() {
+    @Test func osc_terminated_by_bel_emits_window_title() {
         var parser = TerminalParser()
         let events = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x78, 0x07]))
-        #expect(events == [.osc(.unknown(ps: 0, pt: "x"))])
+        #expect(events == [.osc(.setWindowTitle("x"))])
     }
 
     @Test func osc_payload_cap_truncates() {
@@ -243,8 +243,8 @@ struct TerminalParserStateMachineTests {
         bytes.append(contentsOf: [UInt8](repeating: 0x41, count: 5000))
         bytes.append(0x07)
         let events = parser.parse(Data(bytes))
-        guard case .osc(.unknown(_, let pt)) = events[0] else {
-            Issue.record("expected .osc(.unknown(...))"); return
+        guard case .osc(.setWindowTitle(let pt)) = events[0] else {
+            Issue.record("expected .osc(.setWindowTitle(...))"); return
         }
         #expect(pt.count == 4096, "payload should be truncated to 4096 chars")
     }
@@ -272,7 +272,7 @@ struct TerminalParserStateMachineTests {
         // BEL — second chunk
         let second = parser.parse(Data([0x07]))
         #expect(first.isEmpty)
-        #expect(second == [.osc(.unknown(ps: 0, pt: "hi"))])
+        #expect(second == [.osc(.setWindowTitle("hi"))])
     }
 
     @Test func osc_split_between_esc_and_backslash() {
@@ -282,7 +282,7 @@ struct TerminalParserStateMachineTests {
         // \ — second chunk completes the ST
         let second = parser.parse(Data([0x5C]))
         #expect(first.isEmpty)
-        #expect(second == [.osc(.unknown(ps: 0, pt: "x"))])
+        #expect(second == [.osc(.setWindowTitle("x"))])
     }
 
     @Test func dcs_split_across_chunks_drops_cleanly() {
@@ -458,5 +458,36 @@ struct SGRParseTests {
         var parser = TerminalParser()
         #expect(parser.parse(Data([0x1B, 0x5B, 0x33, 0x39, 0x6D]))
                 == [.csi(.sgr([.foreground(.default)]))])
+    }
+}
+
+// MARK: - OSC typed mapping
+
+struct OSCParseTests {
+
+    @Test func osc_0_sets_window_title() {
+        var parser = TerminalParser()
+        // ESC ] 0 ; h i BEL
+        #expect(parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x68, 0x69, 0x07]))
+                == [.osc(.setWindowTitle("hi"))])
+    }
+
+    @Test func osc_2_sets_window_title() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5D, 0x32, 0x3B, 0x54, 0x65, 0x73, 0x74, 0x07]))
+                == [.osc(.setWindowTitle("Test"))])
+    }
+
+    @Test func osc_1_sets_icon_name() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5D, 0x31, 0x3B, 0x78, 0x07]))
+                == [.osc(.setIconName("x"))])
+    }
+
+    @Test func osc_unknown_preserved() {
+        var parser = TerminalParser()
+        // ESC ] 8 ; ; http://x BEL  (hyperlink — Phase 3)
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B, 0x3B, 0x68, 0x74, 0x74, 0x70, 0x3A, 0x2F, 0x2F, 0x78, 0x07]
+        #expect(parser.parse(Data(bytes)) == [.osc(.unknown(ps: 8, pt: ";http://x"))])
     }
 }

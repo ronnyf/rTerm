@@ -531,7 +531,19 @@ public struct TerminalParser: Sendable {
             resolvedPs = Int(accumulator) ?? 0
             pt = ""
         }
-        events.append(.osc(.unknown(ps: resolvedPs, pt: pt)))
+        events.append(.osc(Self.mapOSC(ps: resolvedPs, pt: pt)))
+    }
+
+    /// Map a collected OSC `Ps` / `Pt` pair into a typed ``OSCCommand``.
+    /// OSC 0 and OSC 2 both set the window title (xterm aliasing);
+    /// OSC 1 sets the icon name. Everything else is preserved as `.unknown`
+    /// so Phase 3 (hyperlinks, clipboard, …) can disambiguate later.
+    private static func mapOSC(ps: Int, pt: String) -> OSCCommand {
+        switch ps {
+        case 0, 2: return .setWindowTitle(pt)
+        case 1:    return .setIconName(pt)
+        default:   return .unknown(ps: ps, pt: pt)
+        }
     }
 
     // MARK: - .dcsIgnore handling

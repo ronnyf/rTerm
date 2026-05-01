@@ -430,3 +430,37 @@ struct ScreenModelPenTests {
         #expect(snap[0, 0].style.background == .ansi16(4))
     }
 }
+
+// MARK: - OSC window title / icon name handling
+
+struct ScreenModelOSCTests {
+
+    @Test func osc_sets_window_title() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([.osc(.setWindowTitle("hello"))])
+        let title = await model.currentWindowTitle()
+        #expect(title == "hello")
+    }
+
+    @Test func later_osc_replaces_earlier() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([
+            .osc(.setWindowTitle("first")),
+            .osc(.setWindowTitle("second"))
+        ])
+        let title = await model.currentWindowTitle()
+        #expect(title == "second")
+    }
+
+    @Test func set_icon_name_does_not_change_window_title() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([
+            .osc(.setWindowTitle("T")),
+            .osc(.setIconName("I"))
+        ])
+        let title = await model.currentWindowTitle()
+        let icon = await model.currentIconName()
+        #expect(title == "T")
+        #expect(icon == "I")
+    }
+}

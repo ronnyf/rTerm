@@ -60,6 +60,14 @@ public actor ScreenModel {
     /// Mutated by `applySGR`; reset to `.default` on SGR `0`.
     private var pen: CellStyle = .default
 
+    /// Window title set via OSC 0 / OSC 2. `nil` until the shell sets one.
+    private var windowTitle: String? = nil
+
+    /// Icon name set via OSC 1. Stored separately from `windowTitle` per xterm
+    /// semantics — OSC 0 updates both, OSC 1 updates only `iconName`, OSC 2
+    /// updates only `windowTitle`.
+    private var iconName: String? = nil
+
     /// Number of columns.
     public let cols: Int
 
@@ -129,8 +137,8 @@ public actor ScreenModel {
                 handleC0(control)
             case .csi(let cmd):
                 handleCSI(cmd)
-            case .osc:
-                break   // OSC handling lands in Task 6
+            case .osc(let cmd):
+                handleOSC(cmd)
             case .unrecognized:
                 break
             }
@@ -239,6 +247,17 @@ public actor ScreenModel {
         }
     }
 
+    private func handleOSC(_ cmd: OSCCommand) {
+        switch cmd {
+        case .setWindowTitle(let t):
+            windowTitle = t
+        case .setIconName(let t):
+            iconName = t
+        case .unknown:
+            break
+        }
+    }
+
     private func eraseInDisplay(_ region: EraseRegion) {
         let idx = cursor.row * cols + cursor.col
         switch region {
@@ -299,6 +318,14 @@ public actor ScreenModel {
     public func snapshot() -> ScreenSnapshot {
         ScreenSnapshot(cells: grid, cols: cols, rows: rows, cursor: snapshotCursor())
     }
+
+    /// Returns the current window title set via OSC 0 / OSC 2, or `nil` if the
+    /// shell hasn't set one. Actor-isolated — callers `await`.
+    public func currentWindowTitle() -> String? { windowTitle }
+
+    /// Returns the current icon name set via OSC 1, or `nil` if unset.
+    /// Actor-isolated — callers `await`.
+    public func currentIconName() -> String? { iconName }
 
     /// Returns the most recently published snapshot.
     ///

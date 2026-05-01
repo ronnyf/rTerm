@@ -28,6 +28,11 @@ import TermCore
 class TerminalSession {
     let screenModel: ScreenModel
 
+    /// Mirror of `ScreenModel.currentWindowTitle()` kept in sync from the
+    /// response handler. Drives SwiftUI `.navigationTitle`; `nil` until the
+    /// shell issues OSC 0 / OSC 2.
+    var windowTitle: String? = nil
+
     @ObservationIgnored
     private let client: DaemonClient
     @ObservationIgnored
@@ -117,24 +122,28 @@ class TerminalSession {
     ///
     /// The handler runs on the XPC queue. It parses output data under the
     /// parser lock, then hands events to `ScreenModel` via its own executor.
+    /// `windowTitle` is refreshed on the MainActor after every apply / restore
+    /// so SwiftUI `.navigationTitle` stays in sync with OSC 0 / OSC 2.
     private func installResponseHandler() {
         let screenModel = self.screenModel
         let parser = self.parser
         let log = self.log
 
-        client.setResponseHandler { response in
+        client.setResponseHandler { [self] response in
             switch response {
             case .output(_, let data):
                 log.debug("Received output: \(data.count) bytes")
                 let events = parser.withLock { $0.parse(data) }
-                Task {
+                Task { @MainActor in
                     await screenModel.apply(events)
+                    self.windowTitle = await screenModel.currentWindowTitle()
                 }
 
             case .screenSnapshot(_, let snapshot):
                 log.info("Received screen snapshot")
-                Task {
+                Task { @MainActor in
                     await screenModel.restore(from: snapshot)
+                    self.windowTitle = await screenModel.currentWindowTitle()
                 }
 
             case .sessionEnded(let sid, let exitCode):
@@ -157,6 +166,7 @@ struct ContentView: View {
         TermView(screenModel: session.screenModel, onInput: { data in
             session.sendInput(data)
         })
+        .navigationTitle(session.windowTitle ?? "rTerm")
         .task {
             do {
                 try Agent().register()
