@@ -35,6 +35,11 @@ import XPC
 /// is serialized by the daemon's serial dispatch queue, so no locks or
 /// async/await are needed. Every method is synchronous.
 ///
+/// The `@unchecked Sendable` conformance is justified by that external
+/// queue-serialization contract: every public method (other than `init`) calls
+/// ``assertOnQueue()``, which traps if invoked off-queue. This is a runtime
+/// guard against the kind of bug `@unchecked Sendable` ordinarily silences.
+///
 /// ## Lifecycle
 ///
 /// 1. The daemon's `main.swift` creates a single `SessionManager` and passes
@@ -80,7 +85,8 @@ final class SessionManager: @unchecked Sendable {
 
     /// The number of active sessions.
     var sessionCount: Int {
-        sessions.count
+        assertOnQueue()
+        return sessions.count
     }
 
     // MARK: - Create / Destroy
@@ -98,6 +104,7 @@ final class SessionManager: @unchecked Sendable {
     /// - Returns: Metadata about the newly created session.
     /// - Throws: ``DaemonError/spawnFailed(_:)`` if the shell cannot be spawned.
     func createSession(shell: Shell, rows: UInt16, cols: UInt16) throws -> SessionInfo {
+        assertOnQueue()
         let id = nextID
         nextID += 1
 
@@ -129,6 +136,7 @@ final class SessionManager: @unchecked Sendable {
     /// - Parameter sessionID: The session to destroy.
     /// - Throws: ``DaemonError/sessionNotFound(_:)`` if no such session exists.
     func destroySession(sessionID: SessionID) throws {
+        assertOnQueue()
         guard let session = sessions.removeValue(forKey: sessionID) else {
             throw DaemonError.sessionNotFound(sessionID)
         }
@@ -151,6 +159,7 @@ final class SessionManager: @unchecked Sendable {
     /// - Returns: The current attach payload (snapshot + recent history).
     /// - Throws: ``DaemonError/sessionNotFound(_:)`` if no such session exists.
     func attach(sessionID: SessionID, client: XPCSession) throws -> AttachPayload {
+        assertOnQueue()
         guard let session = sessions[sessionID] else {
             throw DaemonError.sessionNotFound(sessionID)
         }
@@ -166,6 +175,7 @@ final class SessionManager: @unchecked Sendable {
     ///   - sessionID: The session to detach from.
     ///   - client: The XPC session to remove.
     func detach(sessionID: SessionID, client: XPCSession) {
+        assertOnQueue()
         sessions[sessionID]?.detach(client: client)
     }
 
@@ -178,6 +188,7 @@ final class SessionManager: @unchecked Sendable {
     ///   - data: Raw bytes to write (typically keyboard input).
     /// - Throws: ``DaemonError/sessionNotFound(_:)`` if no such session exists.
     func handleInput(sessionID: SessionID, data: Data) throws {
+        assertOnQueue()
         guard let session = sessions[sessionID] else {
             throw DaemonError.sessionNotFound(sessionID)
         }
@@ -195,6 +206,7 @@ final class SessionManager: @unchecked Sendable {
     ///   - cols: New terminal column count.
     /// - Throws: ``DaemonError/sessionNotFound(_:)`` if no such session exists.
     func resize(sessionID: SessionID, rows: UInt16, cols: UInt16) throws {
+        assertOnQueue()
         guard let session = sessions[sessionID] else {
             throw DaemonError.sessionNotFound(sessionID)
         }
@@ -205,7 +217,8 @@ final class SessionManager: @unchecked Sendable {
 
     /// Return metadata for all active sessions.
     func listSessions() -> [SessionInfo] {
-        sessions.values.map(\.info)
+        assertOnQueue()
+        return sessions.values.map(\.info)
     }
 
     // MARK: - Child reaping
@@ -224,6 +237,7 @@ final class SessionManager: @unchecked Sendable {
     ///
     /// When the last session is reaped, the ``onEmpty`` callback fires.
     func reapChildren() {
+        assertOnQueue()
         var status: Int32 = 0
         while true {
             let pid = waitpid(-1, &status, WNOHANG)
@@ -256,6 +270,7 @@ final class SessionManager: @unchecked Sendable {
     ///
     /// - Parameter sessionID: The session that ended.
     private func handleSessionEnded(_ sessionID: SessionID) {
+        assertOnQueue()
         guard let session = sessions.removeValue(forKey: sessionID) else {
             return  // Already reaped by SIGCHLD — nothing to do.
         }
@@ -278,6 +293,7 @@ final class SessionManager: @unchecked Sendable {
     ///
     /// - Parameter client: The disconnected XPC session.
     func clientDisconnected(_ client: XPCSession) {
+        assertOnQueue()
         for session in sessions.values {
             session.detach(client: client)
         }
@@ -290,6 +306,7 @@ final class SessionManager: @unchecked Sendable {
     /// Sends `SIGTERM` to every shell, closes all PTYs, and clears the
     /// session registry. Called during daemon shutdown.
     func shutdownAll() {
+        assertOnQueue()
         Self.log.info("Shutting down all \(self.sessions.count) sessions")
         let allSessions = Array(sessions.values)
         sessions.removeAll()
@@ -300,6 +317,13 @@ final class SessionManager: @unchecked Sendable {
     }
 
     // MARK: - Private
+
+    /// Trap if invoked off the daemon queue. Cheap runtime guard backing the
+    /// `@unchecked Sendable` conformance — every public entry point calls this
+    /// so misuse fails immediately rather than silently racing.
+    private func assertOnQueue() {
+        dispatchPrecondition(condition: .onQueue(queue))
+    }
 
     /// Fire the ``onEmpty`` callback if no sessions remain.
     private func checkEmpty() {

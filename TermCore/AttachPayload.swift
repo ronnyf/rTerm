@@ -22,14 +22,16 @@
 
 import Foundation
 
-public typealias Row = ContiguousArray<Cell>
-
 /// Wire-facing payload returned from `.attach`. Carries the live snapshot plus
 /// bounded scrollback history so the attaching client can restore state.
 ///
 /// Phase 1: `recentHistory` is always empty (no scrollback yet). Phase 2 fills
 /// it; existing wire format stays stable.
 public struct AttachPayload: Sendable, Equatable, Codable {
+
+    /// Single row of cells in the scrollback history.
+    public typealias Row = ContiguousArray<Cell>
+
     public let snapshot: ScreenSnapshot
     public let recentHistory: ContiguousArray<Row>
     public let historyCapacity: Int

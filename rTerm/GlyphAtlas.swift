@@ -54,6 +54,9 @@ struct GlyphAtlas {
     private static let firstGlyph: UInt8 = 0x20
     /// Last printable ASCII code point included in the atlas.
     private static let lastGlyph: UInt8 = 0x7E
+    /// Default font size in points when callers don't specify one.
+    /// 14pt is a common terminal default that matches macOS Terminal.app.
+    static let defaultFontSize: CGFloat = 14.0
 
     // MARK: - Public properties
 
@@ -80,10 +83,10 @@ struct GlyphAtlas {
     ///
     /// - Parameters:
     ///   - device: The Metal device used to create the texture.
-    ///   - fontSize: The font size in points.  Defaults to 14.
+    ///   - fontSize: The font size in points. Defaults to ``defaultFontSize``.
     ///   - variant: Font weight to use. `.bold` selects
     ///     `NSFont.Weight.bold`; defaults to `.regular`.
-    init(device: MTLDevice, fontSize: CGFloat = 14.0, variant: Variant = .regular) {
+    init(device: MTLDevice, fontSize: CGFloat = Self.defaultFontSize, variant: Variant = .regular) {
         let scale: CGFloat = 2.0
         self.variant = variant
 

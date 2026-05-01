@@ -43,6 +43,7 @@
 		E3C634E12C3507E800BF09C7 /* ScreenBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C634E02C3507E800BF09C7 /* ScreenBuffer.swift */; };
 		E3C6C9142C251E8600D1AC70 /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C6C9132C251E8600D1AC70 /* Shell.swift */; };
 		E3CA58C12C3DF1D1008E8E05 /* TermView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CA58C02C3DF1D1008E8E05 /* TermView.swift */; };
+		E3CA58D12C3DF1D1008E8E05 /* RenderCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CA58D02C3DF1D1008E8E05 /* RenderCoordinator.swift */; };
 		E3CC01022F87A10000CC0001 /* PseudoTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */; };
 		E3D8EC1F2FA3CD6200343D51 /* rtermd in Embed rTermd in bundle */ = {isa = PBXBuildFile; fileRef = E3CD420F2F88B8D200B5D830 /* rtermd */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		E3DC01012F89B10000DC0001 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DC01002F89B10000DC0001 /* DaemonClient.swift */; };
@@ -62,6 +63,7 @@
 		E3F2CA082F900120001F0001 /* SGRAttribute.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA072F900120001F0001 /* SGRAttribute.swift */; };
 		E3F2CA0A2F900120001F0001 /* DECPrivateMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA092F900120001F0001 /* DECPrivateMode.swift */; };
 		E3F7CA022F900170001F0001 /* AttachPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F7CA012F900170001F0001 /* AttachPayload.swift */; };
+		E3F9CA022F900190001F0001 /* ScreenSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F9CA012F900190001F0001 /* ScreenSnapshot.swift */; };
 		E3F8CA022F900180001F0001 /* RGBA.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA012F900180001F0001 /* RGBA.swift */; };
 		E3F8CA042F900180001F0001 /* ColorDepth.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA032F900180001F0001 /* ColorDepth.swift */; };
 		E3F8CA062F900180001F0001 /* TerminalPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA052F900180001F0001 /* TerminalPalette.swift */; };
@@ -227,6 +229,7 @@
 		E3C634E02C3507E800BF09C7 /* ScreenBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenBuffer.swift; sourceTree = "<group>"; };
 		E3C6C9132C251E8600D1AC70 /* Shell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shell.swift; sourceTree = "<group>"; };
 		E3CA58C02C3DF1D1008E8E05 /* TermView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermView.swift; sourceTree = "<group>"; };
+		E3CA58D02C3DF1D1008E8E05 /* RenderCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderCoordinator.swift; sourceTree = "<group>"; };
 		E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminalTests.swift; sourceTree = "<group>"; };
 		E3CD420F2F88B8D200B5D830 /* rtermd */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = rtermd; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3CD94002F882B3900B5D830 /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
@@ -249,6 +252,7 @@
 		E3F2CA072F900120001F0001 /* SGRAttribute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SGRAttribute.swift; sourceTree = "<group>"; };
 		E3F2CA092F900120001F0001 /* DECPrivateMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DECPrivateMode.swift; sourceTree = "<group>"; };
 		E3F7CA012F900170001F0001 /* AttachPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachPayload.swift; sourceTree = "<group>"; };
+		E3F9CA012F900190001F0001 /* ScreenSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSnapshot.swift; sourceTree = "<group>"; };
 		E3F8CA012F900180001F0001 /* RGBA.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RGBA.swift; sourceTree = "<group>"; };
 		E3F8CA032F900180001F0001 /* ColorDepth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorDepth.swift; sourceTree = "<group>"; };
 		E3F8CA052F900180001F0001 /* TerminalPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPalette.swift; sourceTree = "<group>"; };
@@ -381,6 +385,7 @@
 			children = (
 				E30920842C23FF0600B6D264 /* rTermApp.swift */,
 				E3CA58C02C3DF1D1008E8E05 /* TermView.swift */,
+				E3CA58D02C3DF1D1008E8E05 /* RenderCoordinator.swift */,
 				E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */,
 				E3BB01102C80B10000BB0001 /* Shaders.metal */,
 				E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */,
@@ -451,6 +456,7 @@
 				E3F2CA072F900120001F0001 /* SGRAttribute.swift */,
 				E3F2CA092F900120001F0001 /* DECPrivateMode.swift */,
 				E3F7CA012F900170001F0001 /* AttachPayload.swift */,
+				E3F9CA012F900190001F0001 /* ScreenSnapshot.swift */,
 			);
 			path = TermCore;
 			sourceTree = "<group>";
@@ -804,6 +810,7 @@
 				E30920872C23FF0600B6D264 /* ContentView.swift in Sources */,
 				E30920852C23FF0600B6D264 /* rTermApp.swift in Sources */,
 				E3CA58C12C3DF1D1008E8E05 /* TermView.swift in Sources */,
+				E3CA58D12C3DF1D1008E8E05 /* RenderCoordinator.swift in Sources */,
 				E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */,
 				E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */,
 				E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */,
@@ -855,6 +862,7 @@
 				E3F2CA082F900120001F0001 /* SGRAttribute.swift in Sources */,
 				E3F2CA0A2F900120001F0001 /* DECPrivateMode.swift in Sources */,
 				E3F7CA022F900170001F0001 /* AttachPayload.swift in Sources */,
+				E3F9CA022F900190001F0001 /* ScreenSnapshot.swift in Sources */,
 			);
 		};
 		E30920B72C23FF6800B6D264 /* Sources */ = {
