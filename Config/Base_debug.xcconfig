@@ -1,0 +1,30 @@
+//
+//  Base_debug.xcconfig
+//  rTerm
+//
+//  Created by Ronny Falk on 4/30/26.
+//  Copyright © 2026 RFx Software Inc. All rights reserved.
+//
+//  Project-level Debug-only settings. Included by the project's Debug
+//  configuration (was buildSettings under PBXProject "rTerm" Debug ID
+//  E30920A42C23FF0800B6D264 in project.pbxproj).
+
+#include "Base.xcconfig"
+
+// MARK: - Debug information
+
+DEBUG_INFORMATION_FORMAT = dwarf
+MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE
+
+// MARK: - Optimization
+
+GCC_DYNAMIC_NO_PIC = NO
+GCC_OPTIMIZATION_LEVEL = 0
+ONLY_ACTIVE_ARCH = YES
+SWIFT_OPTIMIZATION_LEVEL = -Onone
+
+// MARK: - Testability + preprocessor conditions
+
+ENABLE_TESTABILITY = YES
+GCC_PREPROCESSOR_DEFINITIONS = DEBUG=1 $(inherited)
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG $(inherited)

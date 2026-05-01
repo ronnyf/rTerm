@@ -1,0 +1,44 @@
+//
+//  rtermd.xcconfig
+//  rTerm
+//
+//  Created by Ronny Falk on 4/30/26.
+//  Copyright © 2026 RFx Software Inc. All rights reserved.
+//
+//  Target-specific build settings for 'rtermd'. This file is referenced from
+//  the target's Debug AND Release build configurations in project.pbxproj.
+//  Settings without a config suffix apply to both; Release-only overrides use
+//  the [config=Release] appendix, e.g., LLVM_LTO[config=Release] = YES.
+//
+//  Settings already present in Config/Base.xcconfig or Config/Base_debug.xcconfig
+//  (for Debug) or Config/Base_release.xcconfig (for Release) are omitted here —
+//  they're inherited via the project-level xcconfig chain.
+
+// MARK: - Debug + Release (target)
+
+ALLOW_TARGET_PLATFORM_SPECIALIZATION = YES
+AUTOMATION_APPLE_EVENTS = NO
+CODE_SIGN_ENTITLEMENTS = rtermd/rtermd.entitlements
+CODE_SIGN_STYLE = Manual
+ENABLE_HARDENED_RUNTIME = YES
+ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO
+ENABLE_RESOURCE_ACCESS_CALENDARS = NO
+ENABLE_RESOURCE_ACCESS_CAMERA = NO
+ENABLE_RESOURCE_ACCESS_CONTACTS = NO
+ENABLE_RESOURCE_ACCESS_LOCATION = NO
+ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO
+INSTALL_PATH = /usr/local/libexec
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path @loader_path/../Frameworks /Library/Frameworks
+PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rtermd
+PRODUCT_NAME = $(TARGET_NAME)
+RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = YES
+RUNTIME_EXCEPTION_ALLOW_JIT = NO
+RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO
+RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO
+RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO
+RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO
+SWIFT_APPROACHABLE_CONCURRENCY = YES
+SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated
+SWIFT_STRICT_CONCURRENCY = complete
+SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES
+SWIFT_VERSION = 6.0

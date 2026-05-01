@@ -1,0 +1,22 @@
+//
+//  Base_release.xcconfig
+//  rTerm
+//
+//  Created by Ronny Falk on 4/30/26.
+//  Copyright © 2026 RFx Software Inc. All rights reserved.
+//
+//  Project-level Release-only settings. Included by the project's Release
+//  configuration (was buildSettings under PBXProject "rTerm" Release ID
+//  E30920A52C23FF0800B6D264 in project.pbxproj).
+
+#include "Base.xcconfig"
+
+// MARK: - Debug information
+
+DEBUG_INFORMATION_FORMAT = dwarf-with-dsym
+MTL_ENABLE_DEBUG_INFO = NO
+
+// MARK: - Assertions + compilation mode
+
+ENABLE_NS_ASSERTIONS = NO
+SWIFT_COMPILATION_MODE = wholemodule

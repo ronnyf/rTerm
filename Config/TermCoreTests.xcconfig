@@ -1,0 +1,30 @@
+//
+//  TermCoreTests.xcconfig
+//  rTerm
+//
+//  Created by Ronny Falk on 4/30/26.
+//  Copyright © 2026 RFx Software Inc. All rights reserved.
+//
+//  Target-specific build settings for 'TermCoreTests'. This file is referenced from
+//  the target's Debug AND Release build configurations in project.pbxproj.
+//  Settings without a config suffix apply to both; Release-only overrides use
+//  the [config=Release] appendix, e.g., LLVM_LTO[config=Release] = YES.
+//
+//  Settings already present in Config/Base.xcconfig or Config/Base_debug.xcconfig
+//  (for Debug) or Config/Base_release.xcconfig (for Release) are omitted here —
+//  they're inherited via the project-level xcconfig chain.
+
+// MARK: - Debug + Release (target)
+
+CODE_SIGN_STYLE = Manual
+CURRENT_PROJECT_VERSION = 1
+GENERATE_INFOPLIST_FILE = YES
+MARKETING_VERSION = 1.0
+PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.TermCoreTests
+PRODUCT_NAME = $(TARGET_NAME)
+SWIFT_APPROACHABLE_CONCURRENCY = YES
+SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated
+SWIFT_EMIT_LOC_STRINGS = NO
+SWIFT_STRICT_CONCURRENCY = complete
+SWIFT_VERSION = 6.0
+TEST_HOST = $(BUILT_PRODUCTS_DIR)/rTerm.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/rTerm
