@@ -24,7 +24,12 @@ import TermCore
 /// Whether a `TerminalColor` is being resolved as a foreground or background.
 /// Affects the `default` case (which routes to the palette's `defaultForeground`
 /// or `defaultBackground`).
-@frozen public enum ColorRole: Sendable, Equatable {
+///
+/// `nonisolated` so the synthesized `Equatable` conformance is callable from
+/// any isolation context — the rTerm target defaults to `MainActor` isolation,
+/// which would otherwise pin the synthesized `==` to the main actor and reject
+/// uses from `nonisolated` functions like `ColorProjection.resolve`.
+nonisolated @frozen public enum ColorRole: Sendable, Equatable {
     case foreground
     case background
 }
@@ -37,7 +42,16 @@ import TermCore
 /// All members are `nonisolated`: the renderer calls these on the MainActor at
 /// draw time, but tests and other consumers must be able to call them from any
 /// isolation. They depend only on their parameters — no shared state.
+///
+/// Storage note: the 256-color cache is a `ContiguousArray<RGBA>` (always 256
+/// entries). `InlineArray<256, RGBA>` would be the natural fixed-size choice
+/// but requires macOS 26 while this binary must run on macOS 15. An
+/// `@available(macOS 26.0, *)` overload of `derivePalette256(from:)` returns
+/// the in-line representation for callers that can guarantee macOS 26+.
 public enum ColorProjection {
+
+    /// Number of slots in the xterm 256-color palette — always 256.
+    public static let palette256Count: Int = 256
 
     /// Resolve a `TerminalColor` to a concrete `RGBA` according to the active
     /// depth + palette.
@@ -49,13 +63,14 @@ public enum ColorProjection {
     ///   - palette: Active 16-slot ANSI palette + defaults.
     ///   - derivedPalette256: Pre-computed 256-color palette (must be derived
     ///     from `palette` via `derivePalette256(from:)`). Caller-managed cache
-    ///     so we don't rebuild the cube on every cell.
+    ///     so we don't rebuild the cube on every cell. Must contain exactly
+    ///     `palette256Count` entries.
     nonisolated public static func resolve(
         _ color: TerminalColor,
         role: ColorRole,
         depth: ColorDepth,
         palette: TerminalPalette,
-        derivedPalette256: InlineArray<256, RGBA>
+        derivedPalette256: ContiguousArray<RGBA>
     ) -> RGBA {
         switch (color, depth) {
         case (.default, _):
@@ -77,10 +92,10 @@ public enum ColorProjection {
 
     /// Build the standard xterm 256-color palette: slots 0–15 are taken from
     /// `palette.ansi`, slots 16–231 form a 6×6×6 RGB cube, and slots 232–255
-    /// are a 24-step grayscale ramp.
-    nonisolated public static func derivePalette256(from palette: TerminalPalette) -> InlineArray<256, RGBA> {
-        var result = InlineArray<256, RGBA>(repeating: RGBA(0, 0, 0))
-        for i in 0..<16 { result[i] = palette.ansi[i] }
+    /// are a 24-step grayscale ramp. Result always has `palette256Count` entries.
+    nonisolated public static func derivePalette256(from palette: TerminalPalette) -> ContiguousArray<RGBA> {
+        var result = ContiguousArray<RGBA>(repeating: RGBA(0, 0, 0), count: palette256Count)
+        for i in 0..<TerminalPalette.ansiCount { result[i] = palette.ansi[i] }
         let cubeLevels: [UInt8] = [0, 95, 135, 175, 215, 255]
         var idx = 16
         for r in 0..<6 {
@@ -98,10 +113,20 @@ public enum ColorProjection {
         return result
     }
 
+    /// `InlineArray` overload for callers that can require macOS 26+. Returns
+    /// the same logical palette as the `ContiguousArray` version.
+    @available(macOS 26.0, *)
+    nonisolated public static func derivePalette256Inline(from palette: TerminalPalette) -> InlineArray<256, RGBA> {
+        let array = derivePalette256(from: palette)
+        var out = InlineArray<256, RGBA>(repeating: RGBA(0, 0, 0))
+        for i in 0..<palette256Count { out[i] = array[i] }
+        return out
+    }
+
     nonisolated private static func quantizeToAnsi16(_ c: RGBA, palette: TerminalPalette) -> RGBA {
         var best = 0
         var bestDist = Int.max
-        for i in 0..<16 {
+        for i in 0..<TerminalPalette.ansiCount {
             let p = palette.ansi[i]
             let d = sqDist(c, p)
             if d < bestDist { bestDist = d; best = i }
@@ -109,10 +134,10 @@ public enum ColorProjection {
         return palette.ansi[best]
     }
 
-    nonisolated private static func quantizeTo256(_ c: RGBA, derivedPalette256: InlineArray<256, RGBA>) -> RGBA {
+    nonisolated private static func quantizeTo256(_ c: RGBA, derivedPalette256: ContiguousArray<RGBA>) -> RGBA {
         var best = 0
         var bestDist = Int.max
-        for i in 0..<256 {
+        for i in 0..<palette256Count {
             let p = derivedPalette256[i]
             let d = sqDist(c, p)
             if d < bestDist { bestDist = d; best = i }

@@ -81,7 +81,12 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
 
     /// Cached 256-color palette derived from `settings.palette`. Recomputed only
     /// when the palette identity changes (cheap object-equality check).
-    private var derivedPalette256: InlineArray<256, RGBA>
+    ///
+    /// Stored as `ContiguousArray<RGBA>` rather than `InlineArray<256, RGBA>`
+    /// because the deployment target is macOS 15 and `InlineArray` (SE-0453)
+    /// requires macOS 26. See `TerminalPalette` and `ColorProjection` for the
+    /// matching note.
+    private var derivedPalette256: ContiguousArray<RGBA>
     private var palette256Source: TerminalPalette
 
     init(screenModel: ScreenModel, settings: AppSettings) {
