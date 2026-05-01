@@ -70,14 +70,14 @@ final class TerminalMTKView: MTKView {
 @MainActor
 final class RenderCoordinator: NSObject, MTKViewDelegate {
 
-    let device: MTLDevice
-    let commandQueue: MTLCommandQueue
-    let glyphPipelineState: MTLRenderPipelineState
-    let overlayPipelineState: MTLRenderPipelineState
-    let regularAtlas: GlyphAtlas
-    let boldAtlas: GlyphAtlas
-    let screenModel: ScreenModel
-    let settings: AppSettings
+    private(set) var device: MTLDevice
+    private let commandQueue: MTLCommandQueue
+    private let glyphPipelineState: MTLRenderPipelineState
+    private let overlayPipelineState: MTLRenderPipelineState
+    private let regularAtlas: GlyphAtlas
+    private let boldAtlas: GlyphAtlas
+    private let screenModel: ScreenModel
+    private let settings: AppSettings
 
     /// Cached 256-color palette derived from `settings.palette`. Recomputed only
     /// when the palette identity changes (cheap object-equality check).
@@ -425,18 +425,22 @@ struct TermView: NSViewRepresentable {
         view.delegate = coordinator
         view.preferredFramesPerSecond = 60
         view.colorPixelFormat = .bgra8Unorm
-        let bg = settings.palette.defaultBackground
-        view.clearColor = MTLClearColor(
-            red:   Double(bg.r) / 255.0,
-            green: Double(bg.g) / 255.0,
-            blue:  Double(bg.b) / 255.0,
-            alpha: Double(bg.a) / 255.0
-        )
+        view.clearColor = clearColor(for: settings.palette.defaultBackground)
         view.onKeyInput = onInput
         return view
     }
 
     func updateNSView(_ nsView: TerminalMTKView, context: Context) {
         nsView.onKeyInput = onInput
+        nsView.clearColor = clearColor(for: settings.palette.defaultBackground)
+    }
+
+    private func clearColor(for rgba: RGBA) -> MTLClearColor {
+        MTLClearColor(
+            red:   Double(rgba.r) / 255.0,
+            green: Double(rgba.g) / 255.0,
+            blue:  Double(rgba.b) / 255.0,
+            alpha: Double(rgba.a) / 255.0
+        )
     }
 }

@@ -98,4 +98,20 @@ import TermCore
             _ = try JSONDecoder().decode(TerminalPalette.self, from: bad.data(using: .utf8)!)
         }
     }
+
+    @available(macOS 26.0, *)
+    @Test func ansiInline_matches_array_storage() {
+        let inline = Self.palette.ansiInline
+        for i in 0..<TerminalPalette.ansiCount {
+            #expect(inline[i] == Self.palette.ansi[i])
+        }
+    }
+
+    @available(macOS 26.0, *)
+    @Test func derivePalette256Inline_matches_array_form() {
+        let inline = ColorProjection.derivePalette256Inline(from: Self.palette)
+        for i in 0..<ColorProjection.palette256Count {
+            #expect(inline[i] == Self.p256[i])
+        }
+    }
 }

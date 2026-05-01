@@ -103,10 +103,3 @@ vertex OverlayVertexOut overlay_vertex(const device OverlayVertexIn* vertices [[
 fragment float4 overlay_fragment(OverlayVertexOut in [[stage_in]]) {
     return in.color;
 }
-
-// MARK: - Cursor (legacy entry point — kept for compatibility)
-
-fragment float4 cursor_fragment(OverlayVertexOut in [[stage_in]]) {
-    // Cursor draws as a translucent overlay using the supplied color.
-    return float4(in.color.rgb, in.color.a * 0.7);
-}
