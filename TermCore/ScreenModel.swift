@@ -369,6 +369,10 @@ public actor ScreenModel {
             "Cannot restore from snapshot with dimensions \(snapshot.cols)x\(snapshot.rows) "
             + "into model with dimensions \(cols)x\(rows)"
         )
+        precondition(
+            snapshot.activeCells.count == snapshot.rows * snapshot.cols,
+            "Snapshot has \(snapshot.activeCells.count) cells; expected \(snapshot.rows * snapshot.cols)"
+        )
         self.grid = snapshot.activeCells
         self.cursor = snapshot.cursor
         self.windowTitle = snapshot.windowTitle

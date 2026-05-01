@@ -116,6 +116,35 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
     public subscript(row: Int, col: Int) -> Cell {
         activeCells[row * cols + col]
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case activeCells, cols, rows, cursor, cursorVisible, activeBuffer, windowTitle, version
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let activeCells = try container.decode(ContiguousArray<Cell>.self, forKey: .activeCells)
+        let cols = try container.decode(Int.self, forKey: .cols)
+        let rows = try container.decode(Int.self, forKey: .rows)
+        guard cols >= 0, rows >= 0 else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: container.codingPath,
+                debugDescription: "ScreenSnapshot dimensions must be non-negative; got \(cols)x\(rows)"))
+        }
+        guard activeCells.count == rows * cols else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: container.codingPath,
+                debugDescription: "ScreenSnapshot.activeCells length \(activeCells.count) does not match dimensions \(rows)x\(cols) (expected \(rows * cols))"))
+        }
+        self.activeCells = activeCells
+        self.cols = cols
+        self.rows = rows
+        self.cursor = try container.decode(Cursor.self, forKey: .cursor)
+        self.cursorVisible = try container.decode(Bool.self, forKey: .cursorVisible)
+        self.activeBuffer = try container.decode(BufferKind.self, forKey: .activeBuffer)
+        self.windowTitle = try container.decodeIfPresent(String.self, forKey: .windowTitle)
+        self.version = try container.decode(UInt64.self, forKey: .version)
+    }
 }
 
 @frozen public enum BufferKind: Sendable, Equatable, Codable {

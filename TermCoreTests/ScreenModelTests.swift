@@ -494,4 +494,48 @@ struct ScreenModelVersionTests {
         let v2 = model.latestSnapshot().version
         #expect(v1 == v2)
     }
+
+    @Test func version_does_not_bump_on_sgr_only() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.csi(.sgr([.bold]))])
+        #expect(model.latestSnapshot().version == v0)
+    }
+
+    @Test func version_does_not_bump_on_save_cursor_only() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.csi(.saveCursor)])
+        #expect(model.latestSnapshot().version == v0)
+    }
+
+    @Test func version_does_not_bump_on_backspace_at_col_zero() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.c0(.backspace)])
+        #expect(model.latestSnapshot().version == v0)
+    }
+
+    @Test func version_does_not_bump_on_unchanged_window_title() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([.osc(.setWindowTitle("same"))])
+        let v1 = model.latestSnapshot().version
+        await model.apply([.osc(.setWindowTitle("same"))])
+        #expect(model.latestSnapshot().version == v1)
+    }
+
+    @Test func version_does_not_bump_on_set_icon_name() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.osc(.setIconName("anything"))])
+        #expect(model.latestSnapshot().version == v0,
+                "Phase 1: icon name is not surfaced in snapshot, so it must not bump version")
+    }
+
+    @Test func version_bumps_on_csi_cursor_position() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.csi(.cursorPosition(row: 5, col: 5))])
+        #expect(model.latestSnapshot().version == v0 + 1)
+    }
 }
