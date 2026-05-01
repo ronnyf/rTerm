@@ -463,4 +463,12 @@ struct ScreenModelOSCTests {
         #expect(title == "T")
         #expect(icon == "I")
     }
+
+    @Test func apply_and_current_title_returns_post_apply_value() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        let title = await model.applyAndCurrentTitle([
+            .osc(.setWindowTitle("combined"))
+        ])
+        #expect(title == "combined")
+    }
 }

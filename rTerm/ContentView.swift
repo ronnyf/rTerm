@@ -131,12 +131,16 @@ class TerminalSession {
 
         client.setResponseHandler { [self] response in
             switch response {
+            // .output uses ScreenModel.applyAndCurrentTitle to collapse the apply
+            // and title read into one actor hop — this narrows the race where
+            // two rapid chunks' MainActor continuations could reorder the title
+            // reads. Task 7's snapshot reshape eliminates the MainActor race
+            // entirely by publishing windowTitle through the nonisolated snapshot.
             case .output(_, let data):
                 log.debug("Received output: \(data.count) bytes")
                 let events = parser.withLock { $0.parse(data) }
                 Task { @MainActor in
-                    await screenModel.apply(events)
-                    self.windowTitle = await screenModel.currentWindowTitle()
+                    self.windowTitle = await screenModel.applyAndCurrentTitle(events)
                 }
 
             case .screenSnapshot(_, let snapshot):

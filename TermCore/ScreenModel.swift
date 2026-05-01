@@ -327,6 +327,20 @@ public actor ScreenModel {
     /// Actor-isolated — callers `await`.
     public func currentIconName() -> String? { iconName }
 
+    /// Convenience combining ``apply(_:)`` and ``currentWindowTitle()`` in a
+    /// single actor hop.
+    ///
+    /// `TerminalSession` uses this from the XPC response handler so that the
+    /// title it reads corresponds to the state immediately after *this* chunk's
+    /// apply — not whatever state the actor holds by the time a separate
+    /// `currentWindowTitle()` round-trip returns. Without this collapsing, two
+    /// rapid output chunks could have their MainActor continuations reorder
+    /// the title reads and produce stale-title flicker.
+    public func applyAndCurrentTitle(_ events: [TerminalEvent]) -> String? {
+        apply(events)
+        return windowTitle
+    }
+
     /// Returns the most recently published snapshot.
     ///
     /// This is `nonisolated` and safe to call from any thread (including the
