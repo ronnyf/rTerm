@@ -91,18 +91,30 @@ import Foundation
         for i in 0..<data.count {
             await modelB.apply(parserB.parse(data.subdata(in: i..<i+1)))
         }
-        #expect(modelA.latestSnapshot().activeCells == modelB.latestSnapshot().activeCells)
+        let snapA = modelA.latestSnapshot()
+        let snapB = modelB.latestSnapshot()
+        #expect(snapA.activeCells == snapB.activeCells)
+        #expect(snapA.cursor == snapB.cursor)
+        #expect(snapA.cursorVisible == snapB.cursorVisible)
+        #expect(snapA.windowTitle == snapB.windowTitle)
+        #expect(snapA.activeBuffer == snapB.activeBuffer)
     }
 
-    @Test func vim_startup_parses_without_throwing() async {
+    @Test func unhandled_alt_screen_does_not_corrupt_subsequent_erase_and_home() async {
         // Phase 1: alt-screen mode is parsed but unhandled; the important thing is
         // that the parser cleanly dispatches the CSI ? 1049 h sequence into
         // .csi(.setMode(.alternateScreen1049, enabled: true)) and subsequent
         // erase + home operate on main buffer (since alt is ignored).
         let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.printable("X")])  // seed so erase has something to clear
         var parser = TerminalParser()
         await model.apply(parser.parse(Data(Self.vimStartupSequence)))
         let snap = model.latestSnapshot()
         #expect(snap.cursor == Cursor(row: 0, col: 0))
+        for r in 0..<snap.rows {
+            for c in 0..<snap.cols {
+                #expect(snap[r, c].character == " ")
+            }
+        }
     }
 }
