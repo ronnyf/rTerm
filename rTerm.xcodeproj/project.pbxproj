@@ -46,6 +46,7 @@
 		E3CC01022F87A10000CC0001 /* PseudoTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */; };
 		E3D8EC1F2FA3CD6200343D51 /* rtermd in Embed rTermd in bundle */ = {isa = PBXBuildFile; fileRef = E3CD420F2F88B8D200B5D830 /* rtermd */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		E3DC01012F89B10000DC0001 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DC01002F89B10000DC0001 /* DaemonClient.swift */; };
+		E3A901012FA90100001A0001 /* TerminalIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3A901002FA90100001A0001 /* TerminalIntegrationTests.swift */; };
 		E3DD01012F88C10000DD0001 /* CodableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DD01002F88C10000DD0001 /* CodableTests.swift */; };
 		E3E00EDF2C277F8E00DE1213 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EDE2C277F8E00DE1213 /* Agent.swift */; };
 		E3E00EE32C27816600DE1213 /* PseudoTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */; };
@@ -231,6 +232,7 @@
 		E3CD94002F882B3900B5D830 /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
 		E3CD94012F882B4200B5D830 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		E3DC01002F89B10000DC0001 /* DaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonClient.swift; sourceTree = "<group>"; };
+		E3A901002FA90100001A0001 /* TerminalIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalIntegrationTests.swift; sourceTree = "<group>"; };
 		E3DD01002F88C10000DD0001 /* CodableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableTests.swift; sourceTree = "<group>"; };
 		E3E00EDE2C277F8E00DE1213 /* Agent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Agent.swift; sourceTree = "<group>"; };
 		E3E00EE22C27816600DE1213 /* PseudoTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminal.swift; sourceTree = "<group>"; };
@@ -463,6 +465,7 @@
 				E3DD01002F88C10000DD0001 /* CodableTests.swift */,
 				E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */,
 				E3F1CA052F900110001F0001 /* CellStyleTests.swift */,
+				E3A901002FA90100001A0001 /* TerminalIntegrationTests.swift */,
 			);
 			path = TermCoreTests;
 			sourceTree = "<group>";
@@ -864,6 +867,7 @@
 				E3DD01012F88C10000DD0001 /* CodableTests.swift in Sources */,
 				E3EE01032F88D10000EE0002 /* DaemonProtocolTests.swift in Sources */,
 				E3F1CA062F900110001F0001 /* CellStyleTests.swift in Sources */,
+				E3A901012FA90100001A0001 /* TerminalIntegrationTests.swift in Sources */,
 			);
 		};
 		E30920D12C23FF7800B6D264 /* Sources */ = {
