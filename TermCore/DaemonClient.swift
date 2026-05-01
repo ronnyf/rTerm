@@ -22,6 +22,7 @@
 
 import Foundation
 import OSLog
+import Synchronization
 import XPC
 
 // MARK: - ConnectionError
@@ -41,8 +42,8 @@ public enum ConnectionError: Error, Sendable {
 /// XPC client for communicating with the rtermd daemon.
 ///
 /// `DaemonClient` is `Sendable` because all mutable state (the XPC session
-/// reference and the response handler closure) is protected by an
-/// `OSAllocatedUnfairLock`.
+/// reference and the response handler closure) is protected by a `Mutex`
+/// (Swift Synchronization, SE-0410).
 ///
 /// The client uses the XPC constructor pattern that accepts
 /// `incomingMessageHandler` and `cancellationHandler` directly -- the session
@@ -63,7 +64,7 @@ public final class DaemonClient: Sendable {
         var responseHandler: (@Sendable (DaemonResponse) -> Void)?
     }
 
-    private let state: OSAllocatedUnfairLock<ClientState>
+    private let state: Mutex<ClientState>
     private let serviceName: String
     private let log = Logger.TermCore.daemonClient
 
@@ -75,7 +76,7 @@ public final class DaemonClient: Sendable {
     ///   launch agent. Defaults to ``DaemonService/machServiceName``.
     public init(serviceName: String = DaemonService.machServiceName) {
         self.serviceName = serviceName
-        self.state = OSAllocatedUnfairLock(initialState: ClientState())
+        self.state = Mutex(ClientState())
     }
 
     deinit {
@@ -187,16 +188,20 @@ public final class DaemonClient: Sendable {
         }
         previous?.cancel(reason: "Replaced")
 
-        let stateRef = self.state
         let logRef = self.log
 
+        // `Mutex` is `~Copyable`, so we can't stash a lock reference in a local
+        // the way the prior `OSAllocatedUnfairLock` pattern did. The push
+        // handler therefore captures `self` weakly and reaches `self.state`
+        // through that — if the client is deallocated while a push is in
+        // flight, the handler is silently skipped (no handler to invoke
+        // anyway).
         let session = try XPCSession(
             machService: serviceName,
             targetQueue: nil,
-            incomingMessageHandler: { (response: DaemonResponse) -> (any Encodable)? in
+            incomingMessageHandler: { [weak self] (response: DaemonResponse) -> (any Encodable)? in
                 logRef.debug("Received push: \(String(describing: response))")
-                // Fetch the handler under the lock, then call it outside.
-                let handler = stateRef.withLock { $0.responseHandler }
+                let handler = self?.state.withLock { $0.responseHandler }
                 handler?(response)
                 return nil
             },
