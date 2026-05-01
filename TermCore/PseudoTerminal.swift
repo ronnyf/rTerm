@@ -9,20 +9,21 @@ import Foundation
 import OSLog
 import System
 
-public final class PseudoTerminal: @unchecked Sendable {
+// FIXME: @unchecked Sendable is unsound — var winsize + var shellProcess have no synchronization. Narrowed to internal so only PseudoTerminalTests sees it. Proper fix is to convert to an actor or refactor the tests to not capture `pt` in TaskGroup child closures.
+final class PseudoTerminal: @unchecked Sendable {
 
-    public enum Errors: Swift.Error {
+    enum Errors: Swift.Error {
         case noProcess
         case posix(Int32)
         case noPtsName
     }
 
-    public let shell: Shell
-    public private(set) var winsize: Darwin.winsize
-    public let pty: AltPTY
+    let shell: Shell
+    private(set) var winsize: Darwin.winsize
+    let pty: AltPTY
 
     /// Output bytes from the shell, backed by FileHandle.readabilityHandler on the primary FD.
-    public let outputStream: AsyncStream<Data>
+    let outputStream: AsyncStream<Data>
     private let outputContinuation: AsyncStream<Data>.Continuation
 
     /// FileHandle for reading from the primary FD.
@@ -33,7 +34,7 @@ public final class PseudoTerminal: @unchecked Sendable {
 
     let log = Logger.TermCore.pseudoTerminal
 
-    public init(shell: Shell = .sh, rows: UInt16 = 24, cols: UInt16 = 80) throws {
+    init(shell: Shell = .sh, rows: UInt16 = 24, cols: UInt16 = 80) throws {
         self.shell = shell
         self.winsize = Darwin.winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
         self.pty = try AltPTY()
@@ -51,7 +52,7 @@ public final class PseudoTerminal: @unchecked Sendable {
     }
 
     /// Writes input bytes to the PTY primary FD.
-    public func write(_ data: Data) {
+    func write(_ data: Data) {
         data.withUnsafeBytes { buffer in
             guard var ptr = buffer.baseAddress else { return }
             var remaining = buffer.count
@@ -69,7 +70,7 @@ public final class PseudoTerminal: @unchecked Sendable {
     }
 
     /// Updates window size via TIOCSWINSZ ioctl.
-    public func resize(rows: UInt16, cols: UInt16) {
+    func resize(rows: UInt16, cols: UInt16) {
         winsize = Darwin.winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
         var ws = winsize
         let rc = ioctl(pty.primary.rawValue, TIOCSWINSZ, &ws)
@@ -79,7 +80,7 @@ public final class PseudoTerminal: @unchecked Sendable {
     }
 
     /// Spawns the shell process, begins reading output. Returns the tty name.
-    public func start() throws -> String {
+    func start() throws -> String {
         guard let ptsName = ptsname(pty.primary.rawValue) else {
             throw Errors.noPtsName
         }

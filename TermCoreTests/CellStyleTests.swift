@@ -1,7 +1,30 @@
+//
+//  CellStyleTests.swift
+//  TermCoreTests
+//
+//  Created by Ronny Falk on 4/30/26.
+//
+//  This file is part of rTerm.
+//
+//  Terminal App is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  Terminal App is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+//  GNU General Public License for more details.
+//
+//  You should have received a copy of the GNU General Public License
+//  along with Terminal App. If not, see <https://www.gnu.org/licenses/>.
+//
+
+import Foundation
 import Testing
 @testable import TermCore
 
-@Suite struct CellStyleTests {
+struct CellStyleTests {
 
     @Test func defaults_are_neutral() {
         let s = CellStyle.default
@@ -20,8 +43,9 @@ import Testing
     @Test func codable_roundtrip_default_omits_style() throws {
         let c = Cell(character: "A")
         let data = try JSONEncoder().encode(c)
-        let str = String(data: data, encoding: .utf8)!
-        #expect(!str.contains("\"style\""), "default style should not be encoded")
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(obj != nil)
+        #expect(obj?["style"] == nil, "default style should be omitted from encoded JSON")
 
         let decoded = try JSONDecoder().decode(Cell.self, from: data)
         #expect(decoded == c)

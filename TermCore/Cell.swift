@@ -29,7 +29,7 @@ public struct Cell: Sendable, Equatable, Codable {
         self.style = style
     }
 
-    /// A blank cell — a single space character with default style.
+    /// A blank cell — space with default style. SGR-styled blanks are produced by the screen model's pen.
     public static let empty = Cell(character: " ")
 
     private enum CodingKeys: String, CodingKey {
