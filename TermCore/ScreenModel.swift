@@ -116,35 +116,15 @@ public actor ScreenModel {
         log.debug("Applying \(events.count) events")
         for event in events {
             switch event {
-            case .printable(let char):
-                // Execute deferred wrap if cursor is past the last column.
-                if cursor.col >= cols {
-                    cursor.col = 0
-                    cursor.row += 1
-                    if cursor.row >= rows {
-                        scrollUp()
-                    }
-                }
-                grid[cursor.row * cols + cursor.col] = Cell(character: char)
-                cursor.col += 1
-
-            case .newline:
-                cursor.col = 0
-                cursor.row += 1
-                if cursor.row >= rows {
-                    scrollUp()
-                }
-
-            case .carriageReturn:
-                cursor.col = 0
-
-            case .backspace:
-                cursor.col = max(0, cursor.col - 1)
-
-            case .tab:
-                cursor.col = min(cols - 1, ((cursor.col / 8) + 1) * 8)
-
-            case .bell, .unrecognized:
+            case .printable(let c):
+                handlePrintable(c)
+            case .c0(let control):
+                handleC0(control)
+            case .csi:
+                break   // CSI handling lands in Task 4
+            case .osc:
+                break   // OSC handling lands in Task 6
+            case .unrecognized:
                 break
             }
         }
@@ -152,6 +132,35 @@ public actor ScreenModel {
         // Publish updated snapshot for the renderer.
         let snap = ScreenSnapshot(cells: grid, cols: cols, rows: rows, cursor: snapshotCursor())
         _latestSnapshot.withLock { $0 = snap }
+    }
+
+    // MARK: - Event handlers
+
+    private func handlePrintable(_ char: Character) {
+        if cursor.col >= cols {
+            cursor.col = 0
+            cursor.row += 1
+            if cursor.row >= rows { scrollUp() }
+        }
+        grid[cursor.row * cols + cursor.col] = Cell(character: char)
+        cursor.col += 1
+    }
+
+    private func handleC0(_ control: C0Control) {
+        switch control {
+        case .nul, .bell, .shiftOut, .shiftIn, .delete:
+            break
+        case .backspace:
+            cursor.col = max(0, cursor.col - 1)
+        case .horizontalTab:
+            cursor.col = min(cols - 1, ((cursor.col / 8) + 1) * 8)
+        case .lineFeed, .verticalTab, .formFeed:
+            cursor.col = 0
+            cursor.row += 1
+            if cursor.row >= rows { scrollUp() }
+        case .carriageReturn:
+            cursor.col = 0
+        }
     }
 
     // MARK: - Restore

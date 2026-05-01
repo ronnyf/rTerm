@@ -41,7 +41,7 @@ struct ScreenModelTests {
 
     @Test func newline() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.printable("A"), .newline, .printable("B")])
+        await model.apply([.printable("A"), .c0(.lineFeed), .printable("B")])
         let snap = await model.snapshot()
 
         #expect(snap[0, 0].character == "A")
@@ -55,7 +55,7 @@ struct ScreenModelTests {
         let model = ScreenModel(cols: 4, rows: 3)
         await model.apply([
             .printable("A"), .printable("B"),
-            .carriageReturn,
+            .c0(.carriageReturn),
             .printable("X"),
         ])
         let snap = await model.snapshot()
@@ -71,7 +71,7 @@ struct ScreenModelTests {
         let model = ScreenModel(cols: 4, rows: 3)
         await model.apply([
             .printable("A"), .printable("B"),
-            .backspace,
+            .c0(.backspace),
             .printable("X"),
         ])
         let snap = await model.snapshot()
@@ -85,7 +85,7 @@ struct ScreenModelTests {
 
     @Test func backspaceAtColumnZero() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.backspace])
+        await model.apply([.c0(.backspace)])
         let snap = await model.snapshot()
 
         #expect(snap.cursor == Cursor(row: 0, col: 0), "Backspace at col 0 stays at col 0")
@@ -98,7 +98,7 @@ struct ScreenModelTests {
         // col 0: print "A" -> cursor at col 1
         // tab from col 1: next multiple of 8 is 8, clamped to cols-1 = 3 -> cursor at col 3
         // print "B" at col 3 -> cursor advances to col 4 -> wraps to (1, 0)
-        await model.apply([.printable("A"), .tab, .printable("B")])
+        await model.apply([.printable("A"), .c0(.horizontalTab), .printable("B")])
         let snap = await model.snapshot()
 
         #expect(snap[0, 0].character == "A")
@@ -132,14 +132,14 @@ struct ScreenModelTests {
         // Fill all 3 rows: row0="AAAA", row1="BBBB", row2="CCCC"
         await model.apply(
             Array(repeating: TerminalEvent.printable("A"), count: 4)
-            + [.newline]
+            + [.c0(.lineFeed)]
             + Array(repeating: TerminalEvent.printable("B"), count: 4)
-            + [.newline]
+            + [.c0(.lineFeed)]
             + Array(repeating: TerminalEvent.printable("C"), count: 4)
         )
 
         // Now newline from the last row triggers scroll, then print on new last row
-        await model.apply([.newline, .printable("Z")])
+        await model.apply([.c0(.lineFeed), .printable("Z")])
 
         let snap = await model.snapshot()
 
@@ -166,7 +166,7 @@ struct ScreenModelTests {
 
     @Test func bellIsNoOp() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.printable("A"), .bell, .printable("B")])
+        await model.apply([.printable("A"), .c0(.bell), .printable("B")])
         let snap = await model.snapshot()
 
         #expect(snap[0, 0].character == "A")
@@ -195,7 +195,7 @@ struct ScreenModelTests {
 
     @Test func latestSnapshotMatchesActorSnapshot() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.printable("A"), .printable("B"), .newline, .printable("C")])
+        await model.apply([.printable("A"), .printable("B"), .c0(.lineFeed), .printable("C")])
 
         let actorSnap = await model.snapshot()
         let lockSnap = model.latestSnapshot()
@@ -207,7 +207,7 @@ struct ScreenModelTests {
 
     @Test func restoreFromSnapshot() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.printable("A"), .printable("B"), .newline, .printable("C")])
+        await model.apply([.printable("A"), .printable("B"), .c0(.lineFeed), .printable("C")])
         let saved = await model.snapshot()
 
         // Mutate the model further so state diverges from the saved snapshot.
@@ -268,7 +268,7 @@ struct ScreenModelTests {
         // The newline should move to row 1, col 0 — NOT row 2.
         await model.apply([
             .printable("A"), .printable("B"), .printable("C"), .printable("D"),
-            .newline,
+            .c0(.lineFeed),
         ])
         let snap = await model.snapshot()
 
@@ -276,5 +276,28 @@ struct ScreenModelTests {
         #expect(snap[0, 3].character == "D")
         #expect(snap.cursor == Cursor(row: 1, col: 0),
                 "Newline after filling last column should land at row 1, col 0")
+    }
+
+    @Test func verticalTab_behaves_as_lineFeed() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([.printable("A"), .c0(.verticalTab), .printable("B")])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 1)
+        #expect(snap.cursor.col == 1)
+    }
+
+    @Test func formFeed_behaves_as_lineFeed() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([.printable("A"), .c0(.formFeed), .printable("B")])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 1)
+        #expect(snap.cursor.col == 1)
+    }
+
+    @Test func nul_is_noop() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([.printable("A"), .c0(.nul), .printable("B")])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.col == 2)
     }
 }

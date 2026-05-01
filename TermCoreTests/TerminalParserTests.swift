@@ -45,7 +45,7 @@ struct TerminalParserTests {
         var parser = TerminalParser()
         let input = Data([0x0A, 0x0D, 0x08, 0x09, 0x07])
         let events = parser.parse(input)
-        #expect(events == [.newline, .carriageReturn, .backspace, .tab, .bell])
+        #expect(events == [.c0(.lineFeed), .c0(.carriageReturn), .c0(.backspace), .c0(.horizontalTab), .c0(.bell)])
     }
 
     // MARK: - Mixed text and controls
@@ -57,7 +57,7 @@ struct TerminalParserTests {
         #expect(events == [
             .printable("A"),
             .printable("B"),
-            .newline,
+            .c0(.lineFeed),
             .printable("C"),
         ])
     }
@@ -97,7 +97,7 @@ struct TerminalParserTests {
     @Test func crlfSequence() {
         var parser = TerminalParser()
         let events = parser.parse(Data([0x0D, 0x0A]))
-        #expect(events == [.carriageReturn, .newline])
+        #expect(events == [.c0(.carriageReturn), .c0(.lineFeed)])
     }
 
     // MARK: - Empty input
@@ -158,5 +158,30 @@ struct TerminalParserTests {
         // Input [0xC0, 0xA0] should produce two unrecognized events.
         let events = parser.parse(Data([0xC0, 0xA0]))
         #expect(events == [.unrecognized(0xC0), .unrecognized(0xA0)])
+    }
+
+    @Test func verticalTab_is_c0_verticalTab() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x0B])) == [.c0(.verticalTab)])
+    }
+
+    @Test func formFeed_is_c0_formFeed() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x0C])) == [.c0(.formFeed)])
+    }
+
+    @Test func nul_is_c0_nul() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x00])) == [.c0(.nul)])
+    }
+
+    @Test func del_is_c0_delete() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x7F])) == [.c0(.delete)])
+    }
+
+    @Test func shiftOut_and_shiftIn() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x0E, 0x0F])) == [.c0(.shiftOut), .c0(.shiftIn)])
     }
 }

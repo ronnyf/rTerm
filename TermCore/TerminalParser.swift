@@ -112,12 +112,18 @@ public struct TerminalParser: Sendable {
     /// Map a single ASCII byte (value < 0x80) to a ``TerminalEvent``.
     private static func asciiEvent(_ byte: UInt8) -> TerminalEvent {
         switch byte {
-        case 0x07: return .bell
-        case 0x08: return .backspace
-        case 0x09: return .tab
-        case 0x0A: return .newline
-        case 0x0D: return .carriageReturn
+        case 0x00: return .c0(.nul)
+        case 0x07: return .c0(.bell)
+        case 0x08: return .c0(.backspace)
+        case 0x09: return .c0(.horizontalTab)
+        case 0x0A: return .c0(.lineFeed)
+        case 0x0B: return .c0(.verticalTab)
+        case 0x0C: return .c0(.formFeed)
+        case 0x0D: return .c0(.carriageReturn)
+        case 0x0E: return .c0(.shiftOut)
+        case 0x0F: return .c0(.shiftIn)
         case 0x20 ... 0x7E: return .printable(Character(UnicodeScalar(byte)))
+        case 0x7F: return .c0(.delete)
         default: return .unrecognized(byte)
         }
     }
