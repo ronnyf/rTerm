@@ -80,6 +80,24 @@ Internally:
 
 Value-typed, Sendable, no I/O — current ergonomics preserved.
 
+**Ownership rule.** `TerminalParser` is value-typed; each copy carries its own in-flight state buffer (partial UTF-8, collected CSI params, OSC string). Callers must own **one instance per PTY stream** — e.g., `rtermd/Session.swift`'s `var parser: TerminalParser`, mutated only inside the owning actor's isolation (or the daemon queue's `assumeIsolated` block). Copying mid-stream duplicates and silently diverges buffered bytes.
+
+### Parser-level bounds
+
+To keep adversarial output from bloating daemon memory:
+
+- **OSC string cap:** `OSC_STRING` accumulates up to 4 KB; oversize payloads emit `.osc(.unknown(ps:, pt: <truncated>))` and drop remaining bytes until the terminator.
+- **CSI param cap:** accept up to 16 parameters; extra params emit `.csi(.unknown(...))` with the collected prefix.
+- **Intermediates cap:** accept up to 2 intermediate bytes (VT spec maximum); extra drop the sequence through `CSI_IGNORE`.
+
+### Parser normalization contracts
+
+Parser emits *normalized but unclamped* values. Semantic bounds belong to `ScreenModel`:
+
+- `CSICommand.cursorPosition(row:col:)` — parser does 1-indexed → 0-indexed origin shift only. Default/missing params become 0 (post-shift) per VT spec ("`ESC[H`" = top-left). Clamping to `rows`/`cols` happens in `ScreenModel.handleCSI` which owns terminal dimensions.
+- `CSICommand.cursorUp(_:)` / `cursorDown` / `cursorForward` / `cursorBack` — raw integer payload. Parser applies VT default (missing parameter → 1) but does not clamp. `ScreenModel` clamps the resulting position.
+- `TerminalColor.ansi16(UInt8)` — parser emits values in `0..<16` only. Out-of-range SGR input (e.g., malformed `ESC[38;5;900m`) falls through other branches: 256-palette cases use `0..<256` (values over 255 are clipped by the `UInt8` type); the renderer may assume valid ranges and use `palette.ansi[Int(i)]` without masking.
+
 ### Unknown sequence policy
 
 Sequences the parser structurally recognizes but doesn't semantically map emit `.csi(.unknown(params:, intermediates:, final:))` and `.osc(.unknown(ps:, pt:))`. `ScreenModel.apply` ignores them but they're visible to tests and `os_log` — lets you spot real-world apps hitting unmapped sequences.
@@ -104,10 +122,16 @@ public enum TerminalEvent: Sendable, Equatable {
 }
 ```
 
+**Library-evolution note.** `TermCore` has `BUILD_LIBRARY_FOR_DISTRIBUTION = YES` (Release), which makes public non-`@frozen` enums resilient — every `switch` pays a dispatch cost. Annotation policy:
+
+- **`@frozen`** — `C0Control`, `EraseRegion`, `BufferKind`, `ColorRole`, `CellAttributes` (closed by VT spec; future additions would be a breaking change anyway).
+- **Non-`@frozen` (default)** — `TerminalEvent`, `CSICommand`, `OSCCommand`, `DECPrivateMode`, `SGRAttribute`, `TerminalColor`. These may legitimately add cases across phases. Every `.unknown(...)` case serves as the open-world escape hatch so consumers still switch exhaustively without `@unknown default` hints.
+- **Dispatch helpers** (`handleCSI`, `handleOSC`, `handleC0`) are `internal` or `package`-visible — they switch over internal state and don't need resilience overhead.
+
 ### Subfamilies
 
 ```swift
-public enum C0Control: Sendable, Equatable {
+@frozen public enum C0Control: Sendable, Equatable {
     case nul, bell, backspace, horizontalTab, lineFeed, verticalTab, formFeed,
          carriageReturn, shiftOut, shiftIn, delete
 }
@@ -135,7 +159,7 @@ public enum CSICommand: Sendable, Equatable {
     case unknown(params: [Int], intermediates: [UInt8], final: UInt8)
 }
 
-public enum EraseRegion: Sendable, Equatable { case toEnd, toBegin, all, scrollback }
+@frozen public enum EraseRegion: Sendable, Equatable { case toEnd, toBegin, all, scrollback }
 
 public enum DECPrivateMode: Sendable, Equatable {
     case cursorKeyApplication      // 1    DECCKM
@@ -208,9 +232,12 @@ public struct Cell: Sendable, Equatable, Codable {
 ### Notes
 
 - **SGR nested in CSI** — not top-level; consumers pattern-match `.csi(.sgr(_))` in two lines.
-- **VT 1-indexed → 0-indexed conversion** happens inside the parser when emitting `cursorPosition`. `ScreenModel` always sees 0-indexed.
+- **`[SGRAttribute]` payload allocates on every SGR sequence.** A stream of `ls --color` output emits hundreds of SGR events per screen, each heap-allocating. Inconsistent with §5's `InlineArray<16, RGBA>` choice for similar reasons. **Phase 3 optimization target:** replace with a small-buffer `SGRRun` type holding inline storage for 1–3 attributes (the overwhelmingly common case) + `Array` fallback. Noted as an open seam; not in MVP.
+- **VT 1-indexed → 0-indexed conversion** happens inside the parser when emitting `cursorPosition`. `ScreenModel` always sees 0-indexed. Bounds clamping happens in `ScreenModel` — see §2 "Parser normalization contracts."
+- **`ansi16(UInt8)` range is `0..<16`** by parser contract — §2 "Parser normalization contracts." Renderer and model use `palette.ansi[Int(i)]` without masking.
 - **Unknown sub-cases** (`CSICommand.unknown`, `OSCCommand.unknown`, `DECPrivateMode.unknown`) carry enough info for logging and future promotion to named cases.
 - **Cell memory:** ~24–32 bytes per cell once you account for `Character`'s 16-byte wrapping of `String`, `CellStyle`'s ~10 bytes, and struct alignment padding. For a 200×50 main + 200×50 alt + 10K scrollback = ~60 MB per session. Fine for macOS; post-MVP memory revisit tracked separately (see §8 Phase 3 style-flyweight — gets Cell down to ~8 bytes via `styleID: UInt16` into a shared table).
+- **`Cell.init(from:)` is hand-coded, not synthesized.** Decode is `character` required + `container.decodeIfPresent(CellStyle.self, forKey: .style) ?? .default`. Synthesized Codable would fail on any older or leaner payload lacking the style field. Same pattern is the default for every new field added to a `Codable` type crossing the XPC boundary.
 - **Breaking change:** existing call sites using `.newline`/`.carriageReturn`/`.backspace`/`.tab`/`.bell` become `.c0(.lineFeed)` etc. All in-tree — ~20-30 lines of mechanical change across parser / model / tests.
 
 ## §4 — ScreenModel
@@ -240,33 +267,48 @@ actor ScreenModel {
     private var history: CircularCollection<Row>  // Row = ContiguousArray<Cell>
     private let historyCapacity: Int = 10_000
 
-    // Version counter — bumps on every snapshot update
+    // Version counter — bumps only when state actually changed
     private var version: UInt64 = 0
 
-    // Snapshot cache — unchanged pattern
-    private let _latestSnapshot: OSAllocatedUnfairLock<ScreenSnapshot>
+    // Render snapshot cache — heap-boxed, immutable payload; the mutex guards only a pointer swap
+    private final class SnapshotBox: Sendable {
+        let snapshot: ScreenSnapshot      // all `let` fields — see §4 snapshot shape
+        init(_ s: ScreenSnapshot) { self.snapshot = s }
+    }
+    private let _latestSnapshot: Mutex<SnapshotBox>  // import Synchronization
 }
 ```
 
 Actor + custom serial-queue executor preserved — the daemon read path's `assumeIsolated` pattern keeps working unchanged.
+
+**Snapshot publication discipline.** Writer holds the mutex for exactly one pointer store (`withLock { $0 = SnapshotBox(new) }`). Reader holds it for exactly one pointer load (`withLock { $0 }.snapshot`). No `ContiguousArray<Cell>` copy ever happens inside the lock — `ScreenSnapshot` is all-immutable `let` fields, and readers hold onto the box reference once they've acquired it. The Swift compiler verifies `Sendable` for both `ScreenSnapshot` (value type, all `let`) and `SnapshotBox` (class, all `let`) without `@unchecked`.
+
+**Future lock-free seam.** `Mutex<SnapshotBox>` can be upgraded to `ManagedAtomic<SnapshotBox>` (via `swift-atomics` SPM package) for lock-free reads under render pressure — writers do an acquire-release store, readers an acquire load. Deferred until profiling warrants the added dependency.
 
 ### Event dispatch
 
 `apply(_ events:)` becomes a two-level switch:
 
 ```swift
+var changed = false
 for event in events {
     switch event {
-    case .printable(let c):  handlePrintable(c)
-    case .c0(let x):         handleC0(x)
-    case .csi(let cmd):      handleCSI(cmd)
-    case .osc(let cmd):      handleOSC(cmd)
+    case .printable(let c):  changed = handlePrintable(c) || changed
+    case .c0(let x):         changed = handleC0(x) || changed
+    case .csi(let cmd):      changed = handleCSI(cmd) || changed
+    case .osc(let cmd):      changed = handleOSC(cmd) || changed
     case .unrecognized:      break
     }
 }
-version += 1
-updateSnapshot()
+if changed {
+    version &+= 1
+    publishSnapshot()
+}
 ```
+
+Each handler returns `Bool` — `true` when it mutated buffer / cursor / pen / modes / title. `version` bumps only on real changes; a stream of `.unrecognized` or `.bell` events doesn't create phantom versions. `&+=` wraps — `UInt64` overflow is theoretical (584 years at 1 GHz) but wrap-on-overflow is the defensible choice for a monotonic counter.
+
+**Visibility contract.** `version` is read only via `publishSnapshot()` / mutex-guarded snapshot access. There is no standalone `currentVersion()` accessor. Callers that see a version have already synchronized with its backing state.
 
 Each handler is a focused file region. New writes go through `writeCell(_ char:)`, which stamps `pen` onto the new `Cell` at the cursor, then advances cursor respecting the active buffer's `scrollRegion` and `modes.autoWrap`.
 
@@ -296,9 +338,12 @@ Each handler is a focused file region. New writes go through `writeCell(_ char:)
 
 When the **main** buffer's top row would be evicted by a natural scroll (cursor below last row, no scroll region or full-screen region), the evicted row is pushed to `history`. Alt buffer never touches history. Scroll-region-internal scrolls discard without feeding history.
 
-### Snapshot shape
+### Snapshot shapes — render vs. wire
+
+Two distinct types. The render-side snapshot is published on every change and must stay small; the attach-time wire payload is built lazily only when a client connects.
 
 ```swift
+// Render-facing — published every apply(), held in Mutex<SnapshotBox>
 public struct ScreenSnapshot: Sendable, Equatable, Codable {
     public let activeCells: ContiguousArray<Cell>   // whichever buffer is active
     public let cols: Int, rows: Int
@@ -306,13 +351,25 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
     public let cursorVisible: Bool
     public let activeBuffer: BufferKind
     public let windowTitle: String?
+    public let version: UInt64                      // renderer short-circuit key
+}
+
+// XPC-facing — built only on .attach, includes scrollback
+public struct AttachPayload: Sendable, Codable {
+    public let snapshot: ScreenSnapshot             // live grid + cursor + version
     public let recentHistory: ContiguousArray<Row>  // bounded, main-only, empty when alt active
-    public let historyCapacity: Int                  // so client mirror can allocate
-    public let version: UInt64                        // renderer short-circuit
+    public let historyCapacity: Int                 // so client mirror can size its own buffer
 }
 ```
 
-`recentHistory` on initial attach is bounded (default 500 rows) — keeps XPC message ~640 KB at 80 cols. Live push remains raw PTY bytes; client `ScreenModel` mirror grows its own history. A later `DaemonRequest.fetchHistory(rowRange:)` RPC is a clean extension — seam documented, Phase 3.
+**Why split.** `recentHistory` at 500 rows × 80 cols × ~32 B ≈ 1.3 MB. Publishing that on every apply is wasteful (renderer never uses it) and thrashes COW. Keeping it out of the hot path means the per-apply snapshot update is a pointer swap on a few kilobytes of immutable state, while the XPC path pays the history cost only when a client actually attaches.
+
+**Construction.**
+
+- `publishSnapshot()` (actor-isolated) builds a fresh `ScreenSnapshot` from the current active buffer + `version`, wraps it in `SnapshotBox`, stores into `_latestSnapshot`.
+- `buildAttachPayload()` (actor-isolated, called only from the daemon's attach handler) reads `_latestSnapshot`, builds `recentHistory` by copying the last N rows from `history`, returns an `AttachPayload`. Renderer never calls this.
+
+`recentHistory` on initial attach is bounded (default 500 rows) — keeps XPC message ~1.3 MB at 80 cols. Live push remains raw PTY bytes; client `ScreenModel` mirror grows its own history. A later `DaemonRequest.fetchHistory(rowRange:)` RPC is a clean extension — seam documented, Phase 3.
 
 ### Memory bake-ins
 
@@ -326,7 +383,7 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
 ### User-facing types
 
 ```swift
-public enum ColorDepth: Sendable, Equatable, Codable {
+@frozen public enum ColorDepth: Sendable, Equatable, Codable {
     case ansi16, palette256, truecolor
 }
 
@@ -338,13 +395,17 @@ public struct TerminalPalette: Sendable, Equatable, Codable {
     // palette256 is NOT stored — derived from ansi + 216-cube + 24 grays on change,
     // cached in the RenderCoordinator, invalidated when ansi changes.
 
-    public static let xtermDefault: TerminalPalette
+    public static let xtermDefault: TerminalPalette     // see "Presets" below
     public static let solarizedDark: TerminalPalette
     public static let solarizedLight: TerminalPalette
 }
 ```
 
 `ColorDepth` and `TerminalPalette` live outside `TermCore` (user settings concern). `TerminalColor` (the stored one) stays inside `TermCore` — parser and model know nothing about the palette.
+
+**`InlineArray` Codable — hand-coded.** `InlineArray<N, T>` does not synthesize `Codable` in Swift 6.2 / SE-0453. `TerminalPalette.init(from:)` and `encode(to:)` are hand-written: decode reads a `[RGBA]` of exactly 16 elements (throw on mismatch), then builds the `InlineArray` element-by-element; encode writes `Array(ansi)`. Wire format stays a plain JSON array.
+
+**Presets** are populated via a static init function (`Self.build(xterm:)`, etc.) with element-by-element assignment. `InlineArray` does not yet support collection literals, so there's no `InlineArray<16, RGBA>([ ... ])` form.
 
 ### Projection
 
@@ -402,25 +463,27 @@ Current `GlyphAtlas` is one 16×6 grid of ASCII 0x20–0x7E. Evolves to a **fami
 
 ### Live mode switching
 
-`ColorDepth` and `TerminalPalette` are `@Observable` properties of the app-level settings object. `RenderCoordinator` reads them each frame. Change → next frame re-projects all cells → instant visual update. No data migration.
+`ColorDepth` and `TerminalPalette` are `@Observable` properties of an `@MainActor`-annotated `AppSettings` class. `RenderCoordinator` (`MTKViewDelegate.draw(in:)` runs on the main queue) reads them via `MainActor.assumeIsolated` at frame entry and captures a local copy for the frame. Change → next frame re-projects all cells → instant visual update. No data migration.
 
 ## §6 — Daemon protocol changes
 
 ### What changes
 
-1. **`ScreenSnapshot` grows** (per §4): adds `cursorVisible`, `activeBuffer`, `windowTitle`, `recentHistory`, `historyCapacity`, `version`. Existing fields retained.
+1. **`ScreenSnapshot` grows** (per §4): adds `cursorVisible`, `activeBuffer`, `windowTitle`, `version`. Existing fields retained.
 
-2. **No new RPCs for MVP.** Snapshot-on-attach + raw fan-out stays sufficient because clients parse independently. Post-MVP RPC documented: `fetchHistory(sessionID:, rowRange:)`.
+2. **New `AttachPayload` type** (per §4): wraps `ScreenSnapshot` + `recentHistory` + `historyCapacity`. Replaces `DaemonResponse.snapshot(sessionID:, snapshot:)` with `DaemonResponse.attachPayload(sessionID:, payload: AttachPayload)`. Rendering on the client side still consumes `ScreenSnapshot` (the nested field); `recentHistory` feeds the client's `ScreenModel` history directly.
 
-3. **No explicit version field on the protocol.** rTerm hasn't shipped; daemon + client always ship together in the same bundle. If that ever changes (public release, separate cadence), add `protocolVersion: Int` at the envelope level — `Codable` with `decodeIfPresent` throughout keeps that path open.
+3. **No new RPCs for MVP.** Attach-payload + raw fan-out stays sufficient because clients parse independently. Post-MVP RPC documented: `fetchHistory(sessionID:, rowRange:)`.
 
-4. **`Cell` becomes `Codable` with the new style field.** `Cell.style` defaults to `.default`, so old `Cell` values decode cleanly with the default style. Nothing to design around.
+4. **No explicit protocol version field.** rTerm hasn't shipped; daemon + client always ship together in the same bundle. If that ever changes (public release, separate cadence), add `protocolVersion: Int` at the envelope level — `Codable` with `decodeIfPresent` throughout keeps that path open.
 
-5. **Session-wide palette is not in the snapshot.** Palette and `ColorDepth` are client-side user settings, not session state. Daemon stores everything at full fidelity. Different clients reattaching with different settings both render correctly.
+5. **`Cell` becomes `Codable` with the new style field.** Hand-coded `init(from:)` uses `container.decodeIfPresent(CellStyle.self, forKey: .style) ?? .default` — synthesized Codable would fail on any payload lacking the field. Same pattern for all fields added later.
+
+6. **Session-wide palette is not in the payload.** Palette and `ColorDepth` are client-side user settings, not session state. Daemon stores everything at full fidelity. Different clients reattaching with different settings both render correctly.
 
 ### Wire size sanity check
 
-- **Snapshot (cold attach):** 80 × 24 × 16B = 30 KB visible + 500 rows × 80 × 16 = 640 KB history + a few KB cursor/title/modes → ~675 KB per attach. XPC handles this easily.
+- **AttachPayload (cold attach):** 80 × 24 × ~32B = ~60 KB visible snapshot + 500 rows × 80 × ~32B ≈ ~1.3 MB history + a few KB cursor/title/modes → ~1.4 MB per attach. XPC handles this comfortably.
 - **Live fan-out:** unchanged — raw PTY bytes.
 
 ## §7 — Testing strategy
