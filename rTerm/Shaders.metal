@@ -25,38 +25,88 @@ using namespace metal;
 
 // MARK: - Shared Types
 
+/// Per-vertex glyph cell input. The Swift side mirrors this layout exactly:
+/// 12 floats per vertex (48 bytes), naturally aligned to 16 bytes by Metal.
+///
+///   position : clip-space xy (2 floats)
+///   texCoord : UV into glyph atlas (2 floats)
+///   fgColor  : foreground RGBA, normalized 0..1 (4 floats)
+///   bgColor  : background RGBA, normalized 0..1 (4 floats)
 struct VertexIn {
-    float2 position;   // clip-space x,y
-    float2 texCoord;   // UV into glyph atlas
+    float2 position;
+    float2 texCoord;
+    float4 fgColor;
+    float4 bgColor;
 };
 
 struct VertexOut {
     float4 position [[position]];
     float2 texCoord;
+    float4 fgColor;
+    float4 bgColor;
 };
 
-// MARK: - Vertex Shader
+/// Per-vertex layout for the cursor + underline pipelines: position only, plus
+/// a flat color carried in the vertex stream so we can color overlays without
+/// extra uniform buffers.
+///
+///   position : clip-space xy (2 floats)
+///   _pad     : 2 floats unused (keeps the struct float4-aligned for clarity)
+///   color    : RGBA normalized (4 floats)
+struct OverlayVertexIn {
+    float2 position;
+    float2 _pad;
+    float4 color;
+};
+
+struct OverlayVertexOut {
+    float4 position [[position]];
+    float4 color;
+};
+
+// MARK: - Glyph Vertex / Fragment
 
 vertex VertexOut vertex_main(const device VertexIn* vertices [[buffer(0)]],
                              uint vid [[vertex_id]]) {
     VertexOut out;
     out.position = float4(vertices[vid].position, 0.0, 1.0);
     out.texCoord = vertices[vid].texCoord;
+    out.fgColor  = vertices[vid].fgColor;
+    out.bgColor  = vertices[vid].bgColor;
     return out;
 }
-
-// MARK: - Fragment Shader (Glyph)
 
 fragment float4 fragment_main(VertexOut in [[stage_in]],
                               texture2d<float> glyphAtlas [[texture(0)]]) {
     constexpr sampler texSampler(mag_filter::linear,
                                  min_filter::linear);
-    float alpha = glyphAtlas.sample(texSampler, in.texCoord).r;
-    return float4(1.0, 1.0, 1.0, alpha);
+    float glyphAlpha = glyphAtlas.sample(texSampler, in.texCoord).r;
+
+    // Composite glyph fg over solid bg per the plan:
+    //   rgb = mix(bg.rgb, fg.rgb, glyphAlpha)
+    //   a   = max(bg.a, glyphAlpha)
+    float3 rgb = mix(in.bgColor.rgb, in.fgColor.rgb, glyphAlpha);
+    float  a   = max(in.bgColor.a, glyphAlpha);
+    return float4(rgb, a);
 }
 
-// MARK: - Fragment Shader (Cursor)
+// MARK: - Cursor / Underline (Overlay)
 
-fragment float4 cursor_fragment(VertexOut in [[stage_in]]) {
-    return float4(1.0, 1.0, 1.0, 0.7);
+vertex OverlayVertexOut overlay_vertex(const device OverlayVertexIn* vertices [[buffer(0)]],
+                                       uint vid [[vertex_id]]) {
+    OverlayVertexOut out;
+    out.position = float4(vertices[vid].position, 0.0, 1.0);
+    out.color    = vertices[vid].color;
+    return out;
+}
+
+fragment float4 overlay_fragment(OverlayVertexOut in [[stage_in]]) {
+    return in.color;
+}
+
+// MARK: - Cursor (legacy entry point — kept for compatibility)
+
+fragment float4 cursor_fragment(OverlayVertexOut in [[stage_in]]) {
+    // Cursor draws as a translucent overlay using the supplied color.
+    return float4(in.color.rgb, in.color.a * 0.7);
 }

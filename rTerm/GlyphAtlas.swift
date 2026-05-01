@@ -31,6 +31,19 @@ import OSLog
 /// glyphs render crisply on Retina displays.
 struct GlyphAtlas {
 
+    /// Selects which font weight/style is rasterized into the atlas. The
+    /// renderer materializes one atlas per variant at startup and switches
+    /// between them per cell based on `CellAttributes`.
+    ///
+    /// Italic / boldItalic are reserved for Phase 2.
+    enum Variant: Sendable, Equatable {
+        case regular
+        case bold
+        // Phase 2:
+        // case italic
+        // case boldItalic
+    }
+
     // MARK: - Constants
 
     /// Number of tile columns in the atlas grid.
@@ -50,6 +63,8 @@ struct GlyphAtlas {
     let cellWidth: CGFloat
     /// Height of a single character cell in points (not pixels).
     let cellHeight: CGFloat
+    /// Variant captured by this atlas (regular vs bold).
+    let variant: Variant
 
     // MARK: - Private properties
 
@@ -66,11 +81,15 @@ struct GlyphAtlas {
     /// - Parameters:
     ///   - device: The Metal device used to create the texture.
     ///   - fontSize: The font size in points.  Defaults to 14.
-    init(device: MTLDevice, fontSize: CGFloat = 14.0) {
+    ///   - variant: Font weight to use. `.bold` selects
+    ///     `NSFont.Weight.bold`; defaults to `.regular`.
+    init(device: MTLDevice, fontSize: CGFloat = 14.0, variant: Variant = .regular) {
         let scale: CGFloat = 2.0
+        self.variant = variant
 
         // -- 1. Font ----------------------------------------------------------
-        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let weight: NSFont.Weight = (variant == .bold) ? .bold : .regular
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: weight)
         let ctFont = font as CTFont
 
         // -- 2. Cell metrics --------------------------------------------------

@@ -61,6 +61,12 @@
 		E3F2CA082F900120001F0001 /* SGRAttribute.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA072F900120001F0001 /* SGRAttribute.swift */; };
 		E3F2CA0A2F900120001F0001 /* DECPrivateMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA092F900120001F0001 /* DECPrivateMode.swift */; };
 		E3F7CA022F900170001F0001 /* AttachPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F7CA012F900170001F0001 /* AttachPayload.swift */; };
+		E3F8CA022F900180001F0001 /* RGBA.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA012F900180001F0001 /* RGBA.swift */; };
+		E3F8CA042F900180001F0001 /* ColorDepth.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA032F900180001F0001 /* ColorDepth.swift */; };
+		E3F8CA062F900180001F0001 /* TerminalPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA052F900180001F0001 /* TerminalPalette.swift */; };
+		E3F8CA082F900180001F0001 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA072F900180001F0001 /* AppSettings.swift */; };
+		E3F8CA0A2F900180001F0001 /* ColorProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA092F900180001F0001 /* ColorProjection.swift */; };
+		E3F8CA0C2F900180001F0001 /* ColorProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA0B2F900180001F0001 /* ColorProjectionTests.swift */; };
 		E3FF01002F89A10000FF0001 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
 /* End PBXBuildFile section */
 
@@ -241,6 +247,12 @@
 		E3F2CA072F900120001F0001 /* SGRAttribute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SGRAttribute.swift; sourceTree = "<group>"; };
 		E3F2CA092F900120001F0001 /* DECPrivateMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DECPrivateMode.swift; sourceTree = "<group>"; };
 		E3F7CA012F900170001F0001 /* AttachPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachPayload.swift; sourceTree = "<group>"; };
+		E3F8CA012F900180001F0001 /* RGBA.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RGBA.swift; sourceTree = "<group>"; };
+		E3F8CA032F900180001F0001 /* ColorDepth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorDepth.swift; sourceTree = "<group>"; };
+		E3F8CA052F900180001F0001 /* TerminalPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPalette.swift; sourceTree = "<group>"; };
+		E3F8CA072F900180001F0001 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		E3F8CA092F900180001F0001 /* ColorProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorProjection.swift; sourceTree = "<group>"; };
+		E3F8CA0B2F900180001F0001 /* ColorProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorProjectionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -371,6 +383,11 @@
 				E3BB01102C80B10000BB0001 /* Shaders.metal */,
 				E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */,
 				E30920862C23FF0600B6D264 /* ContentView.swift */,
+				E3F8CA012F900180001F0001 /* RGBA.swift */,
+				E3F8CA032F900180001F0001 /* ColorDepth.swift */,
+				E3F8CA052F900180001F0001 /* TerminalPalette.swift */,
+				E3F8CA072F900180001F0001 /* AppSettings.swift */,
+				E3F8CA092F900180001F0001 /* ColorProjection.swift */,
 				E30920882C23FF0700B6D264 /* Assets.xcassets */,
 				E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */,
 				E309208A2C23FF0700B6D264 /* Preview Content */,
@@ -391,6 +408,7 @@
 			children = (
 				E30920962C23FF0800B6D264 /* rTermTests.swift */,
 				E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */,
+				E3F8CA0B2F900180001F0001 /* ColorProjectionTests.swift */,
 			);
 			path = rTermTests;
 			sourceTree = "<group>";
@@ -786,6 +804,11 @@
 				E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */,
 				E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */,
 				E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */,
+				E3F8CA022F900180001F0001 /* RGBA.swift in Sources */,
+				E3F8CA042F900180001F0001 /* ColorDepth.swift in Sources */,
+				E3F8CA062F900180001F0001 /* TerminalPalette.swift in Sources */,
+				E3F8CA082F900180001F0001 /* AppSettings.swift in Sources */,
+				E3F8CA0A2F900180001F0001 /* ColorProjection.swift in Sources */,
 			);
 		};
 		E309208E2C23FF0800B6D264 /* Sources */ = {
@@ -793,6 +816,7 @@
 			files = (
 				E30920972C23FF0800B6D264 /* rTermTests.swift in Sources */,
 				E3AA01102C80A20000AA0001 /* KeyEncoderTests.swift in Sources */,
+				E3F8CA0C2F900180001F0001 /* ColorProjectionTests.swift in Sources */,
 			);
 		};
 		E30920982C23FF0800B6D264 /* Sources */ = {

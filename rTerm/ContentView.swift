@@ -165,9 +165,12 @@ class TerminalSession {
 
 struct ContentView: View {
     @State private var session = TerminalSession()
+    @State private var settings = AppSettings()
 
     var body: some View {
-        TermView(screenModel: session.screenModel, onInput: { data in
+        TermView(screenModel: session.screenModel,
+                 settings: settings,
+                 onInput: { data in
             session.sendInput(data)
         })
         .navigationTitle(session.windowTitle ?? "rTerm")
