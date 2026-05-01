@@ -261,4 +261,70 @@ struct TerminalParserStateMachineTests {
         }
         #expect(params.count <= 16)
     }
+
+    @Test func osc_split_across_chunks_via_bel_terminator() {
+        var parser = TerminalParser()
+        // ESC ] 0 ; h i — first chunk
+        let first = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x68, 0x69]))
+        // BEL — second chunk
+        let second = parser.parse(Data([0x07]))
+        #expect(first.isEmpty)
+        #expect(second == [.osc(.unknown(ps: 0, pt: "hi"))])
+    }
+
+    @Test func osc_split_between_esc_and_backslash() {
+        var parser = TerminalParser()
+        // ESC ] 0 ; x ESC — first chunk ends mid-ST
+        let first = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x78, 0x1B]))
+        // \ — second chunk completes the ST
+        let second = parser.parse(Data([0x5C]))
+        #expect(first.isEmpty)
+        #expect(second == [.osc(.unknown(ps: 0, pt: "x"))])
+    }
+
+    @Test func dcs_split_across_chunks_drops_cleanly() {
+        var parser = TerminalParser()
+        // ESC P q data... — first chunk
+        let first = parser.parse(Data([0x1B, 0x50, 0x71, 0x64, 0x61, 0x74]))
+        // ESC \ — second chunk terminates DCS, followed by a printable 'A'
+        let second = parser.parse(Data([0x1B, 0x5C, 0x41]))
+        #expect(first.isEmpty)
+        #expect(second == [.printable("A")], "DCS contents dropped; only the trailing 'A' emits")
+    }
+
+    @Test func lf_mid_csi_executes_and_csi_completes() {
+        var parser = TerminalParser()
+        // ESC [ 1 ; 3 LF m — LF should execute and the CSI should continue
+        let events = parser.parse(Data([0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x0A, 0x6D]))
+        #expect(events == [
+            .c0(.lineFeed),
+            .csi(.unknown(params: [1, 3], intermediates: [], final: 0x6D))
+        ])
+    }
+
+    @Test func bs_mid_csi_executes() {
+        var parser = TerminalParser()
+        // ESC [ 5 BS A — backspace should execute between the 5 and the A final
+        let events = parser.parse(Data([0x1B, 0x5B, 0x35, 0x08, 0x41]))
+        #expect(events == [
+            .c0(.backspace),
+            .csi(.unknown(params: [5], intermediates: [], final: 0x41))
+        ])
+    }
+
+    @Test func private_marker_after_params_is_dropped() {
+        var parser = TerminalParser()
+        // ESC [ 2 5 ? h — malformed (? must precede params). Drop sequence silently.
+        // Then feed 'B' as a printable sanity check.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x32, 0x35, 0x3F, 0x68, 0x42]))
+        #expect(events == [.printable("B")])
+    }
+
+    @Test func private_marker_before_params_is_preserved() {
+        var parser = TerminalParser()
+        // ESC [ ? 2 5 h — canonical DECSET 25 (cursor visible). Should emit
+        // .csi(.unknown(params: [25], intermediates: [0x3F], final: 0x68)).
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x32, 0x35, 0x68]))
+        #expect(events == [.csi(.unknown(params: [25], intermediates: [0x3F], final: 0x68))])
+    }
 }

@@ -129,7 +129,7 @@ public struct TerminalParser: Sendable {
                 index = bytes.index(after: index)
 
             case .csiIgnore:
-                handleCSIIgnoreByte(byte)
+                handleCSIIgnoreByte(byte, events: &events)
                 index = bytes.index(after: index)
 
             case .oscString(let ps, let accumulator, let pendingST):
@@ -237,6 +237,26 @@ public struct TerminalParser: Sendable {
     // MARK: - .csiEntry handling
 
     private mutating func handleCSIEntryByte(_ byte: UInt8, events: inout [TerminalEvent]) {
+        // Per Paul Williams VT parser spec: C0 controls mid-CSI execute
+        // (emit their normal event) and leave the state machine in the
+        // current state. Only bytes >= 0x20 participate in CSI parameter
+        // / intermediate / final dispatch.
+        if byte < 0x20 {
+            // 0x18 CAN and 0x1A SUB are sequence-cancel, not execute.
+            if byte == 0x18 || byte == 0x1A {
+                state = .ground
+                return
+            }
+            // 0x1B ESC starts a fresh escape sequence (existing behavior).
+            if byte == 0x1B {
+                state = .escape
+                return
+            }
+            // All other C0 (0x00-0x17, 0x19, 0x1C-0x1F): execute and stay in state.
+            events.append(Self.asciiEvent(byte))
+            return
+        }
+
         if Self.isCSIParamDigit(byte) {
             state = .csiParam(params: [], current: Int(byte - 0x30), intermediates: [])
             return
@@ -261,14 +281,7 @@ public struct TerminalParser: Sendable {
             state = .ground
             return
         }
-        switch byte {
-        case 0x18, 0x1A:
-            state = .ground
-        case 0x1B:
-            state = .escape
-        default:
-            state = .csiIgnore
-        }
+        state = .csiIgnore
     }
 
     // MARK: - .csiParam handling
@@ -280,6 +293,26 @@ public struct TerminalParser: Sendable {
         intermediates: [UInt8],
         events: inout [TerminalEvent]
     ) {
+        // Per Paul Williams VT parser spec: C0 controls mid-CSI execute
+        // (emit their normal event) and leave the state machine in the
+        // current state. Only bytes >= 0x20 participate in CSI parameter
+        // / intermediate / final dispatch.
+        if byte < 0x20 {
+            // 0x18 CAN and 0x1A SUB are sequence-cancel, not execute.
+            if byte == 0x18 || byte == 0x1A {
+                state = .ground
+                return
+            }
+            // 0x1B ESC starts a fresh escape sequence (existing behavior).
+            if byte == 0x1B {
+                state = .escape
+                return
+            }
+            // All other C0 (0x00-0x17, 0x19, 0x1C-0x1F): execute and stay in state.
+            events.append(Self.asciiEvent(byte))
+            return
+        }
+
         if Self.isCSIParamDigit(byte) {
             let next = (current ?? 0) &* 10 &+ Int(byte - 0x30)
             state = .csiParam(params: params, current: next, intermediates: intermediates)
@@ -293,7 +326,13 @@ public struct TerminalParser: Sendable {
             state = .csiParam(params: newParams, current: nil, intermediates: intermediates)
             return
         }
-        if Self.isCSIIntermediate(byte) || (byte >= 0x3C && byte <= 0x3F) {
+        if byte >= 0x3C && byte <= 0x3F {
+            // Private markers (< = > ?) are only legal at CSI entry, not after
+            // params. Williams spec treats this as malformed — drop the sequence.
+            state = .csiIgnore
+            return
+        }
+        if Self.isCSIIntermediate(byte) {
             var flushed = params
             if let cur = current, flushed.count < Limits.csiParams {
                 flushed.append(cur)
@@ -314,14 +353,7 @@ public struct TerminalParser: Sendable {
             state = .ground
             return
         }
-        switch byte {
-        case 0x18, 0x1A:
-            state = .ground
-        case 0x1B:
-            state = .escape
-        default:
-            state = .csiIgnore
-        }
+        state = .csiIgnore
     }
 
     // MARK: - .csiIntermediate handling
@@ -332,6 +364,26 @@ public struct TerminalParser: Sendable {
         intermediates: [UInt8],
         events: inout [TerminalEvent]
     ) {
+        // Per Paul Williams VT parser spec: C0 controls mid-CSI execute
+        // (emit their normal event) and leave the state machine in the
+        // current state. Only bytes >= 0x20 participate in CSI parameter
+        // / intermediate / final dispatch.
+        if byte < 0x20 {
+            // 0x18 CAN and 0x1A SUB are sequence-cancel, not execute.
+            if byte == 0x18 || byte == 0x1A {
+                state = .ground
+                return
+            }
+            // 0x1B ESC starts a fresh escape sequence (existing behavior).
+            if byte == 0x1B {
+                state = .escape
+                return
+            }
+            // All other C0 (0x00-0x17, 0x19, 0x1C-0x1F): execute and stay in state.
+            events.append(Self.asciiEvent(byte))
+            return
+        }
+
         if Self.isCSIIntermediate(byte) {
             if intermediates.count + 1 > Limits.csiIntermediates {
                 state = .csiIgnore
@@ -345,33 +397,39 @@ public struct TerminalParser: Sendable {
             state = .ground
             return
         }
-        switch byte {
-        case 0x18, 0x1A:
-            state = .ground
-        case 0x1B:
-            state = .escape
-        default:
-            // Includes param digits/separators appearing after intermediates —
-            // structurally invalid per Williams, drop the sequence.
-            state = .csiIgnore
-        }
+        // Includes param digits/separators appearing after intermediates —
+        // structurally invalid per Williams, drop the sequence.
+        state = .csiIgnore
     }
 
     // MARK: - .csiIgnore handling
 
-    private mutating func handleCSIIgnoreByte(_ byte: UInt8) {
+    private mutating func handleCSIIgnoreByte(_ byte: UInt8, events: inout [TerminalEvent]) {
+        // Per Paul Williams VT parser spec: C0 controls mid-CSI execute
+        // (emit their normal event) and leave the state machine in the
+        // current state. Only bytes >= 0x20 participate in CSI parameter
+        // / intermediate / final dispatch.
+        if byte < 0x20 {
+            // 0x18 CAN and 0x1A SUB are sequence-cancel, not execute.
+            if byte == 0x18 || byte == 0x1A {
+                state = .ground
+                return
+            }
+            // 0x1B ESC starts a fresh escape sequence (existing behavior).
+            if byte == 0x1B {
+                state = .escape
+                return
+            }
+            // All other C0 (0x00-0x17, 0x19, 0x1C-0x1F): execute and stay in state.
+            events.append(Self.asciiEvent(byte))
+            return
+        }
+
         if Self.isCSIFinal(byte) {
             state = .ground
             return
         }
-        switch byte {
-        case 0x18, 0x1A:
-            state = .ground
-        case 0x1B:
-            state = .escape
-        default:
-            break  // silently consume
-        }
+        // silently consume non-final bytes >= 0x20
     }
 
     // MARK: - .oscString handling
