@@ -20,23 +20,18 @@
 //  along with Terminal App. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/// A parsed terminal event produced by `TerminalParser` and consumed by `ScreenModel`.
+/// Top-level terminal event. Subfamilies (C0, CSI, OSC) are grouped into
+/// nested enums so exhaustive switching happens at two levels — see §3 of
+/// the Phase-1 spec.
 ///
-/// All cases carry only value-typed, `Sendable` payloads, so the enum is safe
-/// to pass across actor and task boundaries without additional synchronization.
+/// This enum is intentionally **not** `@frozen`: phases may legitimately add
+/// top-level cases. Consumers should `switch` exhaustively. Future additions
+/// will be either new `.unknown(...)` variants inside subfamilies or new top-
+/// level cases, which are a deliberate breaking change at the phase boundary.
 public enum TerminalEvent: Sendable, Equatable {
-    /// A displayable Unicode character (graphic, printable).
     case printable(Character)
-    /// Line feed — ASCII 0x0A.
-    case newline
-    /// Carriage return — ASCII 0x0D.
-    case carriageReturn
-    /// Backspace — ASCII 0x08.
-    case backspace
-    /// Horizontal tab — ASCII 0x09.
-    case tab
-    /// Bell — ASCII 0x07.
-    case bell
-    /// A byte that the parser does not yet handle; passed through for future use.
+    case c0(C0Control)
+    case csi(CSICommand)
+    case osc(OSCCommand)
     case unrecognized(UInt8)
 }

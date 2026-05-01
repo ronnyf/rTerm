@@ -1,0 +1,45 @@
+//
+//  rTerm.xcconfig
+//  rTerm
+//
+//  Created by Ronny Falk on 4/30/26.
+//  Copyright © 2026 RFx Software Inc. All rights reserved.
+//
+//  Target-specific build settings for 'rTerm'. This file is referenced from
+//  the target's Debug AND Release build configurations in project.pbxproj.
+//  Settings without a config suffix apply to both; Release-only overrides use
+//  the [config=Release] appendix, e.g., LLVM_LTO[config=Release] = YES.
+//
+//  Settings already present in Config/Base.xcconfig or Config/Base_debug.xcconfig
+//  (for Debug) or Config/Base_release.xcconfig (for Release) are omitted here —
+//  they're inherited via the project-level xcconfig chain.
+
+// MARK: - Debug + Release (target)
+
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
+ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor
+CODE_SIGN_ENTITLEMENTS = rTerm/rTerm.entitlements
+CODE_SIGN_STYLE = Manual
+COMBINE_HIDPI_IMAGES = YES
+CURRENT_PROJECT_VERSION = 1
+DEVELOPMENT_ASSET_PATHS = "rTerm/Preview Content"
+ENABLE_HARDENED_RUNTIME = YES
+ENABLE_PREVIEWS = YES
+ENABLE_USER_SCRIPT_SANDBOXING = NO
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_KEY_CFBundleDisplayName = rTerm
+INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.developer-tools
+INFOPLIST_KEY_NSHumanReadableCopyright = 
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks /Library/Frameworks @executable_path/../../ @executable_path
+MARKETING_VERSION = 1.0
+PRODUCT_BUNDLE_IDENTIFIER = com.ronnyf.rTerm
+PRODUCT_NAME = $(TARGET_NAME)
+SWIFT_APPROACHABLE_CONCURRENCY = YES
+SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor
+SWIFT_EMIT_LOC_STRINGS = YES
+SWIFT_STRICT_CONCURRENCY = complete
+SWIFT_VERSION = 6.0
+
+// MARK: - Release-only overrides
+
+LD_RUNPATH_SEARCH_PATHS[config=Release] = $(inherited) @executable_path/../Frameworks /Library/Frameworks

@@ -35,61 +35,55 @@ import XPC
 /// receives auto-decoded ``DaemonRequest`` messages and routes them to the
 /// shared ``SessionManager``.
 ///
-/// ## Custom executor
+/// ## Concurrency model
 ///
-/// This actor uses a custom `SerialExecutor` backed by the daemon's serial
-/// dispatch queue. This means the actor's isolation context IS the XPC
-/// callback context — the `XPCListener`'s target queue is the same serial
-/// queue. Because `XPCPeerHandler` methods are called synchronously on that
-/// queue, `assumeIsolated` safely enters actor context without suspension.
-actor DaemonPeerHandler: XPCPeerHandler {
+/// This is a plain `final class` rather than an actor. The XPC framework
+/// guarantees that `XPCPeerHandler` methods are delivered on the listener's
+/// `targetQueue` (the daemon's serial queue) — so mutable state here is
+/// effectively queue-isolated without any actor machinery.
+///
+/// The `@unchecked Sendable` conformance is justified by that target-queue
+/// contract: all accessors of this instance are the XPC framework's own
+/// delivery mechanism, which serializes on the daemon queue. No internal
+/// locking is needed. This is the legitimate "framework-enforced
+/// synchronization" case for `@unchecked Sendable`, not a race suppression.
+///
+/// An earlier revision used `actor DaemonPeerHandler` with a custom
+/// `SerialExecutor` backed by the daemon queue. That pattern added
+/// isolation ceremony (`assumeIsolated`) without adding safety — XPC
+/// already delivered on the queue — and tripped Swift 6's rule that
+/// `assumeIsolated<T: Sendable>` returns must be Sendable, which conflicts
+/// with `XPCPeerHandler.Output == any Encodable` (not Sendable-constrained).
+final class DaemonPeerHandler: XPCPeerHandler, @unchecked Sendable {
     typealias Input = DaemonRequest
     typealias Output = any Encodable
 
     /// Per-client XPC session, used for identity and push messages.
     private let session: XPCSession
 
-    /// Shared session manager — all methods are synchronous.
+    /// Shared session manager — all methods are synchronous, queue-serialized.
     private let manager: SessionManager
-
-    /// The daemon's serial dispatch queue, backing this actor's executor.
-    private let queue: DispatchSerialQueue
 
     private static let log = Logger(subsystem: "com.ronnyf.rtermd", category: "DaemonPeerHandler")
 
-    nonisolated var unownedExecutor: UnownedSerialExecutor {
-        queue.asUnownedSerialExecutor()
-    }
-
-    init(session: XPCSession, manager: SessionManager, queue: DispatchQueue) {
+    init(session: XPCSession, manager: SessionManager) {
         self.session = session
         self.manager = manager
-        // A serial DispatchQueue IS a DispatchSerialQueue at runtime.
-        // DispatchSerialQueue conforms to SerialExecutor.
-        self.queue = queue as! DispatchSerialQueue
         Self.log.info("Client connected")
     }
 
     // MARK: - XPCPeerHandler
 
-    // These methods are nonisolated because XPCPeerHandler protocol methods
-    // are called synchronously from XPC's dispatch queue. Since the actor's
-    // custom executor IS that same queue, we use assumeIsolated to enter
-    // actor context without suspension.
-
-    nonisolated func handleIncomingRequest(_ request: DaemonRequest) -> (any Encodable)? {
-        self.assumeIsolated { handler in
-            handler.processRequest(request)
-        }
+    func handleIncomingRequest(_ request: DaemonRequest) -> (any Encodable)? {
+        processRequest(request)
     }
 
-    nonisolated func handleCancellation(error: XPCRichError) {
-        self.assumeIsolated { handler in
-            handler.processCancel(error: error)
-        }
+    func handleCancellation(error: XPCRichError) {
+        Self.log.info("Client disconnected: \(String(describing: error))")
+        manager.clientDisconnected(session)
     }
 
-    // MARK: - Private (actor-isolated)
+    // MARK: - Private
 
     /// Route a decoded request to the appropriate SessionManager method.
     ///
@@ -110,8 +104,8 @@ actor DaemonPeerHandler: XPCPeerHandler {
 
         case .attach(let sessionID):
             do {
-                let snapshot = try manager.attach(sessionID: sessionID, client: session)
-                return DaemonResponse.screenSnapshot(sessionID: sessionID, snapshot: snapshot)
+                let payload = try manager.attach(sessionID: sessionID, client: session)
+                return DaemonResponse.attachPayload(sessionID: sessionID, payload: payload)
             } catch {
                 return DaemonResponse.error(error.asDaemonError)
             }
@@ -144,12 +138,6 @@ actor DaemonPeerHandler: XPCPeerHandler {
             }
             return nil
         }
-    }
-
-    /// Handle XPC peer disconnection by detaching from all sessions.
-    private func processCancel(error: XPCRichError) {
-        Self.log.info("Client disconnected: \(String(describing: error))")
-        manager.clientDisconnected(session)
     }
 }
 

@@ -41,7 +41,7 @@ struct ScreenModelTests {
 
     @Test func newline() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.printable("A"), .newline, .printable("B")])
+        await model.apply([.printable("A"), .c0(.lineFeed), .printable("B")])
         let snap = await model.snapshot()
 
         #expect(snap[0, 0].character == "A")
@@ -55,7 +55,7 @@ struct ScreenModelTests {
         let model = ScreenModel(cols: 4, rows: 3)
         await model.apply([
             .printable("A"), .printable("B"),
-            .carriageReturn,
+            .c0(.carriageReturn),
             .printable("X"),
         ])
         let snap = await model.snapshot()
@@ -71,7 +71,7 @@ struct ScreenModelTests {
         let model = ScreenModel(cols: 4, rows: 3)
         await model.apply([
             .printable("A"), .printable("B"),
-            .backspace,
+            .c0(.backspace),
             .printable("X"),
         ])
         let snap = await model.snapshot()
@@ -85,7 +85,7 @@ struct ScreenModelTests {
 
     @Test func backspaceAtColumnZero() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.backspace])
+        await model.apply([.c0(.backspace)])
         let snap = await model.snapshot()
 
         #expect(snap.cursor == Cursor(row: 0, col: 0), "Backspace at col 0 stays at col 0")
@@ -98,7 +98,7 @@ struct ScreenModelTests {
         // col 0: print "A" -> cursor at col 1
         // tab from col 1: next multiple of 8 is 8, clamped to cols-1 = 3 -> cursor at col 3
         // print "B" at col 3 -> cursor advances to col 4 -> wraps to (1, 0)
-        await model.apply([.printable("A"), .tab, .printable("B")])
+        await model.apply([.printable("A"), .c0(.horizontalTab), .printable("B")])
         let snap = await model.snapshot()
 
         #expect(snap[0, 0].character == "A")
@@ -132,14 +132,14 @@ struct ScreenModelTests {
         // Fill all 3 rows: row0="AAAA", row1="BBBB", row2="CCCC"
         await model.apply(
             Array(repeating: TerminalEvent.printable("A"), count: 4)
-            + [.newline]
+            + [.c0(.lineFeed)]
             + Array(repeating: TerminalEvent.printable("B"), count: 4)
-            + [.newline]
+            + [.c0(.lineFeed)]
             + Array(repeating: TerminalEvent.printable("C"), count: 4)
         )
 
         // Now newline from the last row triggers scroll, then print on new last row
-        await model.apply([.newline, .printable("Z")])
+        await model.apply([.c0(.lineFeed), .printable("Z")])
 
         let snap = await model.snapshot()
 
@@ -166,7 +166,7 @@ struct ScreenModelTests {
 
     @Test func bellIsNoOp() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.printable("A"), .bell, .printable("B")])
+        await model.apply([.printable("A"), .c0(.bell), .printable("B")])
         let snap = await model.snapshot()
 
         #expect(snap[0, 0].character == "A")
@@ -195,7 +195,7 @@ struct ScreenModelTests {
 
     @Test func latestSnapshotMatchesActorSnapshot() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.printable("A"), .printable("B"), .newline, .printable("C")])
+        await model.apply([.printable("A"), .printable("B"), .c0(.lineFeed), .printable("C")])
 
         let actorSnap = await model.snapshot()
         let lockSnap = model.latestSnapshot()
@@ -207,7 +207,7 @@ struct ScreenModelTests {
 
     @Test func restoreFromSnapshot() async {
         let model = ScreenModel(cols: 4, rows: 3)
-        await model.apply([.printable("A"), .printable("B"), .newline, .printable("C")])
+        await model.apply([.printable("A"), .printable("B"), .c0(.lineFeed), .printable("C")])
         let saved = await model.snapshot()
 
         // Mutate the model further so state diverges from the saved snapshot.
@@ -230,10 +230,11 @@ struct ScreenModelTests {
 
         // Build a snapshot to restore from.
         let target = ScreenSnapshot(
-            cells: ContiguousArray(repeating: Cell(character: "Q"), count: 12),
+            activeCells: ContiguousArray(repeating: Cell(character: "Q"), count: 12),
             cols: 4,
             rows: 3,
-            cursor: Cursor(row: 2, col: 3)
+            cursor: Cursor(row: 2, col: 3),
+            version: 0
         )
 
         await model.restore(from: target)
@@ -268,7 +269,7 @@ struct ScreenModelTests {
         // The newline should move to row 1, col 0 — NOT row 2.
         await model.apply([
             .printable("A"), .printable("B"), .printable("C"), .printable("D"),
-            .newline,
+            .c0(.lineFeed),
         ])
         let snap = await model.snapshot()
 
@@ -276,5 +277,265 @@ struct ScreenModelTests {
         #expect(snap[0, 3].character == "D")
         #expect(snap.cursor == Cursor(row: 1, col: 0),
                 "Newline after filling last column should land at row 1, col 0")
+    }
+
+    @Test func verticalTab_behaves_as_lineFeed() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([.printable("A"), .c0(.verticalTab), .printable("B")])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 1)
+        #expect(snap.cursor.col == 1)
+    }
+
+    @Test func formFeed_behaves_as_lineFeed() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([.printable("A"), .c0(.formFeed), .printable("B")])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 1)
+        #expect(snap.cursor.col == 1)
+    }
+
+    @Test func nul_is_noop() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([.printable("A"), .c0(.nul), .printable("B")])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.col == 2)
+    }
+}
+
+// MARK: - CSI cursor motion + erase handling
+
+struct ScreenModelCSITests {
+
+    @Test func cursor_position_sets_cursor() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.cursorPosition(row: 5, col: 10))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 5)
+        #expect(snap.cursor.col == 10)
+    }
+
+    @Test func cursor_position_clamps() async {
+        let model = ScreenModel(cols: 10, rows: 5)
+        await model.apply([.csi(.cursorPosition(row: 999, col: 999))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 4)
+        #expect(snap.cursor.col == 9)
+    }
+
+    @Test func cursor_up_clamps_at_top() async {
+        let model = ScreenModel(cols: 10, rows: 5)
+        await model.apply([.csi(.cursorUp(100))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 0)
+    }
+
+    @Test func save_and_restore_cursor() async {
+        let model = ScreenModel(cols: 10, rows: 5)
+        await model.apply([
+            .csi(.cursorPosition(row: 2, col: 3)),
+            .csi(.saveCursor),
+            .csi(.cursorPosition(row: 4, col: 9)),
+            .csi(.restoreCursor)
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 2)
+        #expect(snap.cursor.col == 3)
+    }
+
+    @Test func erase_in_line_to_end() async {
+        let model = ScreenModel(cols: 5, rows: 2)
+        await model.apply([
+            .printable("A"), .printable("B"), .printable("C"), .printable("D"), .printable("E"),
+            .csi(.cursorPosition(row: 0, col: 2)),
+            .csi(.eraseInLine(.toEnd))
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].character == "A")
+        #expect(snap[0, 1].character == "B")
+        #expect(snap[0, 2].character == " ")
+        #expect(snap[0, 4].character == " ")
+    }
+
+    @Test func erase_in_display_all_clears_grid() async {
+        let model = ScreenModel(cols: 3, rows: 2)
+        await model.apply([
+            .printable("A"), .printable("B"), .printable("C"),
+            .csi(.eraseInDisplay(.all))
+        ])
+        let snap = model.latestSnapshot()
+        for r in 0..<2 { for c in 0..<3 { #expect(snap[r, c].character == " ") } }
+    }
+}
+
+// MARK: - SGR pen behavior
+
+struct ScreenModelPenTests {
+
+    @Test func bold_stamps_onto_subsequent_writes() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.bold])),
+            .printable("A"), .printable("B")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.attributes.contains(.bold))
+        #expect(snap[0, 1].style.attributes.contains(.bold))
+    }
+
+    @Test func reset_clears_pen() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.bold, .foreground(.ansi16(1))])),
+            .printable("A"),
+            .csi(.sgr([.reset])),
+            .printable("B")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.foreground == .ansi16(1))
+        #expect(snap[0, 0].style.attributes.contains(.bold))
+        #expect(snap[0, 1].style == .default)
+    }
+
+    @Test func resetIntensity_clears_both_bold_and_dim() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.bold, .dim])),
+            .csi(.sgr([.resetIntensity])),
+            .printable("A")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(!snap[0, 0].style.attributes.contains(.bold))
+        #expect(!snap[0, 0].style.attributes.contains(.dim))
+    }
+
+    @Test func truecolor_stored_at_full_fidelity() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.foreground(.rgb(10, 20, 30))])),
+            .printable("A")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.foreground == .rgb(10, 20, 30))
+    }
+
+    @Test func foreground_default_resets_only_foreground() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.foreground(.ansi16(1)), .background(.ansi16(4))])),
+            .csi(.sgr([.foreground(.default)])),
+            .printable("A")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.foreground == .default)
+        #expect(snap[0, 0].style.background == .ansi16(4))
+    }
+}
+
+// MARK: - OSC window title / icon name handling
+
+struct ScreenModelOSCTests {
+
+    @Test func osc_sets_window_title() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([.osc(.setWindowTitle("hello"))])
+        let title = await model.currentWindowTitle()
+        #expect(title == "hello")
+    }
+
+    @Test func later_osc_replaces_earlier() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([
+            .osc(.setWindowTitle("first")),
+            .osc(.setWindowTitle("second"))
+        ])
+        let title = await model.currentWindowTitle()
+        #expect(title == "second")
+    }
+
+    @Test func set_icon_name_does_not_change_window_title() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        await model.apply([
+            .osc(.setWindowTitle("T")),
+            .osc(.setIconName("I"))
+        ])
+        let title = await model.currentWindowTitle()
+        let icon = await model.currentIconName()
+        #expect(title == "T")
+        #expect(icon == "I")
+    }
+
+    @Test func apply_and_current_title_returns_post_apply_value() async {
+        let model = ScreenModel(cols: 10, rows: 3)
+        let title = await model.applyAndCurrentTitle([
+            .osc(.setWindowTitle("combined"))
+        ])
+        #expect(title == "combined")
+    }
+}
+
+// MARK: - Version counter
+
+struct ScreenModelVersionTests {
+
+    @Test func version_bumps_on_state_change() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.printable("A")])
+        let v1 = model.latestSnapshot().version
+        #expect(v1 == v0 + 1)
+    }
+
+    @Test func version_does_not_bump_on_noop() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([.printable("A")])
+        let v1 = model.latestSnapshot().version
+        await model.apply([.c0(.nul), .unrecognized(0x99)])
+        let v2 = model.latestSnapshot().version
+        #expect(v1 == v2)
+    }
+
+    @Test func version_does_not_bump_on_sgr_only() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.csi(.sgr([.bold]))])
+        #expect(model.latestSnapshot().version == v0)
+    }
+
+    @Test func version_does_not_bump_on_save_cursor_only() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.csi(.saveCursor)])
+        #expect(model.latestSnapshot().version == v0)
+    }
+
+    @Test func version_does_not_bump_on_backspace_at_col_zero() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.c0(.backspace)])
+        #expect(model.latestSnapshot().version == v0)
+    }
+
+    @Test func version_does_not_bump_on_unchanged_window_title() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([.osc(.setWindowTitle("same"))])
+        let v1 = model.latestSnapshot().version
+        await model.apply([.osc(.setWindowTitle("same"))])
+        #expect(model.latestSnapshot().version == v1)
+    }
+
+    @Test func version_does_not_bump_on_set_icon_name() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.osc(.setIconName("anything"))])
+        #expect(model.latestSnapshot().version == v0,
+                "Phase 1: icon name is not surfaced in snapshot, so it must not bump version")
+    }
+
+    @Test func version_bumps_on_csi_cursor_position() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let v0 = model.latestSnapshot().version
+        await model.apply([.csi(.cursorPosition(row: 5, col: 5))])
+        #expect(model.latestSnapshot().version == v0 + 1)
     }
 }

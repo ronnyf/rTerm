@@ -124,19 +124,21 @@ struct DaemonResponseTests {
         #expect(decoded == response)
     }
 
-    @Test("DaemonResponse.screenSnapshot round-trips through JSON with nested types")
-    func screenSnapshotRoundTrip() throws {
+    @Test("DaemonResponse.attachPayload round-trips through JSON with nested types")
+    func attachPayloadRoundTrip() throws {
         let cells: ContiguousArray<Cell> = [
             Cell(character: "$"), Cell(character: " "),
             .empty, .empty,
         ]
         let snapshot = ScreenSnapshot(
-            cells: cells,
+            activeCells: cells,
             cols: 2,
             rows: 2,
-            cursor: Cursor(row: 0, col: 1)
+            cursor: Cursor(row: 0, col: 1),
+            version: 0
         )
-        let response = DaemonResponse.screenSnapshot(sessionID: 5, snapshot: snapshot)
+        let payload = AttachPayload(snapshot: snapshot)
+        let response = DaemonResponse.attachPayload(sessionID: 5, payload: payload)
         let decoded = try roundTrip(response)
         #expect(decoded == response)
     }

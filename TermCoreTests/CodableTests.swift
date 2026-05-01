@@ -186,10 +186,11 @@ struct ScreenSnapshotCodableTests {
             .empty, .empty, .empty,
         ]
         let snapshot = ScreenSnapshot(
-            cells: cells,
+            activeCells: cells,
             cols: 3,
             rows: 2,
-            cursor: Cursor(row: 0, col: 2)
+            cursor: Cursor(row: 0, col: 2),
+            version: 0
         )
 
         let data = try JSONEncoder().encode(snapshot)
@@ -208,15 +209,40 @@ struct ScreenSnapshotCodableTests {
     func emptyGridRoundTrip() throws {
         let cells = ContiguousArray<Cell>(repeating: .empty, count: 4)
         let snapshot = ScreenSnapshot(
-            cells: cells,
+            activeCells: cells,
             cols: 2,
             rows: 2,
-            cursor: Cursor(row: 0, col: 0)
+            cursor: Cursor(row: 0, col: 0),
+            version: 0
         )
 
         let data = try JSONEncoder().encode(snapshot)
         let decoded = try JSONDecoder().decode(ScreenSnapshot.self, from: data)
 
         #expect(decoded == snapshot)
+    }
+}
+
+// MARK: - AttachPayload Codable
+
+struct AttachPayloadCodableTests {
+
+    @Test("AttachPayload round-trips through JSON")
+    func attach_payload_roundtrip() throws {
+        let snap = ScreenSnapshot(
+            activeCells: ContiguousArray([Cell(character: "X")]),
+            cols: 1,
+            rows: 1,
+            cursor: Cursor(row: 0, col: 0),
+            cursorVisible: true,
+            activeBuffer: .main,
+            windowTitle: "t",
+            version: 42
+        )
+        let payload = AttachPayload(snapshot: snap)
+        let data = try JSONEncoder().encode(payload)
+        let decoded = try JSONDecoder().decode(AttachPayload.self, from: data)
+        #expect(decoded.snapshot == payload.snapshot)
+        #expect(decoded.recentHistory.isEmpty)
     }
 }

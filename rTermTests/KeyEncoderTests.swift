@@ -57,6 +57,7 @@ private func makeKeyEvent(
 
 // MARK: - Tests
 
+@MainActor
 struct KeyEncoderTests {
 
     private let encoder = KeyEncoder()

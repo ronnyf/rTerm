@@ -22,11 +22,17 @@
 
 import OSLog
 import SwiftUI
+import Synchronization
 import TermCore
 
 @Observable @MainActor
 class TerminalSession {
     let screenModel: ScreenModel
+
+    /// Mirror of `ScreenModel.currentWindowTitle()` kept in sync from the
+    /// response handler. Drives SwiftUI `.navigationTitle`; `nil` until the
+    /// shell issues OSC 0 / OSC 2.
+    var windowTitle: String? = nil
 
     @ObservationIgnored
     private let client: DaemonClient
@@ -42,7 +48,7 @@ class TerminalSession {
     /// is a mutating method. The XPC queue serializes calls, but the lock
     /// satisfies the `Sendable` capture requirement.
     @ObservationIgnored
-    private let parser = OSAllocatedUnfairLock(initialState: TerminalParser())
+    private let parser = Mutex(TerminalParser())
 
     private var sessionID: SessionID?
 
@@ -78,8 +84,8 @@ class TerminalSession {
                 // Attach to receive output. The snapshot covers any output
                 // produced between session creation and attach.
                 let attachReply = try client.sendSync(.attach(sessionID: info.id))
-                if case .screenSnapshot(_, let snapshot) = attachReply {
-                    await screenModel.restore(from: snapshot)
+                if case .attachPayload(_, let payload) = attachReply {
+                    await screenModel.restore(from: payload.snapshot)
                 }
             }
         } catch {
@@ -117,24 +123,33 @@ class TerminalSession {
     ///
     /// The handler runs on the XPC queue. It parses output data under the
     /// parser lock, then hands events to `ScreenModel` via its own executor.
+    /// `windowTitle` is refreshed on the MainActor after every apply / restore
+    /// so SwiftUI `.navigationTitle` stays in sync with OSC 0 / OSC 2.
     private func installResponseHandler() {
         let screenModel = self.screenModel
-        let parser = self.parser
         let log = self.log
 
-        client.setResponseHandler { response in
+        // `Mutex` is `~Copyable` so the parser can't be stashed in a local;
+        // the closure captures `self` and reaches `self.parser` through it.
+        client.setResponseHandler { [self] response in
             switch response {
+            // .output uses ScreenModel.applyAndCurrentTitle to collapse the apply
+            // and title read into one actor hop — this narrows the race where
+            // two rapid chunks' MainActor continuations could reorder the title
+            // reads. Task 7's snapshot reshape eliminates the MainActor race
+            // entirely by publishing windowTitle through the nonisolated snapshot.
             case .output(_, let data):
                 log.debug("Received output: \(data.count) bytes")
-                let events = parser.withLock { $0.parse(data) }
-                Task {
-                    await screenModel.apply(events)
+                let events = self.parser.withLock { $0.parse(data) }
+                Task { @MainActor in
+                    self.windowTitle = await screenModel.applyAndCurrentTitle(events)
                 }
 
-            case .screenSnapshot(_, let snapshot):
-                log.info("Received screen snapshot")
-                Task {
-                    await screenModel.restore(from: snapshot)
+            case .attachPayload(_, let payload):
+                log.info("Received attach payload")
+                Task { @MainActor in
+                    await screenModel.restore(from: payload.snapshot)
+                    self.windowTitle = await screenModel.currentWindowTitle()
                 }
 
             case .sessionEnded(let sid, let exitCode):
@@ -152,11 +167,15 @@ class TerminalSession {
 
 struct ContentView: View {
     @State private var session = TerminalSession()
+    @State private var settings = AppSettings()
 
     var body: some View {
-        TermView(screenModel: session.screenModel, onInput: { data in
+        TermView(screenModel: session.screenModel,
+                 settings: settings,
+                 onInput: { data in
             session.sendInput(data)
         })
+        .navigationTitle(session.windowTitle ?? "rTerm")
         .task {
             do {
                 try Agent().register()

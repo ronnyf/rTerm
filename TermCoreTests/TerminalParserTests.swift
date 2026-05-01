@@ -45,7 +45,7 @@ struct TerminalParserTests {
         var parser = TerminalParser()
         let input = Data([0x0A, 0x0D, 0x08, 0x09, 0x07])
         let events = parser.parse(input)
-        #expect(events == [.newline, .carriageReturn, .backspace, .tab, .bell])
+        #expect(events == [.c0(.lineFeed), .c0(.carriageReturn), .c0(.backspace), .c0(.horizontalTab), .c0(.bell)])
     }
 
     // MARK: - Mixed text and controls
@@ -57,7 +57,7 @@ struct TerminalParserTests {
         #expect(events == [
             .printable("A"),
             .printable("B"),
-            .newline,
+            .c0(.lineFeed),
             .printable("C"),
         ])
     }
@@ -97,7 +97,7 @@ struct TerminalParserTests {
     @Test func crlfSequence() {
         var parser = TerminalParser()
         let events = parser.parse(Data([0x0D, 0x0A]))
-        #expect(events == [.carriageReturn, .newline])
+        #expect(events == [.c0(.carriageReturn), .c0(.lineFeed)])
     }
 
     // MARK: - Empty input
@@ -158,5 +158,336 @@ struct TerminalParserTests {
         // Input [0xC0, 0xA0] should produce two unrecognized events.
         let events = parser.parse(Data([0xC0, 0xA0]))
         #expect(events == [.unrecognized(0xC0), .unrecognized(0xA0)])
+    }
+
+    @Test func verticalTab_is_c0_verticalTab() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x0B])) == [.c0(.verticalTab)])
+    }
+
+    @Test func formFeed_is_c0_formFeed() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x0C])) == [.c0(.formFeed)])
+    }
+
+    @Test func nul_is_c0_nul() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x00])) == [.c0(.nul)])
+    }
+
+    @Test func del_is_c0_delete() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x7F])) == [.c0(.delete)])
+    }
+
+    @Test func shiftOut_and_shiftIn() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x0E, 0x0F])) == [.c0(.shiftOut), .c0(.shiftIn)])
+    }
+}
+
+// MARK: - VT state machine tests
+
+struct TerminalParserStateMachineTests {
+
+    @Test func esc_then_csi_then_final_emits_unknown_csi() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x35, 0x3B, 0x31, 0x30, 0x48]))
+        #expect(events == [.csi(.cursorPosition(row: 4, col: 9))])
+    }
+
+    @Test func csi_split_across_chunks_is_coherent() {
+        var parser = TerminalParser()
+        let first = parser.parse(Data([0x1B, 0x5B, 0x35]))
+        let second = parser.parse(Data([0x3B, 0x31, 0x30, 0x48]))
+        #expect(first.isEmpty)
+        #expect(second == [.csi(.cursorPosition(row: 4, col: 9))])
+    }
+
+    @Test func can_mid_csi_returns_to_ground() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x33, 0x31, 0x18, 0x41]))
+        #expect(events == [.printable("A")])
+    }
+
+    @Test func sub_mid_csi_returns_to_ground() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x33, 0x31, 0x1A, 0x42]))
+        #expect(events == [.printable("B")])
+    }
+
+    @Test func unterminated_csi_then_esc_drops_first_sequence() {
+        var parser = TerminalParser()
+        // Second sequence uses final 0x6E ('n', DSR) — stays .unknown because
+        // it's not in mapCSI's typed set. 0x6D ('m') would parse as SGR.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x31, 0x32, 0x1B, 0x5B, 0x33, 0x6E]))
+        #expect(events == [.csi(.unknown(params: [3], intermediates: [], final: 0x6E))])
+    }
+
+    @Test func osc_terminated_by_st_emits_window_title() {
+        var parser = TerminalParser()
+        // ESC ] 0 ; h i ESC \
+        let events = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x68, 0x69, 0x1B, 0x5C]))
+        #expect(events == [.osc(.setWindowTitle("hi"))])
+    }
+
+    @Test func osc_terminated_by_bel_emits_window_title() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x78, 0x07]))
+        #expect(events == [.osc(.setWindowTitle("x"))])
+    }
+
+    @Test func osc_payload_cap_truncates() {
+        var parser = TerminalParser()
+        var bytes: [UInt8] = [0x1B, 0x5D, 0x30, 0x3B]
+        bytes.append(contentsOf: [UInt8](repeating: 0x41, count: 5000))
+        bytes.append(0x07)
+        let events = parser.parse(Data(bytes))
+        guard case .osc(.setWindowTitle(let pt)) = events[0] else {
+            Issue.record("expected .osc(.setWindowTitle(...))"); return
+        }
+        #expect(pt.count == 4096, "payload should be truncated to 4096 chars")
+    }
+
+    @Test func csi_param_cap_drops_overflowing_params() {
+        var parser = TerminalParser()
+        var bytes: [UInt8] = [0x1B, 0x5B]
+        for i in 0..<20 {
+            if i > 0 { bytes.append(0x3B) }
+            bytes.append(0x31)
+        }
+        // Final 0x6E ('n', DSR) stays .unknown so we can inspect raw params.
+        bytes.append(0x6E)
+        let events = parser.parse(Data(bytes))
+        guard case .csi(.unknown(let params, _, _)) = events[0] else {
+            Issue.record("expected .csi(.unknown(...))"); return
+        }
+        #expect(params.count <= 16)
+    }
+
+    @Test func osc_split_across_chunks_via_bel_terminator() {
+        var parser = TerminalParser()
+        // ESC ] 0 ; h i — first chunk
+        let first = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x68, 0x69]))
+        // BEL — second chunk
+        let second = parser.parse(Data([0x07]))
+        #expect(first.isEmpty)
+        #expect(second == [.osc(.setWindowTitle("hi"))])
+    }
+
+    @Test func osc_split_between_esc_and_backslash() {
+        var parser = TerminalParser()
+        // ESC ] 0 ; x ESC — first chunk ends mid-ST
+        let first = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x78, 0x1B]))
+        // \ — second chunk completes the ST
+        let second = parser.parse(Data([0x5C]))
+        #expect(first.isEmpty)
+        #expect(second == [.osc(.setWindowTitle("x"))])
+    }
+
+    @Test func dcs_split_across_chunks_drops_cleanly() {
+        var parser = TerminalParser()
+        // ESC P q data... — first chunk
+        let first = parser.parse(Data([0x1B, 0x50, 0x71, 0x64, 0x61, 0x74]))
+        // ESC \ — second chunk terminates DCS, followed by a printable 'A'
+        let second = parser.parse(Data([0x1B, 0x5C, 0x41]))
+        #expect(first.isEmpty)
+        #expect(second == [.printable("A")], "DCS contents dropped; only the trailing 'A' emits")
+    }
+
+    @Test func lf_mid_csi_executes_and_csi_completes() {
+        var parser = TerminalParser()
+        // ESC [ 1 ; 3 LF n — LF should execute and the CSI should continue.
+        // Final 0x6E ('n', DSR) stays .unknown; 0x6D ('m') would parse as SGR.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x0A, 0x6E]))
+        #expect(events == [
+            .c0(.lineFeed),
+            .csi(.unknown(params: [1, 3], intermediates: [], final: 0x6E))
+        ])
+    }
+
+    @Test func bs_mid_csi_executes() {
+        var parser = TerminalParser()
+        // ESC [ 5 BS A — backspace should execute between the 5 and the A final
+        let events = parser.parse(Data([0x1B, 0x5B, 0x35, 0x08, 0x41]))
+        #expect(events == [
+            .c0(.backspace),
+            .csi(.cursorUp(5))
+        ])
+    }
+
+    @Test func private_marker_after_params_is_dropped() {
+        var parser = TerminalParser()
+        // ESC [ 2 5 ? h — malformed (? must precede params). Drop sequence silently.
+        // Then feed 'B' as a printable sanity check.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x32, 0x35, 0x3F, 0x68, 0x42]))
+        #expect(events == [.printable("B")])
+    }
+
+    @Test func private_marker_before_params_is_preserved() {
+        var parser = TerminalParser()
+        // ESC [ ? 2 5 h — canonical DECSET 25 (cursor visible). Should emit
+        // .csi(.unknown(params: [25], intermediates: [0x3F], final: 0x68)).
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x32, 0x35, 0x68]))
+        #expect(events == [.csi(.unknown(params: [25], intermediates: [0x3F], final: 0x68))])
+    }
+}
+
+// MARK: - CSI cursor motion + erase parser tests
+
+struct CSICursorParseTests {
+
+    @Test func cursor_up_default_1() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x41])) == [.csi(.cursorUp(1))])
+    }
+
+    @Test func cursor_up_5() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x35, 0x41])) == [.csi(.cursorUp(5))])
+    }
+
+    @Test func cursor_position_normalizes_origin() {
+        var parser = TerminalParser()
+        // ESC [ 5 ; 10 H  →  (row: 4, col: 9) 0-indexed
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x35, 0x3B, 0x31, 0x30, 0x48]))
+                == [.csi(.cursorPosition(row: 4, col: 9))])
+    }
+
+    @Test func cursor_position_empty_is_origin() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x48]))
+                == [.csi(.cursorPosition(row: 0, col: 0))])
+    }
+
+    @Test func erase_in_display_to_end() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x4A])) == [.csi(.eraseInDisplay(.toEnd))])
+    }
+
+    @Test func erase_in_display_all() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x32, 0x4A])) == [.csi(.eraseInDisplay(.all))])
+    }
+
+    @Test func erase_in_line_to_begin() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x4B])) == [.csi(.eraseInLine(.toBegin))])
+    }
+
+    @Test func save_and_restore_cursor() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x73, 0x1B, 0x5B, 0x75]))
+        #expect(events == [.csi(.saveCursor), .csi(.restoreCursor)])
+    }
+
+    @Test func cursor_horizontal_absolute() {
+        var parser = TerminalParser()
+        // ESC [ 12 G  →  cursorHorizontalAbsolute(12) — parser carries VT 1-indexed value.
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x32, 0x47]))
+                == [.csi(.cursorHorizontalAbsolute(12))])
+    }
+
+    @Test func cursor_up_zero_param_is_default_one() {
+        var parser = TerminalParser()
+        // ESC [ 0 A — VT spec: 0 is equivalent to "no parameter" → default of 1.
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x30, 0x41])) == [.csi(.cursorUp(1))])
+    }
+
+    @Test func cursor_position_zero_col_is_default_one() {
+        var parser = TerminalParser()
+        // ESC [ 5 ; 0 H — second param is 0, should be treated as 1 → col 0 after pre-shift.
+        // Expected: cursorPosition(row: 4, col: 0).
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x35, 0x3B, 0x30, 0x48]))
+                == [.csi(.cursorPosition(row: 4, col: 0))])
+    }
+}
+
+// MARK: - SGR
+
+struct SGRParseTests {
+
+    @Test func empty_sgr_is_reset() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x6D])) == [.csi(.sgr([.reset]))])
+    }
+
+    @Test func sgr_bold() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x6D])) == [.csi(.sgr([.bold]))])
+    }
+
+    @Test func sgr_foreground_red() {
+        var parser = TerminalParser()
+        // ESC [ 31 m
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x33, 0x31, 0x6D]))
+                == [.csi(.sgr([.foreground(.ansi16(1))]))])
+    }
+
+    @Test func sgr_bold_red_combined() {
+        var parser = TerminalParser()
+        // ESC [ 1 ; 31 m
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x31, 0x6D]))
+                == [.csi(.sgr([.bold, .foreground(.ansi16(1))]))])
+    }
+
+    @Test func sgr_bright_foreground() {
+        var parser = TerminalParser()
+        // ESC [ 91 m  → fg .ansi16(9)
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x39, 0x31, 0x6D]))
+                == [.csi(.sgr([.foreground(.ansi16(9))]))])
+    }
+
+    @Test func sgr_palette256_foreground() {
+        var parser = TerminalParser()
+        // ESC [ 38 ; 5 ; 196 m
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x33, 0x38, 0x3B, 0x35, 0x3B, 0x31, 0x39, 0x36, 0x6D]))
+                == [.csi(.sgr([.foreground(.palette256(196))]))])
+    }
+
+    @Test func sgr_truecolor_background() {
+        var parser = TerminalParser()
+        // ESC [ 48 ; 2 ; 255 ; 128 ; 0 m
+        let bytes: [UInt8] = [0x1B, 0x5B, 0x34, 0x38, 0x3B, 0x32, 0x3B,
+                              0x32, 0x35, 0x35, 0x3B, 0x31, 0x32, 0x38, 0x3B, 0x30, 0x6D]
+        #expect(parser.parse(Data(bytes))
+                == [.csi(.sgr([.background(.rgb(255, 128, 0))]))])
+    }
+
+    @Test func sgr_default_foreground() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x33, 0x39, 0x6D]))
+                == [.csi(.sgr([.foreground(.default)]))])
+    }
+}
+
+// MARK: - OSC typed mapping
+
+struct OSCParseTests {
+
+    @Test func osc_0_sets_window_title() {
+        var parser = TerminalParser()
+        // ESC ] 0 ; h i BEL
+        #expect(parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x68, 0x69, 0x07]))
+                == [.osc(.setWindowTitle("hi"))])
+    }
+
+    @Test func osc_2_sets_window_title() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5D, 0x32, 0x3B, 0x54, 0x65, 0x73, 0x74, 0x07]))
+                == [.osc(.setWindowTitle("Test"))])
+    }
+
+    @Test func osc_1_sets_icon_name() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5D, 0x31, 0x3B, 0x78, 0x07]))
+                == [.osc(.setIconName("x"))])
+    }
+
+    @Test func osc_unknown_preserved() {
+        var parser = TerminalParser()
+        // ESC ] 8 ; ; http://x BEL  (hyperlink — Phase 3)
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B, 0x3B, 0x68, 0x74, 0x74, 0x70, 0x3A, 0x2F, 0x2F, 0x78, 0x07]
+        #expect(parser.parse(Data(bytes)) == [.osc(.unknown(ps: 8, pt: ";http://x"))])
     }
 }

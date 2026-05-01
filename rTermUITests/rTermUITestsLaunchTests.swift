@@ -7,7 +7,8 @@
 
 import XCTest
 
-final class rTermUITestsLaunchTests: XCTestCase {
+// See rTermUITests.swift for why this class is nonisolated.
+nonisolated final class rTermUITestsLaunchTests: XCTestCase {
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true
