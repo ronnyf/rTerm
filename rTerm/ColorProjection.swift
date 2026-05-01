@@ -25,14 +25,16 @@ import TermCore
 /// Affects the `default` case (which routes to the palette's `defaultForeground`
 /// or `defaultBackground`).
 ///
-/// `nonisolated` so the synthesized `Equatable` conformance is callable from
-/// any isolation context — the rTerm target defaults to `MainActor` isolation,
-/// which would otherwise pin the synthesized `==` to the main actor and reject
-/// uses from `nonisolated` functions like `ColorProjection.resolve`.
-nonisolated @frozen public enum ColorRole: Sendable, Equatable {
+/// `Equatable` conformance is added via a `nonisolated extension` so the
+/// synthesized `==` is nonisolated — the rTerm target defaults to `MainActor`
+/// isolation, which would otherwise pin the synthesized `==` to the main actor
+/// and reject uses from `nonisolated` functions like `ColorProjection.resolve`.
+@frozen public enum ColorRole: Sendable {
     case foreground
     case background
 }
+
+nonisolated extension ColorRole: Equatable {}
 
 /// Pure functions that project a `TerminalColor` (max-fidelity model output) to
 /// a concrete `RGBA` for the renderer. The projection respects the user's
