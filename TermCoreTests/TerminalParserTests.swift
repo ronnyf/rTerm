@@ -185,3 +185,80 @@ struct TerminalParserTests {
         #expect(parser.parse(Data([0x0E, 0x0F])) == [.c0(.shiftOut), .c0(.shiftIn)])
     }
 }
+
+// MARK: - VT state machine tests
+
+struct TerminalParserStateMachineTests {
+
+    @Test func esc_then_csi_then_final_emits_unknown_csi() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x35, 0x3B, 0x31, 0x30, 0x48]))
+        #expect(events == [.csi(.unknown(params: [5, 10], intermediates: [], final: 0x48))])
+    }
+
+    @Test func csi_split_across_chunks_is_coherent() {
+        var parser = TerminalParser()
+        let first = parser.parse(Data([0x1B, 0x5B, 0x35]))
+        let second = parser.parse(Data([0x3B, 0x31, 0x30, 0x48]))
+        #expect(first.isEmpty)
+        #expect(second == [.csi(.unknown(params: [5, 10], intermediates: [], final: 0x48))])
+    }
+
+    @Test func can_mid_csi_returns_to_ground() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x33, 0x31, 0x18, 0x41]))
+        #expect(events == [.printable("A")])
+    }
+
+    @Test func sub_mid_csi_returns_to_ground() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x33, 0x31, 0x1A, 0x42]))
+        #expect(events == [.printable("B")])
+    }
+
+    @Test func unterminated_csi_then_esc_drops_first_sequence() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x31, 0x32, 0x1B, 0x5B, 0x33, 0x6D]))
+        #expect(events == [.csi(.unknown(params: [3], intermediates: [], final: 0x6D))])
+    }
+
+    @Test func osc_terminated_by_st_emits_unknown_osc() {
+        var parser = TerminalParser()
+        // ESC ] 0 ; h i ESC \
+        let events = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x68, 0x69, 0x1B, 0x5C]))
+        #expect(events == [.osc(.unknown(ps: 0, pt: "hi"))])
+    }
+
+    @Test func osc_terminated_by_bel_emits_unknown_osc() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5D, 0x30, 0x3B, 0x78, 0x07]))
+        #expect(events == [.osc(.unknown(ps: 0, pt: "x"))])
+    }
+
+    @Test func osc_payload_cap_truncates() {
+        var parser = TerminalParser()
+        var bytes: [UInt8] = [0x1B, 0x5D, 0x30, 0x3B]
+        bytes.append(contentsOf: [UInt8](repeating: 0x41, count: 5000))
+        bytes.append(0x07)
+        let events = parser.parse(Data(bytes))
+        guard case .osc(.unknown(_, let pt)) = events[0] else {
+            Issue.record("expected .osc(.unknown(...))"); return
+        }
+        #expect(pt.count == 4096, "payload should be truncated to 4096 chars")
+    }
+
+    @Test func csi_param_cap_drops_overflowing_params() {
+        var parser = TerminalParser()
+        var bytes: [UInt8] = [0x1B, 0x5B]
+        for i in 0..<20 {
+            if i > 0 { bytes.append(0x3B) }
+            bytes.append(0x31)
+        }
+        bytes.append(0x6D)
+        let events = parser.parse(Data(bytes))
+        guard case .csi(.unknown(let params, _, _)) = events[0] else {
+            Issue.record("expected .csi(.unknown(...))"); return
+        }
+        #expect(params.count <= 16)
+    }
+}
