@@ -9,7 +9,7 @@ import Foundation
 import OSLog
 import System
 
-public class PseudoTerminal {
+public final class PseudoTerminal: @unchecked Sendable {
 
     public enum Errors: Swift.Error {
         case noProcess
