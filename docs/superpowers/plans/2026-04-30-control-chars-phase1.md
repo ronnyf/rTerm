@@ -40,7 +40,7 @@ Rationale: UI code in the app benefits from MainActor defaults; the framework + 
 
 ### Steps
 
-- [ ] **Step 1: Create xcconfig files**
+- [x] **Step 1: Create xcconfig files**
 
 Create `configs/Base.xcconfig`:
 
@@ -68,7 +68,7 @@ Create `configs/FrameworkTarget.xcconfig`:
 SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated
 ```
 
-- [ ] **Step 2: Bulk-bump `SWIFT_VERSION` in pbxproj**
+- [x] **Step 2: Bulk-bump `SWIFT_VERSION` in pbxproj**
 
 The xcconfig now owns `SWIFT_VERSION`, but the pbxproj's per-target overrides must not contradict it. Remove the redundant 5.0 settings:
 
@@ -78,7 +78,7 @@ rg -c "SWIFT_VERSION = 5.0" rTerm.xcodeproj/project.pbxproj    # → 0
 rg -c "SWIFT_VERSION = 6.0" rTerm.xcodeproj/project.pbxproj    # → 16
 ```
 
-- [ ] **Step 3: Wire xcconfig files to each target's build configurations**
+- [x] **Step 3: Wire xcconfig files to each target's build configurations**
 
 This is a pbxproj surgery — each target has two `XCBuildConfiguration` entries (Debug + Release) that need a `baseConfigurationReference` pointing at the appropriate xcconfig. Adding xcconfig refs to pbxproj requires:
 
@@ -104,13 +104,13 @@ This is a pbxproj surgery — each target has two `XCBuildConfiguration` entries
 
 > "Open `rTerm.xcodeproj/project.pbxproj`. For each of the 8 `XCNativeTarget` entries, find its `buildConfigurationList`, resolve to the two `XCBuildConfiguration` entries, and add `baseConfigurationReference = <FileRef UUID>;` before the `buildSettings` block, pointing to the appropriate xcconfig per the table above. Add three `PBXFileReference` entries (one per xcconfig file) in the main group, and add them to the `mainGroup`'s children. Verify by running `xcodebuild -showBuildSettings -target rTerm | rg 'SWIFT_DEFAULT_ACTOR_ISOLATION|SWIFT_APPROACHABLE_CONCURRENCY|SWIFT_VERSION'` and confirming `MainActor` / `YES` / `6.0`, and `xcodebuild -showBuildSettings -target TermCore | rg 'SWIFT_DEFAULT_ACTOR_ISOLATION'` returns `nonisolated`."
 
-- [ ] **Step 4: Controller dispatches `agentic:xcode-build-reporter` to verify**
+- [x] **Step 4: Controller dispatches `agentic:xcode-build-reporter` to verify**
 
 Dispatch the reporter with: "Run `xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build` and report any strict-concurrency errors or warnings introduced by the Swift 6 bump. Also run `xcodebuild -showBuildSettings -target rTerm -target TermCore` and confirm `SWIFT_VERSION=6.0`, `SWIFT_APPROACHABLE_CONCURRENCY=YES`, and the expected per-target `SWIFT_DEFAULT_ACTOR_ISOLATION` values."
 
 If strict-concurrency errors surface in existing code (likely a handful in `ScreenModel`, `DaemonClient`, `TerminalSession`), dispatch a fix-focused implementer subagent with the reporter's findings. Typical fixes: add explicit `Sendable` / `@unchecked Sendable` where compiler asks; tighten captures in `Task {}` closures; annotate explicit `@MainActor` on UI helpers that were implicitly main-queue before.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add configs/ rTerm.xcodeproj/project.pbxproj
@@ -145,7 +145,7 @@ configurations. Phase 1 needs Swift 6.0 for Mutex<SnapshotBox>
 
 ### Steps
 
-- [ ] **Step 1: Create `TerminalColor`**
+- [x] **Step 1: Create `TerminalColor`**
 
 Create `TermCore/TerminalColor.swift`:
 
@@ -178,7 +178,7 @@ public enum TerminalColor: Sendable, Equatable, Codable {
 }
 ```
 
-- [ ] **Step 2: Create `CellAttributes` + `CellStyle`**
+- [x] **Step 2: Create `CellAttributes` + `CellStyle`**
 
 Create `TermCore/CellStyle.swift`:
 
@@ -225,7 +225,7 @@ public struct CellStyle: Sendable, Equatable, Codable {
 }
 ```
 
-- [ ] **Step 3: Upgrade `Cell` — add `style` field with hand-coded Codable**
+- [x] **Step 3: Upgrade `Cell` — add `style` field with hand-coded Codable**
 
 Read current `TermCore/Cell.swift` to see the existing `Cell` struct and its `Codable` implementation.
 
@@ -270,7 +270,7 @@ public struct Cell: Sendable, Equatable, Codable {
 
 Do **not** remove any other members that exist in the current `Cell.swift` (e.g., `Cursor`, `ScreenSnapshot`). Only modify the `Cell` struct itself.
 
-- [ ] **Step 4: Write failing tests for new behavior**
+- [x] **Step 4: Write failing tests for new behavior**
 
 Create `TermCoreTests/CellStyleTests.swift`:
 
@@ -332,7 +332,7 @@ import Testing
 }
 ```
 
-- [ ] **Step 5: Run tests to verify them**
+- [x] **Step 5: Run tests to verify them**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
@@ -342,7 +342,7 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
 
 Expected: 5 tests pass. If any fail, fix inline before proceeding.
 
-- [ ] **Step 6: Build the full project to confirm no regressions**
+- [x] **Step 6: Build the full project to confirm no regressions**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
@@ -350,7 +350,7 @@ xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -qu
 
 Expected: build succeeds with no new warnings. The existing `Cell(character:)` call sites still work because `style` defaults to `.default`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add TermCore/TerminalColor.swift \
@@ -387,7 +387,7 @@ in a later task."
 
 ### Steps
 
-- [ ] **Step 1: Replace `TerminalEvent`**
+- [x] **Step 1: Replace `TerminalEvent`**
 
 Overwrite `TermCore/TerminalEvent.swift`:
 
@@ -417,7 +417,7 @@ public enum TerminalEvent: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 2: Create `C0Control`**
+- [x] **Step 2: Create `C0Control`**
 
 Create `TermCore/C0Control.swift`:
 
@@ -448,7 +448,7 @@ Create `TermCore/C0Control.swift`:
 }
 ```
 
-- [ ] **Step 3: Create `CSICommand` and `EraseRegion`**
+- [x] **Step 3: Create `CSICommand` and `EraseRegion`**
 
 Create `TermCore/CSICommand.swift`:
 
@@ -503,7 +503,7 @@ public enum CSICommand: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 4: Create `OSCCommand`**
+- [x] **Step 4: Create `OSCCommand`**
 
 Create `TermCore/OSCCommand.swift`:
 
@@ -526,7 +526,7 @@ public enum OSCCommand: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 5: Create `SGRAttribute`**
+- [x] **Step 5: Create `SGRAttribute`**
 
 Create `TermCore/SGRAttribute.swift`:
 
@@ -565,7 +565,7 @@ public enum SGRAttribute: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 6: Create `DECPrivateMode`**
+- [x] **Step 6: Create `DECPrivateMode`**
 
 Create `TermCore/DECPrivateMode.swift`:
 
@@ -595,7 +595,7 @@ public enum DECPrivateMode: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 7: Update `TerminalParser.asciiEvent` to emit the new events**
+- [x] **Step 7: Update `TerminalParser.asciiEvent` to emit the new events**
 
 Modify `TermCore/TerminalParser.swift` — replace the `asciiEvent(_:)` body:
 
@@ -621,7 +621,7 @@ private static func asciiEvent(_ byte: UInt8) -> TerminalEvent {
 
 Leave the rest of the parser unchanged for now — the Williams state machine lands in Task 3. ESC (0x1B) still falls into `.unrecognized(0x1B)` until then.
 
-- [ ] **Step 8: Update `ScreenModel.apply(_:)` dispatch**
+- [x] **Step 8: Update `ScreenModel.apply(_:)` dispatch**
 
 Modify `TermCore/ScreenModel.swift` `apply` method. Replace the event switch with the two-level shape:
 
@@ -676,7 +676,7 @@ private func handleC0(_ control: C0Control) {
 
 Extract helpers into `// MARK: - Event handlers` region for clarity. Existing `scrollUp`, `snapshotCursor`, and other methods stay as they are.
 
-- [ ] **Step 9: Update `TerminalParserTests`**
+- [x] **Step 9: Update `TerminalParserTests`**
 
 Modify `TermCoreTests/TerminalParserTests.swift` — rename existing assertions from `.newline` / `.carriageReturn` / `.backspace` / `.tab` / `.bell` to `.c0(.lineFeed)` / `.c0(.carriageReturn)` / `.c0(.backspace)` / `.c0(.horizontalTab)` / `.c0(.bell)`. Search the file for each case and replace systematically.
 
@@ -709,7 +709,7 @@ Add three new tests for the newly-recognized C0 codes:
 }
 ```
 
-- [ ] **Step 10: Update `ScreenModelTests`**
+- [x] **Step 10: Update `ScreenModelTests`**
 
 Modify `TermCoreTests/ScreenModelTests.swift` — rename all event constructions to the new grouped form:
 - `.newline` → `.c0(.lineFeed)`
@@ -745,7 +745,7 @@ Add new tests:
 }
 ```
 
-- [ ] **Step 11: Run full test suite**
+- [x] **Step 11: Run full test suite**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
@@ -753,7 +753,7 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
 
 Expected: all tests pass (~93 existing + 8 new = ~101). Fix any regressions.
 
-- [ ] **Step 12: Build the full project**
+- [x] **Step 12: Build the full project**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
@@ -761,7 +761,7 @@ xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -qu
 
 Expected: clean build.
 
-- [ ] **Step 13: Commit**
+- [x] **Step 13: Commit**
 
 ```bash
 git add TermCore/TerminalEvent.swift \
@@ -802,7 +802,7 @@ This task does **not** interpret CSI commands semantically — all CSI dispatche
 
 ### Steps
 
-- [ ] **Step 1: Sketch the state enum**
+- [x] **Step 1: Sketch the state enum**
 
 In `TermCore/TerminalParser.swift`, add a private `VTState` type. At the top of the file:
 
@@ -838,7 +838,7 @@ private enum Limits {
 }
 ```
 
-- [ ] **Step 2: Rewrite `TerminalParser.parse(_:)` as a state machine driver**
+- [x] **Step 2: Rewrite `TerminalParser.parse(_:)` as a state machine driver**
 
 The body switches on `state`; each branch reads one byte, transitions state, and possibly emits events. `utf8Buffer` remains but is only consulted in `.ground`.
 
@@ -886,11 +886,11 @@ private static func isCSIFinal(_ b: UInt8) -> Bool { b >= 0x40 && b <= 0x7E }
 
 Because this step is large, commit the full rewrite in one go after steps 3–6 all compile and pass tests.
 
-- [ ] **Step 3: Implement CAN/SUB cancellation and ESC-interrupts-ESC**
+- [x] **Step 3: Implement CAN/SUB cancellation and ESC-interrupts-ESC**
 
 Anywhere inside a non-ground state, encountering `0x18` (CAN) or `0x1A` (SUB) resets `state = .ground` without emitting. Encountering another `0x1B` (ESC) mid-sequence starts a fresh `.escape` state — whatever was in flight is silently dropped (Williams' `CSI_IGNORE` path is the exception: it continues consuming until a final byte, then drops the sequence).
 
-- [ ] **Step 4: Write failing tests for state-machine boundaries**
+- [x] **Step 4: Write failing tests for state-machine boundaries**
 
 Add these to `TermCoreTests/TerminalParserTests.swift`:
 
@@ -974,7 +974,7 @@ Add these to `TermCoreTests/TerminalParserTests.swift`:
 }
 ```
 
-- [ ] **Step 5: Run the new tests — expect failures**
+- [x] **Step 5: Run the new tests — expect failures**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
@@ -983,7 +983,7 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
 
 Expected: failures — the old parser still treats ESC as `.unrecognized`.
 
-- [ ] **Step 6: Implement — full parser rewrite**
+- [x] **Step 6: Implement — full parser rewrite**
 
 Rewrite `TermCore/TerminalParser.swift`. Keep the public API identical:
 
@@ -1010,7 +1010,7 @@ The `parse(_:)` function iterates bytes, dispatches to per-state handlers, accum
 /// buffered bytes.
 ```
 
-- [ ] **Step 7: Run new tests — expect pass**
+- [x] **Step 7: Run new tests — expect pass**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
@@ -1019,7 +1019,7 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
 
 Expected: all 9 new tests pass.
 
-- [ ] **Step 8: Run full parser test suite — expect no regressions**
+- [x] **Step 8: Run full parser test suite — expect no regressions**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
@@ -1027,13 +1027,13 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
 
 Expected: all tests pass (~101 pre-existing + 9 new).
 
-- [ ] **Step 9: Build the full project**
+- [x] **Step 9: Build the full project**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
 ```
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add TermCore/TerminalParser.swift \
@@ -1065,7 +1065,7 @@ typed dispatch lands in later tasks (CSI in #4, OSC in #6)."
 
 ### Steps
 
-- [ ] **Step 1: Expand CSI final-byte dispatch in the parser**
+- [x] **Step 1: Expand CSI final-byte dispatch in the parser**
 
 In the parser's CSI dispatch point (where `.csi(.unknown(params:, intermediates:, final:))` is emitted today), introduce a `mapCSI(params:, intermediates:, final:) -> CSICommand` helper:
 
@@ -1117,7 +1117,7 @@ private static func mapEraseRegion(_ n: Int) -> EraseRegion {
 
 At the CSI emit point, call `mapCSI` and emit `.csi(mapCSI(...))`.
 
-- [ ] **Step 2: Write failing parser tests for cursor + erase**
+- [x] **Step 2: Write failing parser tests for cursor + erase**
 
 Add to `TerminalParserTests.swift`:
 
@@ -1177,7 +1177,7 @@ Add to `TerminalParserTests.swift`:
 }
 ```
 
-- [ ] **Step 3: Run these tests — expect pass**
+- [x] **Step 3: Run these tests — expect pass**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
@@ -1186,7 +1186,7 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
 
 Expected: all 9 pass (the parser Change from Task 3 plus the mapping added in Step 1).
 
-- [ ] **Step 4: Implement `handleCSI` in `ScreenModel`**
+- [x] **Step 4: Implement `handleCSI` in `ScreenModel`**
 
 Add these helpers to `ScreenModel`:
 
@@ -1269,7 +1269,7 @@ case .csi(let cmd):
     handleCSI(cmd)
 ```
 
-- [ ] **Step 5: Write failing `ScreenModel` behavior tests**
+- [x] **Step 5: Write failing `ScreenModel` behavior tests**
 
 Add to `ScreenModelTests.swift`:
 
@@ -1338,7 +1338,7 @@ Add to `ScreenModelTests.swift`:
 }
 ```
 
-- [ ] **Step 6: Run `ScreenModel` tests — expect pass**
+- [x] **Step 6: Run `ScreenModel` tests — expect pass**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
@@ -1347,14 +1347,14 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
 
 Expected: all 6 pass.
 
-- [ ] **Step 7: Full test suite + build**
+- [x] **Step 7: Full test suite + build**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
 xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add TermCore/TerminalParser.swift \
@@ -1385,7 +1385,7 @@ regions 0/1/2 (3 treated as .all in Phase 1 — scrollback is Phase 2)."
 
 ### Steps
 
-- [ ] **Step 1: Add SGR mapping in the parser**
+- [x] **Step 1: Add SGR mapping in the parser**
 
 In `TerminalParser.swift`, extend `mapCSI` — when `final == 0x6D /* m */` and intermediates are empty, call a new `mapSGR(params:)`:
 
@@ -1473,7 +1473,7 @@ private static func mapSGR(params: [Int]) -> [SGRAttribute] {
 
 Note: `UInt8(clamping:)` saturates at 255.
 
-- [ ] **Step 2: Parser tests for SGR**
+- [x] **Step 2: Parser tests for SGR**
 
 Add to `TerminalParserTests.swift`:
 
@@ -1535,7 +1535,7 @@ Add to `TerminalParserTests.swift`:
 }
 ```
 
-- [ ] **Step 3: Add pen state + applyPen to `ScreenModel`**
+- [x] **Step 3: Add pen state + applyPen to `ScreenModel`**
 
 In `ScreenModel`:
 
@@ -1592,7 +1592,7 @@ private func applySGR(_ attrs: [SGRAttribute]) {
 }
 ```
 
-- [ ] **Step 4: `ScreenModel` pen tests**
+- [x] **Step 4: `ScreenModel` pen tests**
 
 Add to `ScreenModelTests.swift`:
 
@@ -1660,7 +1660,7 @@ Add to `ScreenModelTests.swift`:
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
@@ -1668,13 +1668,13 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
 
 Expected: all pass.
 
-- [ ] **Step 6: Build**
+- [x] **Step 6: Build**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add TermCore/TerminalParser.swift \
@@ -1708,7 +1708,7 @@ Cell. Visual rendering of the attributes lands in Task 8 and Phase 2."
 
 ### Steps
 
-- [ ] **Step 1: Map OSC in the parser**
+- [x] **Step 1: Map OSC in the parser**
 
 In `TerminalParser.swift`, at the OSC emit site (currently emits `.osc(.unknown(...))`), add a typed mapper:
 
@@ -1724,7 +1724,7 @@ private static func mapOSC(ps: Int, pt: String) -> OSCCommand {
 
 Replace the emit call with `events.append(.osc(Self.mapOSC(ps: ps, pt: accumulator)))`.
 
-- [ ] **Step 2: Parser tests**
+- [x] **Step 2: Parser tests**
 
 ```swift
 @Suite struct OSCParseTests {
@@ -1757,7 +1757,7 @@ Replace the emit call with `events.append(.osc(Self.mapOSC(ps: ps, pt: accumulat
 }
 ```
 
-- [ ] **Step 3: Add `windowTitle` + `iconName` state to `ScreenModel`**
+- [x] **Step 3: Add `windowTitle` + `iconName` state to `ScreenModel`**
 
 In `ScreenModel`:
 
@@ -1793,7 +1793,7 @@ case .osc(let cmd):
     handleOSC(cmd)
 ```
 
-- [ ] **Step 4: `ScreenModel` tests**
+- [x] **Step 4: `ScreenModel` tests**
 
 ```swift
 @Suite struct ScreenModelOSCTests {
@@ -1817,7 +1817,7 @@ case .osc(let cmd):
 }
 ```
 
-- [ ] **Step 5: Wire title in `rTerm/ContentView.swift`**
+- [x] **Step 5: Wire title in `rTerm/ContentView.swift`**
 
 Read the current `rTerm/ContentView.swift` to find `TerminalSession`. Add an `@Observable`-visible `windowTitle: String?` property that the session keeps in sync.
 
@@ -1837,20 +1837,20 @@ TermView(session: session)
 
 (Or use `.onChange(of: session.windowTitle)` to set `NSWindow.title` directly if the existing view hierarchy doesn't use `.navigationTitle`.)
 
-- [ ] **Step 6: Full tests + build**
+- [x] **Step 6: Full tests + build**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
 xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
 ```
 
-- [ ] **Step 7: Manual smoke test (if running GUI)**
+- [x] **Step 7: Manual smoke test (if running GUI)**
 
 Launch the app, run in a terminal: `printf '\033]0;Hello from rTerm\007'`. Window title should update.
 
 If this is inconvenient to verify manually, skip — unit tests already cover the parse-and-store path. Flag it to the user.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add TermCore/TerminalParser.swift \
@@ -1885,7 +1885,7 @@ that drives NSWindow.title. OSC 8/52 etc. still flow through as
 
 ### Steps
 
-- [ ] **Step 1: Reshape `ScreenSnapshot` + add `AttachPayload`**
+- [x] **Step 1: Reshape `ScreenSnapshot` + add `AttachPayload`**
 
 Locate `ScreenSnapshot` (currently in `TermCore/Cell.swift` or `TermCore/TermMessage.swift`). Replace its definition with:
 
@@ -1937,7 +1937,7 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
 
 Ensure old call sites still work — the existing 2D subscript is preserved.
 
-- [ ] **Step 2: Create `AttachPayload`**
+- [x] **Step 2: Create `AttachPayload`**
 
 Create `TermCore/AttachPayload.swift`:
 
@@ -1974,7 +1974,7 @@ public struct AttachPayload: Sendable, Codable {
 }
 ```
 
-- [ ] **Step 3: Rewrite `ScreenModel` snapshot publication**
+- [x] **Step 3: Rewrite `ScreenModel` snapshot publication**
 
 Add `import Synchronization` to `ScreenModel.swift`. Replace the `OSAllocatedUnfairLock<ScreenSnapshot>` field with a `Mutex<SnapshotBox>`:
 
@@ -2156,7 +2156,7 @@ public func buildAttachPayload() -> AttachPayload {
 }
 ```
 
-- [ ] **Step 4: Update daemon protocol enums**
+- [x] **Step 4: Update daemon protocol enums**
 
 Edit `TermCore/DaemonProtocol.swift`. `SessionID` is `public typealias SessionID = Int` (existing — `DaemonProtocol.swift:37`). In `DaemonResponse`, rename the existing `.screenSnapshot(...)` case to `.attachPayload(sessionID:, payload:)` and **preserve the `.sessions([SessionInfo])` case** that already exists:
 
@@ -2173,11 +2173,11 @@ public enum DaemonResponse: Sendable, Codable {
 
 **Do not** use `UUID` — every other case in this enum uses the existing `SessionID = Int` typealias. Mismatching would cascade through `DaemonPeerHandler` and `DaemonClient`.
 
-- [ ] **Step 5: Update daemon attach handler**
+- [x] **Step 5: Update daemon attach handler**
 
 In `rtermd/DaemonPeerHandler.swift` (and/or `SessionManager.swift`, wherever `.attach` is handled), replace the snapshot construction with `session.screenModel.buildAttachPayload()` and emit `.attachPayload(...)`.
 
-- [ ] **Step 6: Update client consumer + replace existing `restore(from:)`**
+- [x] **Step 6: Update client consumer + replace existing `restore(from:)`**
 
 In `TermCore/DaemonClient.swift` (the XPC client), replace the `.screenSnapshot(_, _)` case in the incoming message handler with `.attachPayload(_, let payload)`. The client should:
 
@@ -2203,7 +2203,7 @@ public func restore(from snapshot: ScreenSnapshot) {
 
 The precondition stays — dimension mismatch at reattach is a programmer error, not a runtime-recoverable state. Resize-on-reattach is future work.
 
-- [ ] **Step 7: Update existing Codable tests + add AttachPayload test**
+- [x] **Step 7: Update existing Codable tests + add AttachPayload test**
 
 Update existing tests that reference the old `ScreenSnapshot` shape. The specific hot spots are:
 
@@ -2242,7 +2242,7 @@ Add a new test for `AttachPayload`:
 }
 ```
 
-- [ ] **Step 8: Version counter tests**
+- [x] **Step 8: Version counter tests**
 
 Add to `ScreenModelTests.swift`:
 
@@ -2265,7 +2265,7 @@ Add to `ScreenModelTests.swift`:
 }
 ```
 
-- [ ] **Step 9: Full tests + build**
+- [x] **Step 9: Full tests + build**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
@@ -2274,7 +2274,7 @@ xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -qu
 
 Fix any compiler errors in `TermView.swift` / `RenderCoordinator` if they referenced removed fields from the old `ScreenSnapshot`.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add TermCore/Cell.swift \
