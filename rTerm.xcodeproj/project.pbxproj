@@ -55,6 +55,11 @@
 		E3F1CA022F900110001F0001 /* TerminalColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F1CA012F900110001F0001 /* TerminalColor.swift */; };
 		E3F1CA042F900110001F0001 /* CellStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F1CA032F900110001F0001 /* CellStyle.swift */; };
 		E3F1CA062F900110001F0001 /* CellStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F1CA052F900110001F0001 /* CellStyleTests.swift */; };
+		E3F2CA022F900120001F0001 /* C0Control.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA012F900120001F0001 /* C0Control.swift */; };
+		E3F2CA042F900120001F0001 /* CSICommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA032F900120001F0001 /* CSICommand.swift */; };
+		E3F2CA062F900120001F0001 /* OSCCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA052F900120001F0001 /* OSCCommand.swift */; };
+		E3F2CA082F900120001F0001 /* SGRAttribute.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA072F900120001F0001 /* SGRAttribute.swift */; };
+		E3F2CA0A2F900120001F0001 /* DECPrivateMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA092F900120001F0001 /* DECPrivateMode.swift */; };
 		E3FF01002F89A10000FF0001 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
 /* End PBXBuildFile section */
 
@@ -229,6 +234,11 @@
 		E3F1CA012F900110001F0001 /* TerminalColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalColor.swift; sourceTree = "<group>"; };
 		E3F1CA032F900110001F0001 /* CellStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CellStyle.swift; sourceTree = "<group>"; };
 		E3F1CA052F900110001F0001 /* CellStyleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CellStyleTests.swift; sourceTree = "<group>"; };
+		E3F2CA012F900120001F0001 /* C0Control.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = C0Control.swift; sourceTree = "<group>"; };
+		E3F2CA032F900120001F0001 /* CSICommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSICommand.swift; sourceTree = "<group>"; };
+		E3F2CA052F900120001F0001 /* OSCCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OSCCommand.swift; sourceTree = "<group>"; };
+		E3F2CA072F900120001F0001 /* SGRAttribute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SGRAttribute.swift; sourceTree = "<group>"; };
+		E3F2CA092F900120001F0001 /* DECPrivateMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DECPrivateMode.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -413,6 +423,11 @@
 				E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */,
 				E3F1CA012F900110001F0001 /* TerminalColor.swift */,
 				E3F1CA032F900110001F0001 /* CellStyle.swift */,
+				E3F2CA012F900120001F0001 /* C0Control.swift */,
+				E3F2CA032F900120001F0001 /* CSICommand.swift */,
+				E3F2CA052F900120001F0001 /* OSCCommand.swift */,
+				E3F2CA072F900120001F0001 /* SGRAttribute.swift */,
+				E3F2CA092F900120001F0001 /* DECPrivateMode.swift */,
 			);
 			path = TermCore;
 			sourceTree = "<group>";
@@ -804,6 +819,11 @@
 				E3EE01012F88D10000EE0001 /* DaemonProtocol.swift in Sources */,
 				E3F1CA022F900110001F0001 /* TerminalColor.swift in Sources */,
 				E3F1CA042F900110001F0001 /* CellStyle.swift in Sources */,
+				E3F2CA022F900120001F0001 /* C0Control.swift in Sources */,
+				E3F2CA042F900120001F0001 /* CSICommand.swift in Sources */,
+				E3F2CA062F900120001F0001 /* OSCCommand.swift in Sources */,
+				E3F2CA082F900120001F0001 /* SGRAttribute.swift in Sources */,
+				E3F2CA0A2F900120001F0001 /* DECPrivateMode.swift in Sources */,
 			);
 		};
 		E30920B72C23FF6800B6D264 /* Sources */ = {
