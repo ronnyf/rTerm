@@ -20,45 +20,41 @@
 //  along with Terminal App. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/// A single character cell in the terminal screen grid.
-///
-/// `Cell` is the atomic unit of the screen model. It holds one Unicode
-/// `Character` and is intentionally kept minimal so that
-/// `ContiguousArray<Cell>` is cheap to copy and compare.
 public struct Cell: Sendable, Equatable, Codable {
-    /// The Unicode character occupying this cell.
     public var character: Character
+    public var style: CellStyle
 
-    /// Creates a cell with the given character.
-    public init(character: Character) {
+    public init(character: Character, style: CellStyle = .default) {
         self.character = character
+        self.style = style
     }
 
-    /// A blank cell — a single space character.
+    /// A blank cell — a single space character with default style.
     public static let empty = Cell(character: " ")
-
-    // MARK: Codable
 
     private enum CodingKeys: String, CodingKey {
         case character
+        case style
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let string = try container.decode(String.self, forKey: .character)
-        guard let first = string.first, string.count == 1 else {
+        let charString = try container.decode(String.self, forKey: .character)
+        guard let first = charString.first, charString.count == 1 else {
             throw DecodingError.dataCorruptedError(
-                forKey: .character,
-                in: container,
-                debugDescription: "Expected a single-character string, got \"\(string)\""
-            )
+                forKey: .character, in: container,
+                debugDescription: "Cell.character must be exactly one Character")
         }
         self.character = first
+        self.style = try container.decodeIfPresent(CellStyle.self, forKey: .style) ?? .default
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(String(character), forKey: .character)
+        if style != .default {
+            try container.encode(style, forKey: .style)
+        }
     }
 }
 
