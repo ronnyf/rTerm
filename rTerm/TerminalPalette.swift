@@ -45,7 +45,7 @@ public struct TerminalPalette: Sendable, Equatable, Codable {
 
     /// Number of ANSI palette slots — always 16. Use as a clarity-improving
     /// constant in tight loops instead of a literal.
-    public static let ansiCount: Int = 16
+    nonisolated public static let ansiCount: Int = 16
 
     /// Designated initializer. Traps if `ansi.count != 16` so the invariant is
     /// caught at the call site rather than later in the renderer.

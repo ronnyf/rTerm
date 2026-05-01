@@ -53,7 +53,7 @@ nonisolated extension ColorRole: Equatable {}
 public enum ColorProjection {
 
     /// Number of slots in the xterm 256-color palette — always 256.
-    public static let palette256Count: Int = 256
+    nonisolated public static let palette256Count: Int = 256
 
     /// Resolve a `TerminalColor` to a concrete `RGBA` according to the active
     /// depth + palette.
