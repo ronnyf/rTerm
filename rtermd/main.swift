@@ -38,11 +38,17 @@ log.info("rtermd starting (pid=\(getpid()))")
 
 // Single serial queue -- the backbone of the daemon's concurrency model.
 // Every piece of mutable state is accessed exclusively from this queue:
-// SessionManager, Session instances, DaemonPeerHandler actors (via custom
-// executor), signal handlers, and the idle-exit timer.
-let daemonQueue = DispatchQueue(label: "com.ronnyf.rtermd.daemon")
+// SessionManager, Session instances, DaemonPeerHandler instances, signal
+// handlers, and the idle-exit timer.
+//
+// `nonisolated` is required here because Swift 6.2's approachable-concurrency
+// mode promotes top-level executable code to @MainActor by default, but this
+// daemon has no main runloop -- everything runs on `daemonQueue`. Without
+// these annotations, the MainActor-isolated lets couldn't be referenced from
+// the @Sendable XPCListener closure (which runs on the daemon queue).
+nonisolated let daemonQueue = DispatchQueue(label: "com.ronnyf.rtermd.daemon")
 
-let sessionManager = SessionManager(queue: daemonQueue)
+nonisolated let sessionManager = SessionManager(queue: daemonQueue)
 
 // MARK: - XPC Listener
 
@@ -50,7 +56,7 @@ let listener: XPCListener
 do {
     listener = try XPCListener(service: DaemonService.machServiceName, targetQueue: daemonQueue) { request in
         request.accept { session in
-            DaemonPeerHandler(session: session, manager: sessionManager, queue: daemonQueue)
+            DaemonPeerHandler(session: session, manager: sessionManager)
         }
     }
 } catch {

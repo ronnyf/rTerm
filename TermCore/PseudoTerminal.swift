@@ -92,24 +92,32 @@ public class PseudoTerminal {
         process.standardOutput = secondaryHandle
         process.standardError = secondaryHandle
 
-        // Hook up output reading before starting the shell
-        primaryHandle.readabilityHandler = { [weak self] handle in
+        // Hook up output reading before starting the shell.
+        // Capture only the Sendable properties the closures need — `PseudoTerminal`
+        // itself isn't Sendable because of `var winsize` / `var shellProcess`, but
+        // `log` (Logger), `outputContinuation` (AsyncStream.Continuation), and
+        // `primaryHandle` (FileHandle) all are. Avoiding `[weak self]` also avoids
+        // the self → process → closure retain-cycle concerns.
+        let log = self.log
+        let outputContinuation = self.outputContinuation
+        primaryHandle.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty {
-                self?.log.debug("PTY output: EOF (0 bytes)")
-                self?.outputContinuation.finish()
+                log.debug("PTY output: EOF (0 bytes)")
+                outputContinuation.finish()
                 handle.readabilityHandler = nil
             } else {
-                self?.log.debug("PTY output: \(data.count) bytes")
-                self?.outputContinuation.yield(data)
+                log.debug("PTY output: \(data.count) bytes")
+                outputContinuation.yield(data)
             }
         }
 
         // Shell termination cleanup
-        process.terminationHandler = { [weak self] proc in
-            self?.log.info("Shell exited: status=\(proc.terminationStatus), reason=\(proc.terminationReason.rawValue)")
-            self?.primaryHandle.readabilityHandler = nil
-            self?.outputContinuation.finish()
+        let primaryHandle = self.primaryHandle
+        process.terminationHandler = { proc in
+            log.info("Shell exited: status=\(proc.terminationStatus), reason=\(proc.terminationReason.rawValue)")
+            primaryHandle.readabilityHandler = nil
+            outputContinuation.finish()
         }
 
         try process.run()

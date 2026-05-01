@@ -138,7 +138,12 @@ extension Shell {
             _ = fcntl(primaryFD, F_SETFD, currentFlags | FD_CLOEXEC)
         }
 
-        let ttyName = String(cString: ttyNameBuf)
+        // Decode the NUL-terminated tty path forkpty wrote into `ttyNameBuf`.
+        // `String(cString:)` on `[CChar]` is deprecated in favor of
+        // `String(decoding:as:)` after explicitly truncating at the NUL.
+        let nullIndex = ttyNameBuf.firstIndex(of: 0) ?? ttyNameBuf.count
+        let ttyName = String(decoding: ttyNameBuf[..<nullIndex].map(UInt8.init(bitPattern:)),
+                             as: UTF8.self)
         return SpawnResult(pid: pid, primaryFD: primaryFD, ttyName: ttyName)
     }
 

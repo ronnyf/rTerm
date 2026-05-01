@@ -45,7 +45,7 @@ import XPC
 ///    ``reapChildren()`` to collect the exit status and clean up.
 /// 4. When the last session is removed, the ``onEmpty`` callback fires so
 ///    the daemon can exit gracefully if configured to do so.
-final class SessionManager {
+final class SessionManager: @unchecked Sendable {
 
     // MARK: - State
 
