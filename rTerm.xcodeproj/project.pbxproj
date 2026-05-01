@@ -52,6 +52,9 @@
 		E3E00EE52C2781CC00DE1213 /* PTY.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E00EE42C2781CC00DE1213 /* PTY.swift */; };
 		E3EE01012F88D10000EE0001 /* DaemonProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */; };
 		E3EE01032F88D10000EE0002 /* DaemonProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */; };
+		E3F1CA022F900110001F0001 /* TerminalColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F1CA012F900110001F0001 /* TerminalColor.swift */; };
+		E3F1CA042F900110001F0001 /* CellStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F1CA032F900110001F0001 /* CellStyle.swift */; };
+		E3F1CA062F900110001F0001 /* CellStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F1CA052F900110001F0001 /* CellStyleTests.swift */; };
 		E3FF01002F89A10000FF0001 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
 /* End PBXBuildFile section */
 
@@ -223,6 +226,9 @@
 		E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rTerm.entitlements; sourceTree = "<group>"; };
 		E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProtocol.swift; sourceTree = "<group>"; };
 		E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProtocolTests.swift; sourceTree = "<group>"; };
+		E3F1CA012F900110001F0001 /* TerminalColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalColor.swift; sourceTree = "<group>"; };
+		E3F1CA032F900110001F0001 /* CellStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CellStyle.swift; sourceTree = "<group>"; };
+		E3F1CA052F900110001F0001 /* CellStyleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CellStyleTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -405,6 +411,8 @@
 				E3AA01072C80A10000AA0001 /* ScreenModel.swift */,
 				E3DC01002F89B10000DC0001 /* DaemonClient.swift */,
 				E3EE01002F88D10000EE0001 /* DaemonProtocol.swift */,
+				E3F1CA012F900110001F0001 /* TerminalColor.swift */,
+				E3F1CA032F900110001F0001 /* CellStyle.swift */,
 			);
 			path = TermCore;
 			sourceTree = "<group>";
@@ -418,6 +426,7 @@
 				E3CC01012F87A10000CC0001 /* PseudoTerminalTests.swift */,
 				E3DD01002F88C10000DD0001 /* CodableTests.swift */,
 				E3EE01022F88D10000EE0002 /* DaemonProtocolTests.swift */,
+				E3F1CA052F900110001F0001 /* CellStyleTests.swift */,
 			);
 			path = TermCoreTests;
 			sourceTree = "<group>";
@@ -793,6 +802,8 @@
 				E3AA01082C80A10000AA0001 /* ScreenModel.swift in Sources */,
 				E3DC01012F89B10000DC0001 /* DaemonClient.swift in Sources */,
 				E3EE01012F88D10000EE0001 /* DaemonProtocol.swift in Sources */,
+				E3F1CA022F900110001F0001 /* TerminalColor.swift in Sources */,
+				E3F1CA042F900110001F0001 /* CellStyle.swift in Sources */,
 			);
 		};
 		E30920B72C23FF6800B6D264 /* Sources */ = {
@@ -804,6 +815,7 @@
 				E3CC01022F87A10000CC0001 /* PseudoTerminalTests.swift in Sources */,
 				E3DD01012F88C10000DD0001 /* CodableTests.swift in Sources */,
 				E3EE01032F88D10000EE0002 /* DaemonProtocolTests.swift in Sources */,
+				E3F1CA062F900110001F0001 /* CellStyleTests.swift in Sources */,
 			);
 		};
 		E30920D12C23FF7800B6D264 /* Sources */ = {
