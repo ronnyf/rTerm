@@ -56,6 +56,10 @@ public actor ScreenModel {
     /// CSI s / u save/restore state.
     private var savedCursor: Cursor?
 
+    /// Current SGR pen — stamped onto every cell written via `handlePrintable`.
+    /// Mutated by `applySGR`; reset to `.default` on SGR `0`.
+    private var pen: CellStyle = .default
+
     /// Number of columns.
     public let cols: Int
 
@@ -145,7 +149,7 @@ public actor ScreenModel {
             cursor.row += 1
             if cursor.row >= rows { scrollUp() }
         }
-        grid[cursor.row * cols + cursor.col] = Cell(character: char)
+        grid[cursor.row * cols + cursor.col] = Cell(character: char, style: pen)
         cursor.col += 1
     }
 
@@ -204,8 +208,34 @@ public actor ScreenModel {
             eraseInDisplay(region)
         case .eraseInLine(let region):
             eraseInLine(region)
-        case .setMode, .setScrollRegion, .sgr, .unknown:
+        case .sgr(let attrs):
+            applySGR(attrs)
+        case .setMode, .setScrollRegion, .unknown:
             break  // Handled in later tasks / phases.
+        }
+    }
+
+    private func applySGR(_ attrs: [SGRAttribute]) {
+        for attr in attrs {
+            switch attr {
+            case .reset:
+                pen = .default
+            case .bold:              pen.attributes.insert(.bold)
+            case .dim:               pen.attributes.insert(.dim)
+            case .italic:            pen.attributes.insert(.italic)
+            case .underline:         pen.attributes.insert(.underline)
+            case .blink:             pen.attributes.insert(.blink)
+            case .reverse:           pen.attributes.insert(.reverse)
+            case .strikethrough:     pen.attributes.insert(.strikethrough)
+            case .resetIntensity:    pen.attributes.remove(.bold); pen.attributes.remove(.dim)
+            case .resetItalic:       pen.attributes.remove(.italic)
+            case .resetUnderline:    pen.attributes.remove(.underline)
+            case .resetBlink:        pen.attributes.remove(.blink)
+            case .resetReverse:      pen.attributes.remove(.reverse)
+            case .resetStrikethrough: pen.attributes.remove(.strikethrough)
+            case .foreground(let c): pen.foreground = c
+            case .background(let c): pen.background = c
+            }
         }
     }
 

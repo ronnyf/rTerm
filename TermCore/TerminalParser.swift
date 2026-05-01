@@ -604,9 +604,90 @@ public struct TerminalParser: Sendable {
         case 0x75 /* u */: return .restoreCursor
         case 0x4A /* J */: return .eraseInDisplay(Self.mapEraseRegion(p(0, default: 0)))
         case 0x4B /* K */: return .eraseInLine(Self.mapEraseRegion(p(0, default: 0)))
+        case 0x6D /* m */:
+            return .sgr(Self.mapSGR(params: params))
         default:
             return .unknown(params: params, intermediates: intermediates, final: final)
         }
+    }
+
+    /// Decode a stream of CSI-`m` parameters into a list of ``SGRAttribute``.
+    ///
+    /// Empty `params` is equivalent to a single `.reset` per the VT spec.
+    /// Extended color selectors (38/48) consume either 2 (`;5;idx`) or 4
+    /// (`;2;r;g;b`) additional params; malformed tails are skipped defensively
+    /// without aborting subsequent attributes in the same stream.
+    private static func mapSGR(params: [Int]) -> [SGRAttribute] {
+        // Empty params acts as reset.
+        guard !params.isEmpty else { return [.reset] }
+
+        var result: [SGRAttribute] = []
+        var i = 0
+        while i < params.count {
+            let p = params[i]
+            switch p {
+            case 0:  result.append(.reset)
+            case 1:  result.append(.bold)
+            case 2:  result.append(.dim)
+            case 3:  result.append(.italic)
+            case 4:  result.append(.underline)
+            case 5:  result.append(.blink)
+            case 7:  result.append(.reverse)
+            case 9:  result.append(.strikethrough)
+            case 22: result.append(.resetIntensity)
+            case 23: result.append(.resetItalic)
+            case 24: result.append(.resetUnderline)
+            case 25: result.append(.resetBlink)
+            case 27: result.append(.resetReverse)
+            case 29: result.append(.resetStrikethrough)
+
+            // Foreground 8-color: 30-37
+            case 30...37:
+                result.append(.foreground(.ansi16(UInt8(p - 30))))
+            // Foreground bright: 90-97
+            case 90...97:
+                result.append(.foreground(.ansi16(UInt8(p - 90 + 8))))
+            // Background 8-color: 40-47
+            case 40...47:
+                result.append(.background(.ansi16(UInt8(p - 40))))
+            // Background bright: 100-107
+            case 100...107:
+                result.append(.background(.ansi16(UInt8(p - 100 + 8))))
+            case 39: result.append(.foreground(.default))
+            case 49: result.append(.background(.default))
+
+            // Extended colors: 38 = fg, 48 = bg
+            case 38, 48:
+                // Next param selects form: 5 = palette256, 2 = truecolor RGB.
+                guard i + 1 < params.count else { i += 1; continue }
+                let role = p
+                let form = params[i + 1]
+                if form == 5, i + 2 < params.count {
+                    let idx = UInt8(clamping: params[i + 2])
+                    if role == 38 { result.append(.foreground(.palette256(idx))) }
+                    else { result.append(.background(.palette256(idx))) }
+                    i += 3
+                    continue
+                } else if form == 2, i + 4 < params.count {
+                    let r = UInt8(clamping: params[i + 2])
+                    let g = UInt8(clamping: params[i + 3])
+                    let b = UInt8(clamping: params[i + 4])
+                    if role == 38 { result.append(.foreground(.rgb(r, g, b))) }
+                    else { result.append(.background(.rgb(r, g, b))) }
+                    i += 5
+                    continue
+                } else {
+                    // Malformed — skip the selector and continue.
+                    i += 2
+                    continue
+                }
+
+            default:
+                break  // Unknown attribute — skip.
+            }
+            i += 1
+        }
+        return result
     }
 
     private static func mapEraseRegion(_ n: Int) -> EraseRegion {

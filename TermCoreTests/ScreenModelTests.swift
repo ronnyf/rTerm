@@ -366,3 +366,67 @@ struct ScreenModelCSITests {
         for r in 0..<2 { for c in 0..<3 { #expect(snap[r, c].character == " ") } }
     }
 }
+
+// MARK: - SGR pen behavior
+
+struct ScreenModelPenTests {
+
+    @Test func bold_stamps_onto_subsequent_writes() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.bold])),
+            .printable("A"), .printable("B")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.attributes.contains(.bold))
+        #expect(snap[0, 1].style.attributes.contains(.bold))
+    }
+
+    @Test func reset_clears_pen() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.bold, .foreground(.ansi16(1))])),
+            .printable("A"),
+            .csi(.sgr([.reset])),
+            .printable("B")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.foreground == .ansi16(1))
+        #expect(snap[0, 0].style.attributes.contains(.bold))
+        #expect(snap[0, 1].style == .default)
+    }
+
+    @Test func resetIntensity_clears_both_bold_and_dim() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.bold, .dim])),
+            .csi(.sgr([.resetIntensity])),
+            .printable("A")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(!snap[0, 0].style.attributes.contains(.bold))
+        #expect(!snap[0, 0].style.attributes.contains(.dim))
+    }
+
+    @Test func truecolor_stored_at_full_fidelity() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.foreground(.rgb(10, 20, 30))])),
+            .printable("A")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.foreground == .rgb(10, 20, 30))
+    }
+
+    @Test func foreground_default_resets_only_foreground() async {
+        let model = ScreenModel(cols: 5, rows: 1)
+        await model.apply([
+            .csi(.sgr([.foreground(.ansi16(1)), .background(.ansi16(4))])),
+            .csi(.sgr([.foreground(.default)])),
+            .printable("A")
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.foreground == .default)
+        #expect(snap[0, 0].style.background == .ansi16(4))
+    }
+}

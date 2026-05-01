@@ -398,3 +398,61 @@ struct CSICursorParseTests {
                 == [.csi(.cursorPosition(row: 4, col: 0))])
     }
 }
+
+// MARK: - SGR
+
+struct SGRParseTests {
+
+    @Test func empty_sgr_is_reset() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x6D])) == [.csi(.sgr([.reset]))])
+    }
+
+    @Test func sgr_bold() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x6D])) == [.csi(.sgr([.bold]))])
+    }
+
+    @Test func sgr_foreground_red() {
+        var parser = TerminalParser()
+        // ESC [ 31 m
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x33, 0x31, 0x6D]))
+                == [.csi(.sgr([.foreground(.ansi16(1))]))])
+    }
+
+    @Test func sgr_bold_red_combined() {
+        var parser = TerminalParser()
+        // ESC [ 1 ; 31 m
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x31, 0x6D]))
+                == [.csi(.sgr([.bold, .foreground(.ansi16(1))]))])
+    }
+
+    @Test func sgr_bright_foreground() {
+        var parser = TerminalParser()
+        // ESC [ 91 m  → fg .ansi16(9)
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x39, 0x31, 0x6D]))
+                == [.csi(.sgr([.foreground(.ansi16(9))]))])
+    }
+
+    @Test func sgr_palette256_foreground() {
+        var parser = TerminalParser()
+        // ESC [ 38 ; 5 ; 196 m
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x33, 0x38, 0x3B, 0x35, 0x3B, 0x31, 0x39, 0x36, 0x6D]))
+                == [.csi(.sgr([.foreground(.palette256(196))]))])
+    }
+
+    @Test func sgr_truecolor_background() {
+        var parser = TerminalParser()
+        // ESC [ 48 ; 2 ; 255 ; 128 ; 0 m
+        let bytes: [UInt8] = [0x1B, 0x5B, 0x34, 0x38, 0x3B, 0x32, 0x3B,
+                              0x32, 0x35, 0x35, 0x3B, 0x31, 0x32, 0x38, 0x3B, 0x30, 0x6D]
+        #expect(parser.parse(Data(bytes))
+                == [.csi(.sgr([.background(.rgb(255, 128, 0))]))])
+    }
+
+    @Test func sgr_default_foreground() {
+        var parser = TerminalParser()
+        #expect(parser.parse(Data([0x1B, 0x5B, 0x33, 0x39, 0x6D]))
+                == [.csi(.sgr([.foreground(.default)]))])
+    }
+}
