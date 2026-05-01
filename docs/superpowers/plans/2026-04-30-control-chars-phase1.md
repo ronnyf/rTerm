@@ -2810,7 +2810,7 @@ visually unsupported until Phase 2."
 
 ### Steps
 
-- [ ] **Step 1: Build `TerminalIntegrationTests.swift` with inline fixtures**
+- [x] **Step 1: Build `TerminalIntegrationTests.swift` with inline fixtures**
 
 Create `TermCoreTests/TerminalIntegrationTests.swift` with byte sequences defined inline as `[UInt8]` literals. Each fixture is commented with the decoded VT meaning so the test is self-documenting:
 
@@ -2912,7 +2912,7 @@ import Foundation
 
 **Why inline `[UInt8]` instead of bundle resources:** adding `Fixtures/*.bin` as Copy-Bundle-Resources requires a pbxproj edit that's fragile for subagents. Inline sequences are short, reviewable in PRs, and self-documenting. If the fixture corpus grows beyond a few KB or we capture long real-world traces, Phase 3 can introduce a proper bundle-resources layout.
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add TermCoreTests/TerminalIntegrationTests.swift
