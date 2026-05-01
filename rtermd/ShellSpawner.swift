@@ -139,8 +139,8 @@ extension Shell {
         }
 
         // Decode the NUL-terminated tty path forkpty wrote into `ttyNameBuf`.
-        let ttyName = ttyNameBuf.withUnsafeBufferPointer { buf -> String in
-            String(cString: buf.baseAddress!)
+        let ttyName: String = ttyNameBuf.withUnsafeBytes { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
         }
         return SpawnResult(pid: pid, primaryFD: primaryFD, ttyName: ttyName)
     }
