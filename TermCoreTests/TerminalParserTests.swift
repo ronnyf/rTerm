@@ -218,8 +218,10 @@ struct TerminalParserStateMachineTests {
 
     @Test func unterminated_csi_then_esc_drops_first_sequence() {
         var parser = TerminalParser()
-        let events = parser.parse(Data([0x1B, 0x5B, 0x31, 0x32, 0x1B, 0x5B, 0x33, 0x6D]))
-        #expect(events == [.csi(.unknown(params: [3], intermediates: [], final: 0x6D))])
+        // Second sequence uses final 0x6E ('n', DSR) — stays .unknown because
+        // it's not in mapCSI's typed set. 0x6D ('m') would parse as SGR.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x31, 0x32, 0x1B, 0x5B, 0x33, 0x6E]))
+        #expect(events == [.csi(.unknown(params: [3], intermediates: [], final: 0x6E))])
     }
 
     @Test func osc_terminated_by_st_emits_unknown_osc() {
@@ -254,7 +256,8 @@ struct TerminalParserStateMachineTests {
             if i > 0 { bytes.append(0x3B) }
             bytes.append(0x31)
         }
-        bytes.append(0x6D)
+        // Final 0x6E ('n', DSR) stays .unknown so we can inspect raw params.
+        bytes.append(0x6E)
         let events = parser.parse(Data(bytes))
         guard case .csi(.unknown(let params, _, _)) = events[0] else {
             Issue.record("expected .csi(.unknown(...))"); return
@@ -294,11 +297,12 @@ struct TerminalParserStateMachineTests {
 
     @Test func lf_mid_csi_executes_and_csi_completes() {
         var parser = TerminalParser()
-        // ESC [ 1 ; 3 LF m — LF should execute and the CSI should continue
-        let events = parser.parse(Data([0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x0A, 0x6D]))
+        // ESC [ 1 ; 3 LF n — LF should execute and the CSI should continue.
+        // Final 0x6E ('n', DSR) stays .unknown; 0x6D ('m') would parse as SGR.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x0A, 0x6E]))
         #expect(events == [
             .c0(.lineFeed),
-            .csi(.unknown(params: [1, 3], intermediates: [], final: 0x6D))
+            .csi(.unknown(params: [1, 3], intermediates: [], final: 0x6E))
         ])
     }
 
