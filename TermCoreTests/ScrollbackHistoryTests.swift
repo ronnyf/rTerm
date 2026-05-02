@@ -81,4 +81,13 @@ struct ScrollbackHistoryTests {
         let t = h.tail(100)
         #expect(t == [row("x"), row("y")])
     }
+
+    @Test("tail(0) returns empty regardless of validCount")
+    func test_tail_zero() {
+        var h = ScrollbackHistory(capacity: 10)
+        #expect(h.tail(0) == [], "tail(0) on empty history is empty")
+        h.push(row("x"))
+        h.push(row("y"))
+        #expect(h.tail(0) == [], "tail(0) on populated history is also empty")
+    }
 }

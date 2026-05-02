@@ -9,6 +9,7 @@
 import Foundation
 import Testing
 @testable import rTerm
+@testable import TermCore
 
 @Suite("Bracketed paste")
 struct BracketedPasteTests {
@@ -48,5 +49,35 @@ struct BracketedPasteTests {
         let middleEnd = wrapped.count - 6
         let middle = wrapped.subdata(in: middleStart..<middleEnd)
         #expect(middle == payload)
+    }
+
+    // MARK: - Integration: pastePayload reads bracketedPaste from a real snapshot
+
+    @Test("pastePayload wraps when shell has set DEC mode 2004 (real ScreenModel snapshot)")
+    func test_pastePayload_wraps_when_shell_enables_2004() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.bracketedPaste, enabled: true))])
+        let snap = model.latestSnapshot()
+        #expect(snap.bracketedPaste == true,
+                "Sanity: snapshot must reflect enabled bracketedPaste before payload check")
+        let data = TerminalSession.pastePayload(text: "x", snapshot: snap)
+        #expect(data == Data([0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E])
+                + "x".data(using: .utf8)!
+                + Data([0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]))
+    }
+
+    @Test("pastePayload sends raw bytes when DEC mode 2004 is off (real ScreenModel snapshot)")
+    func test_pastePayload_raw_when_shell_disables_2004() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        // Default state has bracketedPaste=false. Toggle on then off to verify
+        // the off path drops the envelope.
+        await model.apply([
+            .csi(.setMode(.bracketedPaste, enabled: true)),
+            .csi(.setMode(.bracketedPaste, enabled: false)),
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap.bracketedPaste == false)
+        let data = TerminalSession.pastePayload(text: "x", snapshot: snap)
+        #expect(data == "x".data(using: .utf8))
     }
 }

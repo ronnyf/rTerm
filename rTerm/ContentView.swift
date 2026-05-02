@@ -29,9 +29,9 @@ import TermCore
 class TerminalSession {
     let screenModel: ScreenModel
 
-    /// Mirror of `ScreenModel.currentWindowTitle()` kept in sync from the
-    /// response handler. Drives SwiftUI `.navigationTitle`; `nil` until the
-    /// shell issues OSC 0 / OSC 2.
+    /// Mirror of the snapshot's `windowTitle` kept in sync from the response
+    /// handler. Drives SwiftUI `.navigationTitle`; `nil` until the shell
+    /// issues OSC 0 / OSC 2.
     var windowTitle: String? = nil
 
     @ObservationIgnored
@@ -126,11 +126,18 @@ class TerminalSession {
         return data
     }
 
+    /// Compose the bytes a paste should send by reading `bracketedPaste` from
+    /// the snapshot and applying `bracketedPasteWrap`. Pure (no actor state,
+    /// no I/O) so tests can verify the snapshot-read + wrap composition end
+    /// to end with a real `ScreenSnapshot`.
+    nonisolated public static func pastePayload(text: String, snapshot: ScreenSnapshot) -> Data {
+        bracketedPasteWrap(text, enabled: snapshot.bracketedPaste)
+    }
+
     /// Send pasted text to the active session, wrapping if the shell has
     /// enabled bracketed paste (mode 2004).
     func paste(_ text: String) {
-        let enabled = screenModel.latestSnapshot().bracketedPaste
-        let data = Self.bracketedPasteWrap(text, enabled: enabled)
+        let data = Self.pastePayload(text: text, snapshot: screenModel.latestSnapshot())
         sendInput(data)
     }
 
@@ -160,23 +167,24 @@ class TerminalSession {
         // the closure captures `self` and reaches `self.parser` through it.
         client.setResponseHandler { [self] response in
             switch response {
-            // .output uses ScreenModel.applyAndCurrentTitle to collapse the apply
-            // and title read into one actor hop — this narrows the race where
-            // two rapid chunks' MainActor continuations could reorder the title
-            // reads. Task 7's snapshot reshape eliminates the MainActor race
-            // entirely by publishing windowTitle through the nonisolated snapshot.
+            // .output applies the parsed events on the actor, then reads the
+            // resulting windowTitle from the published nonisolated snapshot —
+            // no second actor hop. The snapshot's windowTitle reflects the
+            // state immediately after this batch's apply, so two rapid
+            // chunks' MainActor continuations cannot reorder the title reads.
             case .output(_, let data):
                 log.debug("Received output: \(data.count) bytes")
                 let events = self.parser.withLock { $0.parse(data) }
                 Task { @MainActor in
-                    self.windowTitle = await screenModel.applyAndCurrentTitle(events)
+                    await screenModel.apply(events)
+                    self.windowTitle = screenModel.latestSnapshot().windowTitle
                 }
 
             case .attachPayload(_, let payload):
                 log.info("Received attach payload")
                 Task { @MainActor in
                     await screenModel.restore(from: payload)
-                    self.windowTitle = await screenModel.currentWindowTitle()
+                    self.windowTitle = screenModel.latestSnapshot().windowTitle
                 }
 
             case .sessionEnded(let sid, let exitCode):
