@@ -24,6 +24,13 @@ import Dispatch
 import os
 import Synchronization
 
+/// Inclusive 0-indexed row range that limits where natural scrolls move data.
+/// `nil` `scrollRegion` on a `Buffer` means full-screen (default).
+private struct ScrollRegion: Sendable, Equatable {
+    var top: Int       // 0-indexed inclusive
+    var bottom: Int    // 0-indexed inclusive
+}
+
 /// The terminal screen model: owns a grid of cells, processes terminal events,
 /// and publishes snapshots for the renderer.
 ///
@@ -48,14 +55,13 @@ public actor ScreenModel {
     /// is provided, a private serial queue is created automatically.
     private let executorQueue: DispatchSerialQueue
 
-    /// Flat row-major grid storage: `grid[row * cols + col]`.
-    private var grid: ContiguousArray<Cell>
-
-    /// Current write position.
-    private var cursor: Cursor
-
-    /// CSI s / u save/restore state.
-    private var savedCursor: Cursor?
+    /// Per-buffer mutable grid + cursor state. The active buffer (selected by
+    /// ``activeKind``) is the one mutated by event handlers; the inactive one
+    /// is preserved in place so alt-screen swap (Phase 2 T4) only flips the
+    /// selector.
+    private var main: Buffer
+    private var alt: Buffer
+    private var activeKind: BufferKind = .main
 
     /// Current SGR pen — stamped onto every cell written via `handlePrintable`.
     /// Mutated by `applySGR`; reset to `.default` on SGR `0`.
@@ -98,6 +104,40 @@ public actor ScreenModel {
         executorQueue.asUnownedSerialExecutor()
     }
 
+    // MARK: - Buffer
+
+    /// Per-buffer mutable state. Both `main` and `alt` are full instances;
+    /// `activeKind` selects which one event handlers mutate.
+    private struct Buffer: Sendable {
+        var grid: ContiguousArray<Cell>
+        var cursor: Cursor
+        var savedCursor: Cursor?
+        var scrollRegion: ScrollRegion?
+
+        init(rows: Int, cols: Int) {
+            self.grid = ContiguousArray(repeating: .empty, count: rows * cols)
+            self.cursor = Cursor(row: 0, col: 0)
+            self.savedCursor = nil
+            self.scrollRegion = nil
+        }
+    }
+
+    // MARK: - Active-buffer access
+
+    /// Yields an inout reference to whichever buffer is currently active.
+    /// All event handlers that mutate per-buffer state route through here.
+    private func mutateActive<R>(_ body: (inout Buffer) -> R) -> R {
+        switch activeKind {
+        case .main: return body(&main)
+        case .alt:  return body(&alt)
+        }
+    }
+
+    /// Read-only view of the currently active buffer.
+    private var active: Buffer {
+        activeKind == .main ? main : alt
+    }
+
     // MARK: - Initialization
 
     /// Creates a screen model with the given dimensions.
@@ -115,15 +155,15 @@ public actor ScreenModel {
         self.executorQueue = q as! DispatchSerialQueue
         self.cols = cols
         self.rows = rows
-        let cursor = Cursor(row: 0, col: 0)
-        self.cursor = cursor
-        let grid = ContiguousArray(repeating: Cell.empty, count: rows * cols)
-        self.grid = grid
+        let main = Buffer(rows: rows, cols: cols)
+        let alt = Buffer(rows: rows, cols: cols)
+        self.main = main
+        self.alt = alt
         let initial = ScreenSnapshot(
-            activeCells: grid,
+            activeCells: main.grid,
             cols: cols,
             rows: rows,
-            cursor: cursor,
+            cursor: main.cursor,
             cursorVisible: true,
             activeBuffer: .main,
             windowTitle: nil,
@@ -173,13 +213,14 @@ public actor ScreenModel {
     /// Build a fresh snapshot from the current state and swap it into the
     /// lock-protected cache. Called only when `apply(_:)` reports a real change.
     private func publishSnapshot() {
+        let buf = active
         let snap = ScreenSnapshot(
-            activeCells: grid,
+            activeCells: buf.grid,
             cols: cols,
             rows: rows,
-            cursor: snapshotCursor(),
-            cursorVisible: true,   // Phase 2 will use modes.cursorVisible
-            activeBuffer: .main,   // Phase 2 tracks alt
+            cursor: snapshotCursor(from: buf),
+            cursorVisible: true,         // T3 reads modes.cursorVisible
+            activeBuffer: activeKind,
             windowTitle: windowTitle,
             version: version
         )
@@ -189,14 +230,16 @@ public actor ScreenModel {
     // MARK: - Event handlers (all return Bool; true = state mutated = version bump)
 
     private func handlePrintable(_ char: Character) -> Bool {
-        if cursor.col >= cols {
-            cursor.col = 0
-            cursor.row += 1
-            if cursor.row >= rows { scrollUp() }
+        return mutateActive { buf in
+            if buf.cursor.col >= cols {
+                buf.cursor.col = 0
+                buf.cursor.row += 1
+                if buf.cursor.row >= rows { Self.scrollUp(in: &buf, cols: cols, rows: rows) }
+            }
+            buf.grid[buf.cursor.row * cols + buf.cursor.col] = Cell(character: char, style: pen)
+            buf.cursor.col += 1
+            return true
         }
-        grid[cursor.row * cols + cursor.col] = Cell(character: char, style: pen)
-        cursor.col += 1
-        return true
     }
 
     private func handleC0(_ control: C0Control) -> Bool {
@@ -204,71 +247,97 @@ public actor ScreenModel {
         case .nul, .bell, .shiftOut, .shiftIn, .delete:
             return false
         case .backspace:
-            guard cursor.col > 0 else { return false }
-            cursor.col -= 1
-            return true
+            return mutateActive { buf in
+                guard buf.cursor.col > 0 else { return false }
+                buf.cursor.col -= 1
+                return true
+            }
         case .horizontalTab:
-            let next = min(cols - 1, ((cursor.col / 8) + 1) * 8)
-            guard next != cursor.col else { return false }
-            cursor.col = next
-            return true
+            return mutateActive { buf in
+                let next = min(cols - 1, ((buf.cursor.col / 8) + 1) * 8)
+                guard next != buf.cursor.col else { return false }
+                buf.cursor.col = next
+                return true
+            }
         case .lineFeed, .verticalTab, .formFeed:
-            cursor.col = 0
-            cursor.row += 1
-            if cursor.row >= rows { scrollUp() }
-            return true
+            return mutateActive { buf in
+                buf.cursor.col = 0
+                buf.cursor.row += 1
+                if buf.cursor.row >= rows { Self.scrollUp(in: &buf, cols: cols, rows: rows) }
+                return true
+            }
         case .carriageReturn:
-            guard cursor.col != 0 else { return false }
-            cursor.col = 0
-            return true
+            return mutateActive { buf in
+                guard buf.cursor.col != 0 else { return false }
+                buf.cursor.col = 0
+                return true
+            }
         }
     }
 
-    private func clampCursor() {
-        cursor.row = max(0, min(rows - 1, cursor.row))
-        cursor.col = max(0, min(cols - 1, cursor.col))
+    private func clampCursor(in buf: inout Buffer) {
+        buf.cursor.row = max(0, min(rows - 1, buf.cursor.row))
+        buf.cursor.col = max(0, min(cols - 1, buf.cursor.col))
     }
 
     private func handleCSI(_ cmd: CSICommand) -> Bool {
         switch cmd {
         case .cursorUp(let n):
-            cursor.row -= max(1, n)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.row -= max(1, n)
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorDown(let n):
-            cursor.row += max(1, n)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.row += max(1, n)
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorForward(let n):
-            cursor.col += max(1, n)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.col += max(1, n)
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorBack(let n):
-            cursor.col -= max(1, n)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.col -= max(1, n)
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorPosition(let r, let c):
-            cursor.row = r
-            cursor.col = c
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.row = r
+                buf.cursor.col = c
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorHorizontalAbsolute(let n):
             // Parser emits VT 1-indexed value; shift to 0-indexed on consume.
-            cursor.col = max(0, n - 1)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.col = max(0, n - 1)
+                clampCursor(in: &buf)
+                return true
+            }
         case .verticalPositionAbsolute(let n):
-            cursor.row = max(0, n - 1)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.row = max(0, n - 1)
+                clampCursor(in: &buf)
+                return true
+            }
         case .saveCursor:
-            savedCursor = cursor
-            return false    // Pure cursor state — snapshot unchanged.
+            return mutateActive { buf in
+                buf.savedCursor = buf.cursor
+                return false   // pure cursor state — no visible change.
+            }
         case .restoreCursor:
-            guard let saved = savedCursor else { return false }
-            cursor = saved
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                guard let saved = buf.savedCursor else { return false }
+                buf.cursor = saved
+                clampCursor(in: &buf)
+                return true
+            }
         case .eraseInDisplay(let region):
             eraseInDisplay(region)
             return true
@@ -323,27 +392,31 @@ public actor ScreenModel {
     }
 
     private func eraseInDisplay(_ region: EraseRegion) {
-        let idx = cursor.row * cols + cursor.col
-        switch region {
-        case .toEnd:
-            for i in idx..<(rows * cols) { grid[i] = Cell(character: " ") }
-        case .toBegin:
-            for i in 0...idx where i < rows * cols { grid[i] = Cell(character: " ") }
-        case .all, .scrollback:
-            // .scrollback is Phase 2; treat as .all for Phase 1.
-            for i in 0..<(rows * cols) { grid[i] = Cell(character: " ") }
+        mutateActive { buf in
+            let idx = buf.cursor.row * cols + buf.cursor.col
+            switch region {
+            case .toEnd:
+                for i in idx..<(rows * cols) { buf.grid[i] = .empty }
+            case .toBegin:
+                for i in 0...idx where i < rows * cols { buf.grid[i] = .empty }
+            case .all, .scrollback:
+                // .scrollback is handled in T6 once history exists; for now treat as .all.
+                for i in 0..<(rows * cols) { buf.grid[i] = .empty }
+            }
         }
     }
 
     private func eraseInLine(_ region: EraseRegion) {
-        let rowStart = cursor.row * cols
-        switch region {
-        case .toEnd:
-            for c in cursor.col..<cols { grid[rowStart + c] = Cell(character: " ") }
-        case .toBegin:
-            for c in 0...cursor.col where c < cols { grid[rowStart + c] = Cell(character: " ") }
-        case .all, .scrollback:
-            for c in 0..<cols { grid[rowStart + c] = Cell(character: " ") }
+        mutateActive { buf in
+            let rowStart = buf.cursor.row * cols
+            switch region {
+            case .toEnd:
+                for c in buf.cursor.col..<cols { buf.grid[rowStart + c] = .empty }
+            case .toBegin:
+                for c in 0...buf.cursor.col where c < cols { buf.grid[rowStart + c] = .empty }
+            case .all, .scrollback:
+                for c in 0..<cols { buf.grid[rowStart + c] = .empty }
+            }
         }
     }
 
@@ -373,8 +446,22 @@ public actor ScreenModel {
             snapshot.activeCells.count == snapshot.rows * snapshot.cols,
             "Snapshot has \(snapshot.activeCells.count) cells; expected \(snapshot.rows * snapshot.cols)"
         )
-        self.grid = snapshot.activeCells
-        self.cursor = snapshot.cursor
+        // Restore into the buffer indicated by the snapshot. The other buffer is
+        // reset to a fresh empty state — when the daemon hasn't recorded alt
+        // contents (Phase 2 doesn't carry alt grids over the wire), starting alt
+        // from blank is the only safe default.
+        var seeded = Buffer(rows: rows, cols: cols)
+        seeded.grid = snapshot.activeCells
+        seeded.cursor = snapshot.cursor
+        switch snapshot.activeBuffer {
+        case .main:
+            self.main = seeded
+            self.alt = Buffer(rows: rows, cols: cols)
+        case .alt:
+            self.alt = seeded
+            self.main = Buffer(rows: rows, cols: cols)
+        }
+        self.activeKind = snapshot.activeBuffer
         self.windowTitle = snapshot.windowTitle
         self.version = snapshot.version
         publishSnapshot()
@@ -388,13 +475,14 @@ public actor ScreenModel {
     /// pending (`col >= cols`), the snapshot cursor reports the position the
     /// next printable character would land at.
     public func snapshot() -> ScreenSnapshot {
-        ScreenSnapshot(
-            activeCells: grid,
+        let buf = active
+        return ScreenSnapshot(
+            activeCells: buf.grid,
             cols: cols,
             rows: rows,
-            cursor: snapshotCursor(),
+            cursor: snapshotCursor(from: buf),
             cursorVisible: true,
-            activeBuffer: .main,
+            activeBuffer: activeKind,
             windowTitle: windowTitle,
             version: version
         )
@@ -447,32 +535,32 @@ public actor ScreenModel {
     /// Compute the cursor position for a snapshot. When a deferred wrap is
     /// pending (`col >= cols`), the returned cursor is at the start of the
     /// next row (or the last row if a scroll would occur).
-    private func snapshotCursor() -> Cursor {
-        guard cursor.col >= cols else { return cursor }
-        let nextRow = cursor.row + 1
-        if nextRow >= rows {
-            return Cursor(row: rows - 1, col: 0)
-        }
+    private func snapshotCursor(from buf: Buffer) -> Cursor {
+        let c = buf.cursor
+        guard c.col >= cols else { return c }
+        let nextRow = c.row + 1
+        if nextRow >= rows { return Cursor(row: rows - 1, col: 0) }
         return Cursor(row: nextRow, col: 0)
     }
 
-    /// Shift all rows up by one, discarding row 0 and filling the last row
-    /// with empty cells. Cursor row is clamped to `rows - 1`.
-    private func scrollUp() {
-        // Move rows 1..<rows into 0..<rows-1 in the flat array.
-        let stride = cols
+    /// Shifts all rows in `buf` up by one, discarding the top row and clearing the
+    /// last row. Cursor row clamped to `rows - 1`. Static so handlers can call it
+    /// inside a `mutateActive` closure without re-entering the helper.
+    ///
+    /// T6 will add a history-feed path: when `buf` is the main buffer, the evicted
+    /// row gets pushed to scrollback. For T2 we just discard, matching Phase 1.
+    private static func scrollUp(in buf: inout Buffer, cols: Int, rows: Int) {
         for dstRow in 0 ..< (rows - 1) {
-            let srcStart = (dstRow + 1) * stride
-            let dstStart = dstRow * stride
-            for col in 0 ..< stride {
-                grid[dstStart + col] = grid[srcStart + col]
+            let srcStart = (dstRow + 1) * cols
+            let dstStart = dstRow * cols
+            for col in 0 ..< cols {
+                buf.grid[dstStart + col] = buf.grid[srcStart + col]
             }
         }
-        // Clear the last row.
-        let lastRowStart = (rows - 1) * stride
-        for col in 0 ..< stride {
-            grid[lastRowStart + col] = Cell.empty
+        let lastRowStart = (rows - 1) * cols
+        for col in 0 ..< cols {
+            buf.grid[lastRowStart + col] = .empty
         }
-        cursor.row = rows - 1
+        buf.cursor.row = rows - 1
     }
 }
