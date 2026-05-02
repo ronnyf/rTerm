@@ -31,8 +31,8 @@
 
 **Files:**
 - Modify: `TermCore/DaemonProtocol.swift` (add `.writeback` case)
-- Modify: `TermCore/ScreenModel.swift` (add `writebackSink` property + public `installWritebackSink(_:)`)
-- Modify: `rtermd/Session.swift` (install sink on the per-session model; write to PTY primary when sink fires)
+- Modify: `TermCore/ScreenModel.swift` (add `writebackSink` property + actor-isolated `installWritebackSink(_:)`)
+- Modify: `rtermd/Session.swift` (install sink from within `startOutputHandler()`'s `assumeIsolated` block; write to PTY primary when sink fires)
 - Create: `TermCoreTests/WritebackSinkTests.swift`
 
 ### Steps
@@ -80,21 +80,29 @@ internal func emitWriteback(_ data: Data) {
 
 - [ ] **Step 3: Install the sink in `rtermd/Session.swift`**
 
-Find `Session.init` (or the point where the per-session `ScreenModel` is created). After model construction:
+**API notes — verified against `rtermd/Session.swift` and `TermCore/ScreenModel.swift`:**
+- `ScreenModel` is a `public actor` (line 49). Calling an actor-isolated method from `Session.init` (which is nonisolated) is illegal without `await` or `assumeIsolated`. The existing Phase 2 pattern (line 199) uses `screenModel.assumeIsolated { model in model.apply(events) }` because the actor's executor queue is the daemon queue we're already on.
+- `Session` has a `broadcast(_:)` method (line 216) that takes a `DaemonResponse` and iterates `attachedClients`. It does **not** have a method named `fanOutResponse`. The `fanOutToClients(_:)` helper wraps raw bytes; `broadcast(_:)` is the typed helper to use here.
+- `Session.init` runs before `startOutputHandler()` on a different thread than the daemon queue — it is NOT safe to call `assumeIsolated` from `init`. Install the sink lazily in `startOutputHandler()`, where the handler is already guaranteed to execute on the daemon queue (the actor's executor).
+
+Extend `Session` with sink installation tied to `startOutputHandler`, which already runs on the daemon queue:
 
 ```swift
-model.installWritebackSink { [weak self] bytes in
-    // Runs on the actor's executor. Session queue is serial, so a
-    // direct write to the PTY primary is safe.
-    guard let self else { return }
-    self.writeToPTY(bytes)
-    // Fan out the writeback to attached clients so their parsers see
-    // the same bytes (shell will also see them echoed back via the PTY).
-    self.fanOutResponse(.writeback(sessionID: self.id, data: bytes))
+// In Session.swift, inside startOutputHandler(), after the precondition checks
+// and before installing the dispatch source:
+screenModel.assumeIsolated { model in
+    model.installWritebackSink { [weak self] bytes in
+        // This closure is invoked from inside the actor (on the daemon queue)
+        // whenever ScreenModel.emitWriteback fires. Session's own storage is
+        // queue-serialized, so writeToPTY and broadcast are safe to call here.
+        guard let self else { return }
+        self.writeToPTY(bytes)
+        self.broadcast(.writeback(sessionID: self.id, data: bytes))
+    }
 }
 ```
 
-Implement `writeToPTY(_:)` if it does not exist — it is a thin wrapper over the existing `write(primaryFD, bytes, …)` path used for client input. Grep `rg -n "write\(.*primary" rtermd/` to find the existing call site and factor out.
+Implement `writeToPTY(_:)` as a private wrapper over the existing `write(_:)` method (line 272 of `Session.swift`), or inline the call — `Session.write(_:)` already performs the full-write loop against `primaryFD`. Name choice: keep the existing `write(_:)` signature and call `self.write(bytes)` directly from the sink closure.
 
 - [ ] **Step 4: Write unit test for the sink**
 
@@ -829,32 +837,57 @@ struct TerminalModes: Equatable, Codable {
 
 - [ ] **Step 3: Wire `handleSetMode`**
 
+**API note — verified against `TermCore/ScreenModel.swift`:** `active` is a get-only computed property (line 191-193); mutations must route through `mutateActive { buf in … }`. `scrollRegion` is a `ScrollRegion?` field on `Buffer` (line 158), not on `ScreenModel`; `ScrollRegion.top: Int` is non-optional. `Cursor.zero` is added by Track B Task 4; this task depends on it.
+
 ```swift
 case .originMode:
     guard modes.originMode != enabled else { return false }
     modes.originMode = enabled
     // Per VT spec, setting/resetting DECOM homes the cursor (to origin
     // of the new coordinate space).
-    if modes.originMode {
-        active.cursor = Cursor(row: scrollRegion.top ?? 0, col: 0)
-    } else {
-        active.cursor = Cursor.zero
+    mutateActive { buf in
+        if enabled {
+            // Origin-relative: home is the scroll region's top (or row 0
+            // when no region is set).
+            buf.cursor = Cursor(row: buf.scrollRegion?.top ?? 0, col: 0)
+        } else {
+            buf.cursor = Cursor.zero
+        }
     }
     return true
 ```
 
 - [ ] **Step 4: Translate cursor-position CSI handlers**
 
-In `handleCSI`, wrap each absolute-positioning handler (`cursorPosition`, `verticalPositionAbsolute`, `cursorHorizontalAbsolute`, `saveCursor`/`restoreCursor`) with a translation:
+**API note — verified against `TermCore/ScreenModel.swift`:** the existing handlers for `.cursorPosition`, `.cursorHorizontalAbsolute`, `.verticalPositionAbsolute` already go through `mutateActive { buf in … clampCursor(in: &buf) … }`. The translation below preserves that pattern; add DECOM-aware offsets inside the existing closure.
+
+In `handleCSI`, modify each absolute-positioning handler (`cursorPosition`, `verticalPositionAbsolute`, `cursorHorizontalAbsolute`) to translate when DECOM is set. `saveCursor`/`restoreCursor` operate on whatever coordinate space was active at save time — no DECOM translation needed on either side (save stores the absolute row/col; restore puts them back absolute). Example rewrite for `.cursorPosition`:
 
 ```swift
-case .cursorPosition(let row, let col):
-    let effectiveRow = modes.originMode ? row + (scrollRegion.top ?? 0) : row
-    active.cursor = Cursor(row: effectiveRow, col: col)
-    clampCursorToRegion()  // if origin mode, clamp to scroll region; else clamp to screen
+case .cursorPosition(let r, let c):
+    return mutateActive { buf in
+        let topOffset = self.modes.originMode ? (buf.scrollRegion?.top ?? 0) : 0
+        buf.cursor.row = r + topOffset
+        buf.cursor.col = c
+        self.clampCursorToRegion(in: &buf)
+        return true
+    }
 ```
 
-Introduce a `clampCursorToRegion()` helper that respects DECOM state.
+Introduce a `clampCursorToRegion(in:)` helper that respects DECOM state — when DECOM is on and `buf.scrollRegion != nil`, clamp `buf.cursor.row` to `[region.top, region.bottom]`; otherwise clamp to `[0, rows - 1]` as `clampCursor(in:)` already does. Column clamping is unchanged by DECOM.
+
+```swift
+private func clampCursorToRegion(in buf: inout Buffer) {
+    if modes.originMode, let region = buf.scrollRegion {
+        buf.cursor.row = max(region.top, min(region.bottom, buf.cursor.row))
+    } else {
+        buf.cursor.row = max(0, min(rows - 1, buf.cursor.row))
+    }
+    buf.cursor.col = max(0, min(cols - 1, buf.cursor.col))
+}
+```
+
+Apply the same `topOffset` translation pattern to `.verticalPositionAbsolute` (row only) and leave `.cursorHorizontalAbsolute` unchanged (column only — DECOM doesn't affect horizontal translation).
 
 - [ ] **Step 5: Tests**
 
@@ -1367,7 +1400,21 @@ struct HyperlinkSchemeTests {
 
 - [ ] **Step 3: Add hover tracking to `TerminalMTKView`**
 
-In `rTerm/TermView.swift`, extend `TerminalMTKView` with a `hoveredCell: (row: Int, col: Int)?` property and override `mouseMoved`:
+**API notes — verified against `rTerm/RenderCoordinator.swift` and `rTerm/GlyphAtlas.swift`:**
+- `RenderCoordinator` does not expose any `glyphMetrics` accessor. Per-atlas cell metrics live on `GlyphAtlas.cellWidth: CGFloat` and `GlyphAtlas.cellHeight: CGFloat` (lines 66, 68). All four atlas variants share the same cell metrics because they use the same monospace font face and size.
+- Add a `cellSize: CGSize` computed property to `RenderCoordinator` that reads from the cached `regularAtlas` — this is the new accessor the hover math depends on. Landing it is a prerequisite sub-step.
+
+Add to `RenderCoordinator` (e.g., near the existing `screenModelForView` accessor around line 72):
+
+```swift
+/// Per-cell pixel geometry used by hover-to-cell mapping. All four atlas
+/// variants share metrics; read from `regularAtlas` as the canonical source.
+var cellSize: CGSize {
+    CGSize(width: regularAtlas.cellWidth, height: regularAtlas.cellHeight)
+}
+```
+
+Then extend `TerminalMTKView` with `hoveredCell: (row: Int, col: Int)?` and override `mouseMoved(with:)`:
 
 ```swift
 override func updateTrackingAreas() {
@@ -1380,7 +1427,7 @@ override func updateTrackingAreas() {
 override func mouseMoved(with event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
     let cell = cellCoordinate(at: point)
-    if cell.row != hoveredCell?.row || cell.col != hoveredCell?.col {
+    if cell?.row != hoveredCell?.row || cell?.col != hoveredCell?.col {
         hoveredCell = cell
         coordinator?.setHoveredCell(cell, view: self)
         needsDisplay = true
@@ -1388,8 +1435,9 @@ override func mouseMoved(with event: NSEvent) {
 }
 
 private func cellCoordinate(at point: NSPoint) -> (row: Int, col: Int)? {
-    // Pixel-to-cell conversion using coordinator's cached glyph metrics.
-    guard let metrics = coordinator?.glyphMetrics else { return nil }
+    // Pixel-to-cell using the coordinator's exposed cellSize.
+    guard let metrics = coordinator?.cellSize,
+          metrics.width > 0, metrics.height > 0 else { return nil }
     let col = Int(point.x / metrics.width)
     let row = Int((bounds.height - point.y) / metrics.height)
     return (row, col)
@@ -1600,12 +1648,19 @@ case .setClipboard(let target, let payload):
 
 - [ ] **Step 6: Daemon fan-out**
 
-In `rtermd/Session.swift`, install the sink at model-create time:
+**API note — see Task 1 Step 3: `Session.broadcast(_:)` is the typed helper; `fanOutResponse` does not exist. The writeback-sink install pattern from Task 1 applies identically.**
+
+In `rtermd/Session.swift`, install the clipboard sink inside `startOutputHandler()` adjacent to the writeback-sink install (both go inside the same `screenModel.assumeIsolated { model in … }` block so there's only one `assumeIsolated` hop at handler-install time):
 
 ```swift
-model.installClipboardSink { [weak self] target, payload in
-    guard let self else { return }
-    self.fanOutResponse(.clipboardWrite(sessionID: self.id, target: target, base64Payload: payload))
+screenModel.assumeIsolated { model in
+    model.installWritebackSink { [weak self] bytes in … }  // Task 1
+    model.installClipboardSink { [weak self] target, payload in
+        guard let self else { return }
+        self.broadcast(.clipboardWrite(sessionID: self.id,
+                                        target: target,
+                                        base64Payload: payload))
+    }
 }
 ```
 
@@ -1828,11 +1883,12 @@ on the app side yet — that's a Phase 4 concern (dock icon swap)."
 **Goal:** SwiftUI settings pane lets the user pick from the built-in `TerminalPalette` presets (xterm, solarized-dark, solarized-light; check the actual preset list in `TermCore/TerminalPalette.swift`). Persists via `@AppStorage`. `ContentView` reads the current selection and passes it to `RenderCoordinator`.
 
 **Files:**
+- Modify: `TermCore/TerminalPalette.swift` (add `solarizedDark` / `solarizedLight` presets + `preset(named:)` + `allPresetNames`)
 - Create: `rTerm/SettingsView.swift`
 - Modify: `rTerm/rTermApp.swift` (add `Settings` scene)
-- Modify: `rTerm/AppSettings.swift` or wherever user settings live (add `paletteName: String`)
+- Modify: `rTerm/AppSettings.swift` (add `@AppStorage`-backed `paletteName` that mutates the existing `palette`)
 - Modify: `rTerm/ContentView.swift` (observe + propagate)
-- Modify: `rTerm/RenderCoordinator.swift` (accept a palette override; default still wired through `AppSettings`)
+- Modify: `rTerm/RenderCoordinator.swift` (add palette-identity-compare in `draw(in:)` if missing)
 
 ### Steps
 
@@ -1842,53 +1898,103 @@ on the app side yet — that's a Phase 4 concern (dock icon swap)."
 rg -n "TerminalPalette|AppStorage|palette" TermCore/ rTerm/ | head -30
 ```
 
-Identify:
-- Available preset names (enumerate `TerminalPalette.preset(named:)` or a similar API).
-- Existing `AppSettings` or equivalent observable container.
-- Where `RenderCoordinator` currently resolves the palette.
+Verified during plan remediation (2026-05-02):
+- `TerminalPalette.xtermDefault` at `TermCore/TerminalPalette.swift:100` is the ONLY preset currently defined — no `solarizedDark`, no `solarizedLight`, no `xterm` alias. Step 2 below lands the missing presets.
+- `AppSettings` at `rTerm/AppSettings.swift:30` is `@Observable @MainActor public final class` with `public var palette: TerminalPalette = .xtermDefault`. Step 2 extends it; no replacement needed.
+- `RenderCoordinator.init` at `rTerm/RenderCoordinator.swift:91` takes the `settings: AppSettings` reference and caches `derivedPalette256` from `settings.palette` (line 105). The existing Phase 2 code already recomputes the 256-color table when `palette` changes; re-verify Step 5 uses that hook rather than bypassing it.
 
 - [ ] **Step 2: Add `paletteName` to settings**
 
-In `rTerm/AppSettings.swift` (or the nearest equivalent):
+**API note — verified against `rTerm/TerminalPalette.swift`:** the only preset currently defined is `TerminalPalette.xtermDefault` (line 100). `.solarizedDark` and `.solarizedLight` do not exist. This step lands the new presets **before** the settings surface wires them up, so `TerminalPalette.preset(named:)` has something to dispatch on.
+
+Add the two Solarized presets to `TermCore/TerminalPalette.swift` — RGB values are the canonical 16-slot mapping from Ethan Schoonover's Solarized palette, with "base" colors in ANSI slots 0 and 15 (dark variant inverts which base is foreground vs. background; light variant uses the opposite):
 
 ```swift
-@Observable
-@MainActor
-final class AppSettings {
-    @ObservationIgnored
-    @AppStorage("paletteName") private var storedPaletteName: String = "xterm"
+public extension TerminalPalette {
 
-    var paletteName: String {
-        get { storedPaletteName }
-        set { storedPaletteName = newValue }
-    }
+    /// Solarized Dark — Ethan Schoonover's canonical 16-slot mapping.
+    /// Background = base03 (#002b36); foreground = base0 (#839496); cursor = base1.
+    /// ANSI 0–7 = black/red/green/yellow/blue/magenta/cyan/base2; ANSI 8–15 =
+    /// base03/orange/base01/base00/base0/violet/base1/base3.
+    nonisolated static let solarizedDark: TerminalPalette = {
+        let ansi: ContiguousArray<RGBA> = [
+            RGBA(7,   54,  66),   // 0  base02 (black)
+            RGBA(220, 50,  47),   // 1  red
+            RGBA(133, 153, 0),    // 2  green
+            RGBA(181, 137, 0),    // 3  yellow
+            RGBA(38,  139, 210),  // 4  blue
+            RGBA(211, 54,  130),  // 5  magenta
+            RGBA(42,  161, 152),  // 6  cyan
+            RGBA(238, 232, 213),  // 7  base2 (white)
+            RGBA(0,   43,  54),   // 8  base03 (bright black)
+            RGBA(203, 75,  22),   // 9  orange (bright red)
+            RGBA(88,  110, 117),  // 10 base01 (bright green)
+            RGBA(101, 123, 131),  // 11 base00 (bright yellow)
+            RGBA(131, 148, 150),  // 12 base0 (bright blue)
+            RGBA(108, 113, 196),  // 13 violet (bright magenta)
+            RGBA(147, 161, 161),  // 14 base1 (bright cyan)
+            RGBA(253, 246, 227),  // 15 base3 (bright white)
+        ]
+        return TerminalPalette(
+            ansi: ansi,
+            defaultForeground: RGBA(131, 148, 150),   // base0
+            defaultBackground: RGBA(0, 43, 54),       // base03
+            cursor: RGBA(147, 161, 161))               // base1
+    }()
 
-    var palette: TerminalPalette {
-        TerminalPalette.preset(named: paletteName) ?? .xterm
-    }
+    /// Solarized Light — same 16 slots as Dark; fg/bg swap to light bases.
+    /// Background = base3 (#fdf6e3); foreground = base00 (#657b83); cursor = base01.
+    nonisolated static let solarizedLight: TerminalPalette = {
+        // Same `ansi` table as solarizedDark per the Schoonover spec — the
+        // palette is symmetric; only defaultForeground/Background/cursor differ.
+        let ansi: ContiguousArray<RGBA> = solarizedDark.ansi
+        return TerminalPalette(
+            ansi: ansi,
+            defaultForeground: RGBA(101, 123, 131),   // base00
+            defaultBackground: RGBA(253, 246, 227),   // base3
+            cursor: RGBA(88, 110, 117))                // base01
+    }()
 }
 ```
 
-If `TerminalPalette.preset(named:)` does not exist, add it:
+Then add the stable-identifier lookup:
 
 ```swift
 public extension TerminalPalette {
     /// Resolve a preset by its stable identifier. Returns nil for
-    /// unknown names; callers should fall back to `.xterm`.
+    /// unknown names; callers should fall back to `.xtermDefault`.
     static func preset(named name: String) -> TerminalPalette? {
         switch name {
-        case "xterm":            return .xterm
+        case "xterm":            return .xtermDefault
         case "solarized-dark":   return .solarizedDark
         case "solarized-light":  return .solarizedLight
         default:                 return nil
         }
     }
 
-    static let allPresetNames: [String] = ["xterm", "solarized-dark", "solarized-light"]
+    static let allPresetNames: [String] = [
+        "xterm", "solarized-dark", "solarized-light",
+    ]
 }
 ```
 
-Adjust preset identifier spelling to whatever the current palette statics expose.
+In `rTerm/AppSettings.swift` (or the nearest equivalent — verified to be `rTerm/AppSettings.swift:30`, already `@Observable @MainActor`), add the palette-name binding. The existing `AppSettings` already has a mutable `palette: TerminalPalette = .xtermDefault` property — add a persistent `paletteName` layer on top that drives it:
+
+```swift
+// In rTerm/AppSettings.swift, inside the @Observable @MainActor class:
+@ObservationIgnored
+@AppStorage("paletteName") private var storedPaletteName: String = "xterm"
+
+var paletteName: String {
+    get { storedPaletteName }
+    set {
+        storedPaletteName = newValue
+        palette = TerminalPalette.preset(named: newValue) ?? .xtermDefault
+    }
+}
+```
+
+Setting `paletteName` mutates both the stored string AND the existing `palette` property, so observers of `AppSettings.palette` (e.g., the renderer) pick up the change without extra wiring.
 
 - [ ] **Step 3: Build settings view**
 
@@ -1941,6 +2047,8 @@ If `ContentView` constructs its own `AppSettings`, migrate the construction to `
 
 - [ ] **Step 5: Propagate to renderer**
 
+**API note:** `RenderCoordinator` already caches `palette256Source: TerminalPalette` and recomputes `derivedPalette256` when the palette changes. The existing mechanism is the canonical place to pick up settings changes — do **not** add a separate `palette` property on `RenderCoordinator` that duplicates `settings.palette`.
+
 In `rTerm/ContentView.swift`:
 
 ```swift
@@ -1949,7 +2057,7 @@ In `rTerm/ContentView.swift`:
 var body: some View {
     TermView(
         screenModel: session.screenModel,
-        settings: settings,                     // pass settings, not a palette copy
+        settings: settings,
         onInput: { session.sendInput($0) },
         onPaste: { session.paste($0) }
     )
@@ -1958,14 +2066,23 @@ var body: some View {
 }
 ```
 
-In `TermView.updateNSView`, push the current palette into the coordinator:
+In `TermView.updateNSView`, trigger a redraw when the palette name changes. The existing `RenderCoordinator.draw(in:)` already reads `settings.palette` indirectly via `palette256Source` comparison — bumping `view.needsDisplay` is sufficient to force the recompute on the next frame:
 
 ```swift
-coordinator.palette = settings.palette
+// Inside updateNSView(_:context:):
 view.needsDisplay = true
 ```
 
-`RenderCoordinator.palette` becomes an observed property so draw picks it up per-frame.
+If the renderer does not currently invalidate `palette256Source` when `settings.palette` changes identity, add a cheap equality check at the top of `draw(in:)`:
+
+```swift
+if settings.palette != palette256Source {
+    palette256Source = settings.palette
+    derivedPalette256 = ColorProjection.derivePalette256(from: settings.palette)
+}
+```
+
+`TerminalPalette` conforms to `Equatable`, so `!=` is synthesized.
 
 - [ ] **Step 6: Manual visual test + commit**
 
@@ -1982,9 +2099,13 @@ git commit -m "feat(rTerm): palette chooser Settings scene
 
 Settings scene lets the user pick among built-in TerminalPalette
 presets (xterm, solarized-dark, solarized-light). Persisted via
-@AppStorage('paletteName'). TerminalPalette.preset(named:) +
-allPresetNames added to TermCore for stable-id lookup. The renderer
-picks up changes on the next draw frame — no session restart required."
+@AppStorage('paletteName'). TermCore gains solarizedDark and
+solarizedLight preset statics (canonical Schoonover 16-slot mapping),
+plus TerminalPalette.preset(named:) + allPresetNames for stable-id
+lookup. AppSettings.paletteName setter updates both the stored string
+and the existing AppSettings.palette property, so the renderer's
+existing palette256Source compare-and-recompute path picks up changes
+on the next draw — no session restart required."
 ```
 
 ---
