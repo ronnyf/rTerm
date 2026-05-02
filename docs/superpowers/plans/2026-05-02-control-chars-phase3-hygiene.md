@@ -313,7 +313,7 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
     test -quiet
 ```
 
-Expected: pass. If the active-buffer assertion fails on exit, inspect `handleAltScreen(.alternateScreen1049, enabled: false)` — the T4 correction should restore main.
+Expected: pass. If the active-buffer assertion fails on exit, inspect `handleAltScreen(.alternateScreen1049, enabled: false)` — the Phase 2 T4 alt-screen handler correction should restore main.
 
 - [ ] **Step 4: Commit**
 
@@ -1739,19 +1739,22 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
 
 Record the elapsed time in a scratch note. This measurement drives Step 5's conditional.
 
-- [ ] **Step 5: Conditional implementation — gated on Step 4 measurement**
+- [ ] **Step 5a: Commit the measurement + baseline deferral (always runs)**
 
-The spec §8 Track B item 3 gating criterion is "no regression at 60 MB/s sustained throughput." Step 4's test passes iff we meet that rate. Branch:
+The spec §8 Track B item 3 gate is the throughput-gate test from Step 4: `37_500 scrolling LFs in under 2.0 s on Apple Silicon` (≈ 60 MB/s sustained). The gate is **numerical and named** (`ScrollbackHistoryAllocationTests.test_throughput_gate`).
 
-- **If Step 4 passed (elapsed < 2.0 s):** meet the spec gate. DEFER the ring-buffer implementation. Add a doc comment in `ScreenModel+Buffer.swift` (at the `scrollAndMaybeEvict` site):
+This sub-step ALWAYS commits the instrumentation + baseline deferral. The conditional follow-up (Step 5b) fires only if the measurement exceeded the 37,500-LF / 2.0 s bound.
+
+Add a doc comment in `ScreenModel+Buffer.swift` (at the `scrollAndMaybeEvict` site):
 
 ```swift
 /// Phase 3 Track B item 3: considered allocating a fixed-size Row
 /// ring here to eliminate the per-LF ContiguousArray allocation.
-/// Benchmark (ScrollbackHistoryAllocationTests.test_throughput_gate)
-/// passed at 60 MB/s (37,500 scrolling LFs in under 2.0 s on Apple
-/// Silicon), meeting the spec §8 Track B item 3 criterion. Deferred
-/// indefinitely pending a real-world trigger.
+/// Gate: ScrollbackHistoryAllocationTests.test_throughput_gate —
+/// 37,500 scrolling LFs in under 2.0 s (60 MB/s sustained). When the
+/// gate passes, the ring-buffer optimization is deferred indefinitely;
+/// the allocation counter + throughput test remain as living
+/// documentation so a future regression trips the gate immediately.
 ```
 
 Commit the measurement + deferral:
@@ -1764,16 +1767,20 @@ git commit -m "measure(TermCore): Row per-LF allocation gated at 60 MB/s; defer
 Phase 2 efficiency research flagged ScrollbackHistory.Row per-LF
 allocation (~3.1 KB per scrolling LF) as a potential hotspot.
 Measurement: 1,000 scrolling LFs produce exactly 1,000 Row allocations.
-Throughput gate: 37,500 LFs in under 2.0 s = 60 MB/s sustained, which
-is the spec §8 Track B item 3 threshold — passing pins that we are
-NOT regressing the gate.
+Throughput gate: ScrollbackHistoryAllocationTests.test_throughput_gate —
+37,500 scrolling LFs in under 2.0 s on Apple Silicon = 60 MB/s
+sustained, the spec §8 Track B item 3 threshold. Passing the gate pins
+that we are NOT regressing it.
 
-Ring-buffer optimization deferred indefinitely. Counter + throughput
-test remain as living documentation so a future regression trips
-the gate immediately."
+Ring-buffer optimization deferred by Step 5a's baseline commit.
+Counter + throughput test remain as living documentation."
 ```
 
-- **If Step 4 failed (elapsed >= 2.0 s):** do NOT meet the spec gate. IMPLEMENT the ring. Outline:
+- [ ] **Step 5b: Ring implementation (follow-up, ONLY if the 37,500-LF / 2.0 s gate failed in Step 4)**
+
+This sub-step fires iff the `test_throughput_gate` assertion failed (elapsed >= 2.0 s on the host that ran Step 4). Skip entirely otherwise; the baseline committed in Step 5a is sufficient.
+
+Implement:
   - Add `ScrollbackHistory` private storage `_rowPool: ContiguousArray<Row>` sized at `capacity` with each element pre-allocated to `cols * stride`.
   - `push(_:)` takes a new Row from the pool, copies into it, stores it, and the evicted Row goes back to the pool's free list.
   - Update the counter expectation in the baseline test to `~capacity + grow-count`.
@@ -1785,12 +1792,13 @@ Commit the implementation:
 git add TermCore/ScrollbackHistory.swift TermCoreTests/ScrollbackHistoryAllocationTests.swift
 git commit -m "perf(TermCore): pre-allocated Row pool in ScrollbackHistory
 
-Measurement showed per-LF Row allocation failed the 60 MB/s throughput
-gate (spec §8 Track B item 3). Implement a fixed-size pool of
-pre-allocated ContiguousArray<Cell> slots reused across scrolls.
-Row allocation count drops from O(LF) to O(capacity). Throughput
-test now passes: 37,500 scrolling LFs in under 2.0 s. No behavior
-change visible to readers — tail(), all(), count are unchanged."
+Step 4's measurement showed per-LF Row allocation failed the numerical
+37,500-LF / 2.0 s throughput gate (spec §8 Track B item 3 ≈ 60 MB/s).
+Implement a fixed-size pool of pre-allocated ContiguousArray<Cell>
+slots reused across scrolls. Row allocation count drops from O(LF) to
+O(capacity). Throughput test now passes: 37,500 scrolling LFs in under
+2.0 s. No behavior change visible to readers — tail(), all(), count
+are unchanged."
 ```
 
 ---

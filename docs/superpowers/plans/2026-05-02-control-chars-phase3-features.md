@@ -1683,11 +1683,11 @@ scheme is logged and ignored."
 
 **Spec reference:** §8 Phase 3 Track A — OSC 52 clipboard (set only, query deferred to Phase 4 per answered Q1).
 
-**Goal:** Parser promotes OSC 52 into typed `OSCCommand.setClipboard(target: ClipboardTarget, payload: ClipboardPayload)`. Model routes the payload via a new `DaemonResponse.clipboardWrite` push. Client app writes to `NSPasteboard.general` under a user-consent gate (the app stays sandbox-safe because `NSPasteboard` write permissions do not require entitlements for user-triggered flows — but remote shell write via escape sequence is not user-triggered, so we surface a prompt the first time).
+**Goal:** Parser promotes OSC 52 into typed `OSCCommand.setClipboard(targets: ClipboardTargets, base64Payload: String)`. Model routes the payload via a new `DaemonResponse.clipboardWrite` push. Client app writes to `NSPasteboard.general` under a user-consent gate (OSC 52 is not a user-triggered action, so surface a prompt on every fire).
 
 **Files:**
 - Modify: `TermCore/OSCCommand.swift`
-- Create: `TermCore/ClipboardTarget.swift`
+- Create: `TermCore/ClipboardTargets.swift`
 - Modify: `TermCore/TerminalParser.swift`
 - Modify: `TermCore/DaemonProtocol.swift` (new `DaemonResponse` case)
 - Modify: `TermCore/ScreenModel.swift` (emit a new nonisolated "clipboard sink" closure)
@@ -1697,7 +1697,7 @@ scheme is logged and ignored."
 
 ### Steps
 
-- [ ] **Step 1: Create `ClipboardTarget`**
+- [ ] **Step 1: Create `ClipboardTargets`**
 
 **VT semantics — verified against xterm ctlseqs' "Manipulate Selection Data" (OSC 52) grammar** (per the consensus behavior across xterm, tmux, kitty, WezTerm, Alacritty): the `<target>` parameter is a **string of characters**, not a single character. Each character selects one pasteboard slot. xterm defines these letters:
 
@@ -1711,11 +1711,11 @@ scheme is logged and ignored."
 
 Shells commonly send `"cs"` (clipboard + select) or `""` (use default `s0`). The Phase 3 scope is the set-path only; we route any `target` set that includes `c` to `NSPasteboard.general`, and log the other letters for completeness (macOS has no separate primary selection, so `p`/`q`/`s`/`0`-`7` all collapse to the same pasteboard).
 
-Create `TermCore/ClipboardTarget.swift`:
+Create `TermCore/ClipboardTargets.swift`:
 
 ```swift
 //
-//  ClipboardTarget.swift
+//  ClipboardTargets.swift
 //  TermCore
 //
 //  This file is part of rTerm.
@@ -1985,7 +1985,7 @@ private final class ClipboardSpy: @unchecked Sendable {
 - [ ] **Step 9: Commit**
 
 ```bash
-git add TermCore/ClipboardTarget.swift \
+git add TermCore/ClipboardTargets.swift \
         TermCore/OSCCommand.swift \
         TermCore/TerminalParser.swift \
         TermCore/DaemonProtocol.swift \
@@ -2108,7 +2108,7 @@ on the app side yet — that's a Phase 4 concern (dock icon swap)."
 **Goal:** SwiftUI settings pane lets the user pick from the built-in `TerminalPalette` presets (xterm, solarized-dark, solarized-light; check the actual preset list in `TermCore/TerminalPalette.swift`). Persists via `@AppStorage`. `ContentView` reads the current selection and passes it to `RenderCoordinator`.
 
 **Files:**
-- Modify: `TermCore/TerminalPalette.swift` (add `solarizedDark` / `solarizedLight` presets + `preset(named:)` + `allPresetNames`)
+- Modify: `rTerm/TerminalPalette.swift` (add `solarizedDark` / `solarizedLight` presets + `preset(named:)` + `allPresetNames`)
 - Create: `rTerm/SettingsView.swift`
 - Modify: `rTerm/rTermApp.swift` (add `Settings` scene)
 - Modify: `rTerm/AppSettings.swift` (add `@AppStorage`-backed `paletteName` that mutates the existing `palette`)
@@ -2124,7 +2124,7 @@ rg -n "TerminalPalette|AppStorage|palette" TermCore/ rTerm/ | head -30
 ```
 
 Verified during plan remediation (2026-05-02):
-- `TerminalPalette.xtermDefault` at `TermCore/TerminalPalette.swift:100` is the ONLY preset currently defined — no `solarizedDark`, no `solarizedLight`, no `xterm` alias. Step 2 below lands the missing presets.
+- `TerminalPalette.xtermDefault` at `rTerm/TerminalPalette.swift:100` is the ONLY preset currently defined — no `solarizedDark`, no `solarizedLight`, no `xterm` alias. Step 2 below lands the missing presets.
 - `AppSettings` at `rTerm/AppSettings.swift:30` is `@Observable @MainActor public final class` with `public var palette: TerminalPalette = .xtermDefault`. Step 2 extends it; no replacement needed.
 - `RenderCoordinator.init` at `rTerm/RenderCoordinator.swift:91` takes the `settings: AppSettings` reference and caches `derivedPalette256` from `settings.palette` (line 105). The existing Phase 2 code already recomputes the 256-color table when `palette` changes; re-verify Step 5 uses that hook rather than bypassing it.
 
@@ -2132,7 +2132,7 @@ Verified during plan remediation (2026-05-02):
 
 **API note — verified against `rTerm/TerminalPalette.swift`:** the only preset currently defined is `TerminalPalette.xtermDefault` (line 100). `.solarizedDark` and `.solarizedLight` do not exist. This step lands the new presets **before** the settings surface wires them up, so `TerminalPalette.preset(named:)` has something to dispatch on.
 
-Add the two Solarized presets to `TermCore/TerminalPalette.swift` — RGB values are the canonical 16-slot mapping from Ethan Schoonover's Solarized palette, with "base" colors in ANSI slots 0 and 15 (dark variant inverts which base is foreground vs. background; light variant uses the opposite):
+Add the two Solarized presets to `rTerm/TerminalPalette.swift` — RGB values are the canonical 16-slot mapping from Ethan Schoonover's Solarized palette, with "base" colors in ANSI slots 0 and 15 (dark variant inverts which base is foreground vs. background; light variant uses the opposite):
 
 ```swift
 public extension TerminalPalette {
@@ -2319,7 +2319,7 @@ git add rTerm/SettingsView.swift \
         rTerm/AppSettings.swift \
         rTerm/ContentView.swift \
         rTerm/RenderCoordinator.swift \
-        TermCore/TerminalPalette.swift
+        rTerm/TerminalPalette.swift
 git commit -m "feat(rTerm): palette chooser Settings scene
 
 Settings scene lets the user pick among built-in TerminalPalette
