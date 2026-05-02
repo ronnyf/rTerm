@@ -30,7 +30,7 @@
 | T7 | T6 (references `originMode` reset) | DECCOLM 132-column + 4-side-effect reset | — (serialize after T6) |
 | T8 | Track B (Codable convention) | OSC 8 parser + `Hyperlink` value + `CellStyle.hyperlink` + pen state | — |
 | T9 | T8 (reads `cell.style.hyperlink`) | OSC 8 hover + click + `NSWorkspace` URI open | — |
-| T10 | T1 (adds `.clipboardWrite` enum case) | OSC 52 set path + consent prompt + NSPasteboard | T8, T9 |
+| T10 | T1 (reuses `ScreenModelOutput` + `installOutputSink`) | OSC 52 set path + consent prompt + NSPasteboard; grows `ScreenModelOutput` with `.clipboardWrite` and the daemon switch with the matching arm | T8, T9 |
 | T11 | Track B T4 (AppSettings palette field), Phase 2 renderer | Palette chooser Settings scene + preset lookup | — |
 
 Within Track A, the rule is: **never start a task whose "Depends on" row has not landed.** T2/T3/T4 all wire into `CSICommand.swift` + `ScreenModel.handleCSI`; landing them out of order causes merge conflicts at the enum-case addition site. T6/T7 similarly wire into `DECPrivateMode.swift` + `handleSetMode`.
@@ -41,7 +41,7 @@ Within Track A, the rule is: **never start a task whose "Depends on" row has not
 
 **Spec reference:** §8 Phase 3 Track A — Terminal identification responses prelude.
 
-**Goal:** The daemon must accept output events originating from `ScreenModel` (writeback bytes in response to DA1/DA2/CPR, or clipboard writes from OSC 52) and route each to the appropriate destination. Today the daemon only receives bytes from the shell and from the client's keyboard input. Introduce **one** typed output enum + one installer on `ScreenModel` so every future side-effect event is a new enum case, not a new `@Sendable` property:
+**Goal:** The daemon must accept output events originating from `ScreenModel` (writeback bytes in response to DA1/DA2/CPR; later phases add clipboard writes from OSC 52, focus events, etc.) and route each to the appropriate destination. Today the daemon only receives bytes from the shell and from the client's keyboard input. Introduce **one** typed output enum + one installer on `ScreenModel` so every future side-effect event is a new enum case, not a new `@Sendable` property. Task 1 ships the enum with a single case:
 
 ```swift
 public enum ScreenModelOutput: Sendable {
@@ -50,12 +50,9 @@ public enum ScreenModelOutput: Sendable {
     /// primary and fans out on the writeback XPC case.
     case ptyWriteback(Data)
 
-    /// OSC 52 clipboard set. `base64Payload` is the raw payload
-    /// verbatim — the daemon fans out to clients who decode + prompt +
-    /// write to `NSPasteboard.general`.
-    case clipboardWrite(targets: ClipboardTargets, base64Payload: String)
-
-    // Phase 4 adds e.g. `.osc4ColorReply`, `.focusEvent`, …
+    // Phase 3 Task 10 extends this enum with `.clipboardWrite(...)`
+    // alongside the `ClipboardTargets` struct it depends on. Phase 4
+    // adds e.g. `.osc4ColorReply`, `.focusEvent`, …
 }
 ```
 
@@ -66,7 +63,7 @@ public enum ScreenModelOutput: Sendable {
 
 Splitting `ScreenModel` output into separate `_writebackSink`/`_clipboardSink` per kind would invite a third sink the moment Phase 4 adds OSC 4 replies. Collapsing to one typed enum means future kinds are one-line enum additions.
 
-**Task 1 delivers:** `ScreenModelOutput` enum, `ScreenModel.installOutputSink(_:)`, `emitOutput(_:)`, the writeback case routed through `Session` + the `DaemonResponse.writeback` XPC push. Task 10 (OSC 52) adds the `.clipboardWrite` case to the same enum and registers one case-matching branch in the daemon's output handler.
+**Task 1 delivers:** `ScreenModelOutput` enum (single-case: `.ptyWriteback(Data)`), `ScreenModel.installOutputSink(_:)`, `emitOutput(_:)`, the writeback case routed through `Session` + the `DaemonResponse.writeback` XPC push. Task 10 (OSC 52) grows the enum with `.clipboardWrite(...)` — alongside the `ClipboardTargets` definition it depends on — and extends the daemon's output-handler switch with one matching arm.
 
 For convenience at call sites that only emit writeback bytes, expose a thin wrapper `emitWriteback(_ data: Data)` that forwards to `emitOutput(.ptyWriteback(data))`.
 
@@ -108,8 +105,9 @@ public enum ScreenModelOutput: Sendable {
     /// the inbound bytes.
     case ptyWriteback(Data)
 
-    /// OSC 52 clipboard set. Phase 3 Task 10 adds this case.
-    case clipboardWrite(targets: ClipboardTargets, base64Payload: String)
+    // Phase 3 Task 10 extends this enum with `.clipboardWrite(targets:
+    // base64Payload:)` once `ClipboardTargets` is defined. Phase 4 adds
+    // further cases (focus events, OSC 4 color replies, …).
 }
 ```
 
@@ -179,20 +177,16 @@ screenModel.assumeIsolated { model in
             // attached clients so their mirrors stay in sync.
             self.write(bytes)
             self.broadcast(.writeback(sessionID: self.id, data: bytes))
-
-        case .clipboardWrite(let targets, let base64Payload):
-            // Phase 3 Task 10 lands this case — fan out via
-            // DaemonResponse.clipboardWrite; the client side decodes
-            // base64, prompts for consent, writes NSPasteboard.
-            self.broadcast(.clipboardWrite(sessionID: self.id,
-                                            targets: targets,
-                                            base64Payload: base64Payload))
         }
+        // Task 10 (OSC 52) adds a `.clipboardWrite(...)` case to the
+        // enum AND grows this switch with a matching arm. At Task 1's
+        // commit boundary the enum is single-case and this switch is
+        // exhaustive by construction.
     }
 }
 ```
 
-`Session.write(_:)` (line 272) already performs the full-write loop against `primaryFD`; no new helper required. Implementing the `.clipboardWrite` arm is scheduled as part of Task 10 — until that commit lands, the switch can temporarily omit `.clipboardWrite` (or include a `@unknown default` in the compile-matrix to satisfy exhaustiveness).
+`Session.write(_:)` (line 272) already performs the full-write loop against `primaryFD`; no new helper required. The `.clipboardWrite` arm is added alongside the enum-case growth in Task 10 Step 5 — both changes land atomically with the `ClipboardTargets` definition, so exhaustiveness is preserved at every commit boundary (no need for `@unknown default`, which anyway applies only to `@frozen` public enums imported from another module).
 
 - [ ] **Step 4: Unit tests**
 
@@ -218,7 +212,7 @@ struct ScreenModelOutputTests {
     func test_sink_receives_writeback() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let received = LockedAccumulator<ScreenModelOutput>()
-        model.installOutputSink { event in received.append(event) }
+        await model.installOutputSink { event in received.append(event) }
         await model._testEmitWriteback(Data([0x41, 0x42]))
         let events = received.all()
         #expect(events.count == 1)
@@ -286,9 +280,11 @@ iTerm2 '[delegate terminalSendReport:]', Terminal.app
 '[_shell writeData:]' — splitting into per-kind sinks invites a
 third sink the moment Phase 4 adds OSC 4 / focus events.
 
-Phase 3 cases: .ptyWriteback(Data) (DA1/DA2/CPR + future DSR) and
-.clipboardWrite(targets: base64Payload:) (OSC 52, landing in Task 10).
-Future kinds are one-line enum additions.
+Phase 3 ships the enum single-case: .ptyWriteback(Data) — used by
+DA1/DA2/CPR today and by future DSR / XtSmGraphics / focus events.
+Task 10 grows the enum with .clipboardWrite(targets: base64Payload:)
+alongside ClipboardTargets (the type that case depends on). Future
+kinds are one-line enum additions.
 
 Daemon's Session installs the sink at session-create time inside
 startOutputHandler's assumeIsolated block, switches on the event, and
@@ -452,7 +448,9 @@ struct DeviceAttributesTests {
     func test_DA1_response() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let sink = DataSink()
-        model.installWritebackSink { sink.append($0) }
+        await model.installOutputSink { output in
+            if case .ptyWriteback(let data) = output { sink.append(data) }
+        }
         await model.apply([.csi(.deviceAttributes(.primary))])
         #expect(sink.all() == .csi("?1;2c"))
     }
@@ -461,7 +459,9 @@ struct DeviceAttributesTests {
     func test_DA2_response() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let sink = DataSink()
-        model.installWritebackSink { sink.append($0) }
+        await model.installOutputSink { output in
+            if case .ptyWriteback(let data) = output { sink.append(data) }
+        }
         await model.apply([.csi(.deviceAttributes(.secondary))])
         #expect(sink.all() == .csi(">0;322;0c"))
     }
@@ -474,7 +474,9 @@ struct CPRTests {
     func test_cpr_at_origin() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let sink = DataSink()
-        model.installWritebackSink { sink.append($0) }
+        await model.installOutputSink { output in
+            if case .ptyWriteback(let data) = output { sink.append(data) }
+        }
         await model.apply([.csi(.cursorPositionReport)])
         // Cursor at (0,0) → "ESC [ 1 ; 1 R"
         #expect(sink.all() == .csi("1;1R"))
@@ -484,7 +486,9 @@ struct CPRTests {
     func test_cpr_after_move() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let sink = DataSink()
-        model.installWritebackSink { sink.append($0) }
+        await model.installOutputSink { output in
+            if case .ptyWriteback(let data) = output { sink.append(data) }
+        }
         await model.apply([
             .csi(.cursorPosition(row: 4, col: 9)),  // 0-indexed (5, 10) in VT terms
             .csi(.cursorPositionReport),
@@ -1168,14 +1172,16 @@ struct DECCOLMTests {
     func test_deccolm_on_signals_132() async {
         let model = ScreenModel(cols: 80, rows: 24)
         await model.apply([.csi(.setMode(.column132, enabled: true))])
-        #expect(model.pendingCols == 132)
+        let pending = await model.pendingCols
+        #expect(pending == 132)
     }
 
     @Test("DECCOLM reset signals 80 cols pending")
     func test_deccolm_off_signals_80() async {
         let model = ScreenModel(cols: 80, rows: 24)
         await model.apply([.csi(.setMode(.column132, enabled: false))])
-        #expect(model.pendingCols == 80)
+        let pending = await model.pendingCols
+        #expect(pending == 80)
     }
 
     @Test("DECCOLM clears active grid")
@@ -1780,15 +1786,16 @@ scheme is logged and ignored."
 
 **Spec reference:** §8 Phase 3 Track A — OSC 52 clipboard (set only, query deferred to Phase 4 per answered Q1).
 
-**Goal:** Parser promotes OSC 52 into typed `OSCCommand.setClipboard(targets: ClipboardTargets, base64Payload: String)`. Model routes the payload via the unified `ScreenModelOutput` sink's `.clipboardWrite` case (landed in Task 1). Daemon fan-out uses the existing `switch event` block in `Session.startOutputHandler()`. Client app writes to `NSPasteboard.general` under a user-consent gate (OSC 52 is not a user-triggered action, so surface a prompt on every fire).
+**Goal:** Parser promotes OSC 52 into typed `OSCCommand.setClipboard(targets: ClipboardTargets, base64Payload: String)`. Task 10 grows the Task 1 `ScreenModelOutput` enum with a new `.clipboardWrite(targets:base64Payload:)` case (the `ClipboardTargets` type that case references is defined in Step 1 of this same task, so the new case compiles at Task 10's commit boundary). Model routes the payload via `emitOutput(.clipboardWrite(...))`. Daemon's existing switch in `Session.startOutputHandler()` grows one arm to fan out via `DaemonResponse.clipboardWrite`. Client app writes to `NSPasteboard.general` under a user-consent gate (OSC 52 is not a user-triggered action, so surface a prompt on every fire).
 
 **Files:**
 - Modify: `TermCore/OSCCommand.swift`
 - Create: `TermCore/ClipboardTargets.swift`
+- Modify: `TermCore/ScreenModelOutput.swift` (grow enum with `.clipboardWrite` case — depends on `ClipboardTargets` created in Step 1)
 - Modify: `TermCore/TerminalParser.swift`
 - Modify: `TermCore/DaemonProtocol.swift` (new `DaemonResponse` case)
 - Modify: `TermCore/ScreenModel.swift` (handle in `handleOSC` → `emitOutput(.clipboardWrite(...))`)
-- Modify: `rtermd/Session.swift` (concrete `.clipboardWrite` arm in the unified switch)
+- Modify: `rtermd/Session.swift` (grow the unified switch with the concrete `.clipboardWrite` arm)
 - Modify: `rTerm/ContentView.swift` (receive + consent prompt + NSPasteboard write)
 - Create: `TermCoreTests/ClipboardTests.swift`
 
@@ -1899,9 +1906,24 @@ In `TermCore/DaemonProtocol.swift`:
 case clipboardWrite(sessionID: SessionID, targets: ClipboardTargets, base64Payload: String)
 ```
 
-- [ ] **Step 5: `ScreenModel` emits `.clipboardWrite` on the unified output sink**
+- [ ] **Step 5: Extend `ScreenModelOutput` with `.clipboardWrite`, then emit from `handleOSC`**
 
-The Task 1 `ScreenModelOutput` enum already carries `.clipboardWrite(targets:base64Payload:)`. No new sink property, no new install method — just handle `.setClipboard` in `handleOSC` by calling `emitOutput`:
+Task 1 intentionally shipped `ScreenModelOutput` single-case (`.ptyWriteback` only) because `ClipboardTargets` didn't exist yet. Now that Step 1 of this task has defined `ClipboardTargets`, grow the enum in `TermCore/ScreenModelOutput.swift`:
+
+```swift
+public enum ScreenModelOutput: Sendable {
+    /// PTY-writeback bytes (DA1/DA2/CPR today; DSR / XtSmGraphics /
+    /// terminal parameters / focus events in later phases).
+    case ptyWriteback(Data)
+
+    /// OSC 52 clipboard set. `base64Payload` is the raw payload
+    /// verbatim — the daemon fans out to clients who decode + prompt +
+    /// write to `NSPasteboard.general`.
+    case clipboardWrite(targets: ClipboardTargets, base64Payload: String)
+}
+```
+
+No new sink property, no new install method — just handle `.setClipboard` in `handleOSC` by calling `emitOutput`:
 
 ```swift
 case .setClipboard(let targets, let payload):
@@ -1909,15 +1931,28 @@ case .setClipboard(let targets, let payload):
     return false  // pure side effect; no snapshot bump
 ```
 
-- [ ] **Step 6: Daemon fan-out**
+- [ ] **Step 6: Daemon fan-out — grow the switch**
 
-The Task 1 sink install already includes a `.clipboardWrite` arm in the `switch event` block. If Task 1's placeholder for `.clipboardWrite` was left as `@unknown default`, replace that arm now with the concrete fan-out. The arm already shipped in Task 1 reads:
+Task 1 shipped a single-arm switch in `Session.startOutputHandler()`'s `installOutputSink` closure (only `.ptyWriteback`). Now that Step 5 has grown the enum, grow the switch with the matching arm so it stays exhaustive:
 
 ```swift
-case .clipboardWrite(let targets, let base64Payload):
-    self.broadcast(.clipboardWrite(sessionID: self.id,
-                                    targets: targets,
-                                    base64Payload: base64Payload))
+screenModel.assumeIsolated { model in
+    model.installOutputSink { [weak self] event in
+        guard let self else { return }
+        switch event {
+        case .ptyWriteback(let bytes):
+            self.write(bytes)
+            self.broadcast(.writeback(sessionID: self.id, data: bytes))
+
+        case .clipboardWrite(let targets, let base64Payload):
+            // Fan out to attached clients; each client decodes base64,
+            // prompts for consent, and writes to NSPasteboard.general.
+            self.broadcast(.clipboardWrite(sessionID: self.id,
+                                            targets: targets,
+                                            base64Payload: base64Payload))
+        }
+    }
+}
 ```
 
 No additional `assumeIsolated` hop needed — the one installed at `startOutputHandler()` handles every output kind.
@@ -2031,7 +2066,7 @@ struct ClipboardTests {
     func test_model_emits_clipboard_sink() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let received = LockedAccumulator<(ClipboardTargets, String)>()
-        model.installOutputSink { event in
+        await model.installOutputSink { event in
             if case .clipboardWrite(let targets, let payload) = event {
                 received.append((targets, payload))
             }
@@ -2053,6 +2088,7 @@ struct ClipboardTests {
 ```bash
 git add TermCore/ClipboardTargets.swift \
         TermCore/OSCCommand.swift \
+        TermCore/ScreenModelOutput.swift \
         TermCore/TerminalParser.swift \
         TermCore/DaemonProtocol.swift \
         TermCore/ScreenModel.swift \
@@ -2063,11 +2099,13 @@ git commit -m "feat: OSC 52 clipboard set path (Phase 3 — query deferred)
 
 Parser promotes OSC 52 set variant to setClipboard(targets:,
 base64Payload:). ClipboardTargets models xterm's target-string
-grammar as an OptionSet. ScreenModel routes the payload through the
-unified ScreenModelOutput sink from Task 1 — no new sink property,
-just a new arm in the existing switch. Daemon fans out via
-DaemonResponse.clipboardWrite XPC case. Client decodes base64 on the
-MainActor, prompts for consent, writes to NSPasteboard.general.
+grammar as an OptionSet. Grows the Task 1 ScreenModelOutput enum
+with a new .clipboardWrite case (ClipboardTargets is defined in the
+same task so the case compiles at this commit boundary) and extends
+Session.startOutputHandler's switch with the matching arm. Daemon
+fans out via DaemonResponse.clipboardWrite XPC case. Client decodes
+base64 on the MainActor, prompts for consent, writes to
+NSPasteboard.general.
 
 Query form (OSC 52 ; <target> ; ? ST) routes to .osc(.unknown) — Phase
 4 adds the query path (requires client→daemon byte injection)."

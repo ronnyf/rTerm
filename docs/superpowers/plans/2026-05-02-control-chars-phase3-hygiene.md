@@ -1038,19 +1038,27 @@ third-party blast radius."
 
 Tasks 6, 7, and 9 each want a DEBUG-only counter visible to unit tests. Three separate `nonisolated(unsafe) static var xxxForTesting` declarations with three near-identical Swift 6 isolation rationale paragraphs is not reviewer-friendly. Factor one shared file up front.
 
-Create `rTerm/PerfCountersDebug.swift`:
+**Target location:** `TermCore/PerfCountersDebug.swift` (not `rTerm/PerfCountersDebug.swift`). TermCore is a framework that rTerm imports, not the reverse — placing the counters in TermCore lets both sides access them:
+- TermCore-internal writers: `ScrollbackHistory` / `ScreenModel.scrollAndMaybeEvict` (Task 9) write `rowAllocationCount` from inside TermCore.
+- rTerm writers: `RenderCoordinator` (Tasks 6, 7) write `vertexArrayReallocCount` + `metalBufferAllocCount` from the app target via `import TermCore`.
+- Test readers: `TermCoreTests` reads via `@testable import TermCore`; `rTermTests` reads via `import TermCore` (types are `public`, so no `@testable` needed).
+
+Create `TermCore/PerfCountersDebug.swift`:
 
 ```swift
 //
 //  PerfCountersDebug.swift
-//  rTerm
+//  TermCore
 //
 //  This file is part of rTerm.
 //  Licensed under GPLv3 — see project LICENSE.
 //
 //  DEBUG-only shared perf counters exposed to rTermTests +
-//  TermCoreTests. Consolidated into one namespace so the Swift 6
-//  isolation rationale is written once, not three times.
+//  TermCoreTests. Consolidated into one namespace in TermCore so
+//  the Swift 6 isolation rationale is written once, and both TermCore
+//  (ScrollbackHistory writer) and rTerm (RenderCoordinator writers)
+//  can access the same counters — TermCore is imported by rTerm, not
+//  vice versa.
 //
 //  `nonisolated(unsafe)` correctness invariant (applies to every field
 //  below): the counter is written from whatever actor/queue owns the
@@ -1065,32 +1073,29 @@ Create `rTerm/PerfCountersDebug.swift`:
 
 #if DEBUG
 public enum PerfCountersDebug {
+    /// `ScrollbackHistory.Row` allocations per scrolling LF. Written by
+    /// `ScreenModel.scrollAndMaybeEvict` on the actor's serial executor
+    /// (daemon queue); read by `ScrollbackHistoryAllocationTests` after
+    /// awaiting the deterministic number of actor-isolated applies.
+    /// Task 9 uses this.
+    nonisolated(unsafe) public static var rowAllocationCount: Int = 0
+
+    /// Vertex-array reallocations observed in `RenderCoordinator` —
+    /// increments whenever `reserveVertexCapacity` expands an array's
+    /// backing storage. In steady state this should be 0 per frame.
+    /// Written by `RenderCoordinator.beginFrameCleanup` on the MainActor;
+    /// read by `RenderCoordinatorAllocationTests` on the MainActor.
+    /// Task 6 uses this.
+    nonisolated(unsafe) public static var vertexArrayReallocCount: Int = 0
+
     /// Metal buffer allocations observed in the current `draw(in:)` pass.
     /// Written by `RenderCoordinator.draw(in:)` on the MainActor; read
     /// by `RenderCoordinatorAllocationTests` on the MainActor after the
     /// frame completes. Task 7 instruments this.
-    nonisolated(unsafe) public static var makeBufferCount: Int = 0
-
-    /// Vertex-array capacities observed after a `beginFrameCleanup`
-    /// call. Written by `RenderCoordinator.beginFrameCleanup` on the
-    /// MainActor; read by `RenderCoordinatorAllocationTests`. Task 6
-    /// uses this (via an instance accessor that reads the capacities
-    /// directly — the array storage itself is the counter).
-    nonisolated(unsafe) public static var vertexCapacitySnapshot: [Int] = []
-
-    /// `ScrollbackHistory.Row` allocations per scrolling LF. Written
-    /// by `ScreenModel.scrollAndMaybeEvict` on the actor's serial
-    /// executor (daemon queue); read by
-    /// `ScrollbackHistoryAllocationTests` after awaiting the
-    /// deterministic number of actor-isolated applies. Task 9 uses this.
-    nonisolated(unsafe) public static var rowAllocationCount: Int = 0
+    nonisolated(unsafe) public static var metalBufferAllocCount: Int = 0
 }
 #endif
 ```
-
-Add the file to the **rTerm app target** — `PerfCountersDebug` is read by both `rTermTests` (which imports `rTerm`) and needs to be visible to `TermCore` for the Row-allocation increment in `ScreenModel.scrollAndMaybeEvict`. Since TermCore is a framework that rTerm imports (not the other way around), place the counter write site in TermCore too — use the same name but declared in `TermCore/PerfCountersDebug.swift` OR have TermCore export its own counter that rTerm's test imports through `@testable import TermCore`.
-
-**Layering note:** simplest layout is `TermCore/PerfCountersDebug.swift` because TermCore's `ScrollbackHistory` needs to write one of the counters. Reading from `rTermTests` works via `@testable import TermCore` (already used). `rTerm/RenderCoordinator` reads / writes from its own module via `import TermCore`.
 
 Then in `rTerm/RenderCoordinator.swift`, near the top of the class:
 
@@ -1324,13 +1329,13 @@ rTermTests exercise the preamble without a live Metal drawable."
 
 - [ ] **Step 1: Add measurement first — baseline count**
 
-Task 6 already landed `TermCore/PerfCountersDebug.swift` with a `makeBufferCount` field under a single shared Swift 6 isolation rationale. Use it here; do NOT add a separate `nonisolated(unsafe) static var` on `RenderCoordinator`.
+Task 6 already landed `TermCore/PerfCountersDebug.swift` with a `metalBufferAllocCount` field under a single shared Swift 6 isolation rationale. Use it here; do NOT add a separate `nonisolated(unsafe) static var` on `RenderCoordinator`.
 
 Wrap each `device.makeBuffer(...)` call in `draw(in:)`:
 
 ```swift
 #if DEBUG
-PerfCountersDebug.makeBufferCount += 1
+PerfCountersDebug.metalBufferAllocCount += 1
 #endif
 let buf = device.makeBuffer(bytes: ..., length: ..., options: ...)
 ```
@@ -1344,8 +1349,9 @@ git add rTerm/RenderCoordinator.swift
 git commit -m "perf(rTerm): instrument per-frame makeBuffer count
 
 Baseline measurement ahead of Track B item 2 (Metal buffer ring).
-DEBUG-only counter on RenderCoordinator exposes the per-frame
-makeBuffer invocation count to tests."
+Reads TermCore.PerfCountersDebug.metalBufferAllocCount (shared
+namespace from Task 6). Counter exposes the per-frame makeBuffer
+invocation count to tests."
 ```
 
 - [ ] **Step 2: Build `MetalBufferRing`**
@@ -1616,7 +1622,7 @@ commandBuffer.commit()
 
 Repeat for bold, italic, boldItalic, underline, strikethrough passes. Cursor and overlay (scroll bell flash, etc.) passes that use `setVertexBytes` or separate allocations stay unchanged unless they fit the pattern.
 
-Remove the `#if DEBUG PerfCountersDebug.makeBufferCount += 1` from these sites (since they're no longer making buffers). Keep it on any remaining `makeBuffer` calls that didn't migrate.
+Remove the `#if DEBUG PerfCountersDebug.metalBufferAllocCount += 1` from these sites (since they're no longer making buffers). Keep it on any remaining `makeBuffer` calls that didn't migrate.
 
 - [ ] **Step 6: Add steady-state counter test**
 
@@ -1635,14 +1641,14 @@ func test_steady_state_makeBuffer_count_is_zero() throws {
     // Prime the rings with an ensureRings call (the warmup that would
     // happen on the first draw frame).
     coord.ensureRingsForTesting(cols: 80, rows: 24)
-    PerfCountersDebug.makeBufferCount = 0
+    PerfCountersDebug.metalBufferAllocCount = 0
 
     // Simulate several steady-state frames. ensureRings at a stable size
-    // is a no-op after the priming call, so makeBufferCount must stay at 0.
+    // is a no-op after the priming call, so metalBufferAllocCount must stay at 0.
     for _ in 0..<10 {
         coord.ensureRingsForTesting(cols: 80, rows: 24)
     }
-    XCTAssertEqual(PerfCountersDebug.makeBufferCount, 0,
+    XCTAssertEqual(PerfCountersDebug.metalBufferAllocCount, 0,
                    "steady-state draw should allocate no MTLBuffers")
 }
 ```
