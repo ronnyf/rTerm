@@ -224,6 +224,12 @@ public struct TerminalParser: Sendable {
             state = .oscString(ps: nil, accumulator: "", pendingST: false)
         case 0x50:  // 'P'
             state = .dcsIgnore(pendingST: false)
+        case 0x37:  // '7' — DECSC (save cursor); semantically identical to CSI s.
+            events.append(.csi(.saveCursor))
+            state = .ground
+        case 0x38:  // '8' — DECRC (restore cursor); semantically identical to CSI u.
+            events.append(.csi(.restoreCursor))
+            state = .ground
         case 0x18, 0x1A:  // CAN, SUB
             state = .ground
         case 0x1B:  // ESC restart
@@ -277,7 +283,7 @@ public struct TerminalParser: Sendable {
             return
         }
         if Self.isCSIFinal(byte) {
-            events.append(.csi(Self.mapCSI(params: [], intermediates: [], final: byte)))
+            Self.appendCSIEvents(params: [], intermediates: [], final: byte, into: &events)
             state = .ground
             return
         }
@@ -349,7 +355,7 @@ public struct TerminalParser: Sendable {
             if let cur = current, flushed.count < Limits.csiParams {
                 flushed.append(cur)
             }
-            events.append(.csi(Self.mapCSI(params: flushed, intermediates: intermediates, final: byte)))
+            Self.appendCSIEvents(params: flushed, intermediates: intermediates, final: byte, into: &events)
             state = .ground
             return
         }
@@ -393,7 +399,7 @@ public struct TerminalParser: Sendable {
             return
         }
         if Self.isCSIFinal(byte) {
-            events.append(.csi(Self.mapCSI(params: params, intermediates: intermediates, final: byte)))
+            Self.appendCSIEvents(params: params, intermediates: intermediates, final: byte, into: &events)
             state = .ground
             return
         }
@@ -579,11 +585,33 @@ public struct TerminalParser: Sendable {
 
     // MARK: - CSI mapping
 
-    /// Map collected CSI parameters, intermediates, and final byte into a
-    /// typed ``CSICommand``. Unrecognized finals (and any sequence carrying
-    /// intermediates — including the private markers `< = > ?` we stash in
-    /// intermediates) fall through to `.unknown` so later tasks / phases can
-    /// disambiguate.
+    /// Decode a fully-collected CSI into one or more events appended to `events`.
+    ///
+    /// Most CSI sequences emit a single event. The exception is DEC private
+    /// mode set/reset (`CSI ? Pm h/l`): the spec grammar allows compound mode
+    /// lists (`CSI ? 1 ; 7 ; 25 h`), and tmux/vim startup pipelines compound
+    /// DECSET. Each `Pm` in the list emits its own `.csi(.setMode(...))` so
+    /// `CSICommand.setMode(_, enabled:)` keeps its singular signature.
+    private static func appendCSIEvents(params: [Int], intermediates: [UInt8], final: UInt8, into events: inout [TerminalEvent]) {
+        // DEC private mode multi-emit: `?` intermediate + h/l final. Open-coded
+        // (not `intermediates == [0x3F]`) to avoid an array-literal allocation
+        // on every CSI sequence — this dispatcher runs for cursor motion, SGR,
+        // erase, etc., on both the daemon and the client mirror.
+        if intermediates.count == 1, intermediates[0] == 0x3F /* ? */,
+           (final == 0x68 /* h */ || final == 0x6C /* l */) {
+            let enabled = (final == 0x68)
+            if params.isEmpty {
+                events.append(.csi(.setMode(DECPrivateMode(rawParam: 0), enabled: enabled)))
+            } else {
+                for p in params {
+                    events.append(.csi(.setMode(DECPrivateMode(rawParam: p), enabled: enabled)))
+                }
+            }
+            return
+        }
+        events.append(.csi(mapCSI(params: params, intermediates: intermediates, final: final)))
+    }
+
     private static func mapCSI(params: [Int], intermediates: [UInt8], final: UInt8) -> CSICommand {
         // VT defaults: a missing numeric parameter counts as 1 for motion,
         // 0 for erase region selectors.
@@ -592,9 +620,11 @@ public struct TerminalParser: Sendable {
             return params[i] == 0 ? d : params[i]
         }
 
-        // Any sequence with intermediates (including private markers we stashed
-        // here — 0x3C-0x3F) is not in this task's typed set. Emit .unknown so
-        // Phase 2 / Task 5 / Task 6 can disambiguate.
+        // Any sequence with intermediates falls through to .unknown. The `?`
+        // intermediate + h/l combination is intercepted by appendCSIEvents
+        // before this function runs, so the only `?`-prefix calls that reach
+        // here have a final byte other than h/l (e.g. `CSI ? 6 n` DECDSR or
+        // `CSI ? r` DEC restore mode — Phase 3 disambiguates these).
         guard intermediates.isEmpty else {
             return .unknown(params: params, intermediates: intermediates, final: final)
         }
@@ -607,8 +637,6 @@ public struct TerminalParser: Sendable {
         case 0x47 /* G */: return .cursorHorizontalAbsolute(p(0, default: 1))
         case 0x64 /* d */: return .verticalPositionAbsolute(p(0, default: 1))
         case 0x48, 0x66 /* H, f */:
-            // CSI H / HVP — 1-indexed in VT; subtract to 0-indexed on emit.
-            // Defaults to 1;1 → 0,0 after shift.
             let row = p(0, default: 1) - 1
             let col = p(1, default: 1) - 1
             return .cursorPosition(row: max(0, row), col: max(0, col))
@@ -618,6 +646,15 @@ public struct TerminalParser: Sendable {
         case 0x4B /* K */: return .eraseInLine(Self.mapEraseRegion(p(0, default: 0)))
         case 0x6D /* m */:
             return .sgr(Self.mapSGR(params: params))
+        case 0x72 /* r */:
+            // DECSTBM: top;bottom. `0` or missing means "use screen edge" (nil).
+            // Parser passes through VT 1-indexed values; ScreenModel does the
+            // 1→0 conversion so the wire/log format keeps the original value.
+            let topRaw = params.first ?? 0
+            let botRaw = params.count > 1 ? params[1] : 0
+            let top: Int? = topRaw > 0 ? topRaw : nil
+            let bot: Int? = botRaw > 0 ? botRaw : nil
+            return .setScrollRegion(top: top, bottom: bot)
         default:
             return .unknown(params: params, intermediates: intermediates, final: final)
         }
