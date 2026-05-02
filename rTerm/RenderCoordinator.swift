@@ -18,6 +18,7 @@
 //  along with Terminal App. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import AppKit
 import MetalKit
 import TermCore
 
@@ -40,8 +41,33 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
     private let overlayPipelineState: MTLRenderPipelineState
     private let regularAtlas: GlyphAtlas
     private let boldAtlas: GlyphAtlas
+    private let italicAtlas: GlyphAtlas
+    private let boldItalicAtlas: GlyphAtlas
     private let screenModel: ScreenModel
     private let settings: AppSettings
+
+    /// Last bell count we saw on a snapshot. When the snapshot's bellCount
+    /// exceeds this AND the rate limiter allows, we play the system beep
+    /// and update.
+    private var lastSeenBellCount: UInt64 = 0
+
+    /// Wall-clock timestamp of the most recent NSSound.beep() call. Bells
+    /// arriving within `bellMinInterval` seconds of the last beep collapse
+    /// silently — protects against runaway BEL spam (e.g. `yes $'\a'` or a
+    /// program looping on permission errors with bells).
+    private var lastBeepAt: TimeInterval = 0
+
+    /// 200 ms minimum between successive beeps; loosely matches xterm's BEL
+    /// rate-limit heuristic and absorbs runaway BEL spam without losing the
+    /// signal that a bell event happened (lastSeenBellCount still advances).
+    private static let bellMinInterval: TimeInterval = 0.2
+
+    /// Per-vertex layout constants for the glyph and overlay pipelines.
+    /// Static so private helpers (e.g. `drawOverlayPass`) can read them
+    /// without per-call parameter plumbing.
+    private static let floatsPerCellVertex = 12
+    private static let floatsPerOverlayVertex = 8
+    private static let verticesPerCell = 6
 
     /// Cached 256-color palette derived from `settings.palette`. Recomputed only
     /// when the palette identity changes (cheap object-equality check).
@@ -60,8 +86,10 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
 
         self.device = device
         self.commandQueue = commandQueue
-        self.regularAtlas = GlyphAtlas(device: device, variant: .regular)
-        self.boldAtlas = GlyphAtlas(device: device, variant: .bold)
+        self.regularAtlas    = GlyphAtlas(device: device, variant: .regular)
+        self.boldAtlas       = GlyphAtlas(device: device, variant: .bold)
+        self.italicAtlas     = GlyphAtlas(device: device, variant: .italic)
+        self.boldItalicAtlas = GlyphAtlas(device: device, variant: .boldItalic)
         self.screenModel = screenModel
         self.settings = settings
         self.palette256Source = settings.palette
@@ -106,51 +134,83 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
         let rows = snapshot.rows
         let cols = snapshot.cols
 
+        // -- Bell observer -------------------------------------------------------
+        if snapshot.bellCount > lastSeenBellCount {
+            // Always advance lastSeenBellCount so we don't backlog beeps when
+            // multiple BELs arrive between draw frames.
+            lastSeenBellCount = snapshot.bellCount
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastBeepAt > Self.bellMinInterval {
+                lastBeepAt = now
+                NSSound.beep()
+            }
+        }
+
         // -- Build glyph vertex data ---------------------------------------------
         // Each cell produces 2 triangles (6 vertices). Each vertex is 12 floats:
         //   float2 position + float2 texCoord + float4 fgColor + float4 bgColor
-        // = 48 bytes per vertex. Each cell is partitioned into a regular or bold
-        // batch so a single draw call can use one atlas at a time. Underlines
-        // are collected in their own buffer for a second overlay-pipeline pass.
-        let floatsPerCellVertex = 12
-        let floatsPerOverlayVertex = 8
-        let verticesPerCell = 6
+        // = 48 bytes per vertex. Each cell is partitioned into regular, bold,
+        // italic, or boldItalic batch so a single draw call can use one atlas at
+        // a time. Underlines and strikethroughs are collected in their own buffers
+        // for additional overlay-pipeline passes.
+        let floatsPerCellVertex = Self.floatsPerCellVertex
+        let floatsPerOverlayVertex = Self.floatsPerOverlayVertex
+        let verticesPerCell = Self.verticesPerCell
 
         var regularVerts = [Float]()
         var boldVerts = [Float]()
+        var italicVerts = [Float]()
+        var boldItalicVerts = [Float]()
         var underlineVerts = [Float]()
+        var strikethroughVerts = [Float]()
         regularVerts.reserveCapacity(rows * cols * verticesPerCell * floatsPerCellVertex)
         boldVerts.reserveCapacity(rows * cols * verticesPerCell * floatsPerCellVertex)
+        italicVerts.reserveCapacity(rows * cols * verticesPerCell * floatsPerCellVertex)
+        boldItalicVerts.reserveCapacity(rows * cols * verticesPerCell * floatsPerCellVertex)
+        underlineVerts.reserveCapacity(rows * cols * verticesPerCell * floatsPerOverlayVertex)
+        strikethroughVerts.reserveCapacity(rows * cols * verticesPerCell * floatsPerOverlayVertex)
 
         for row in 0..<rows {
             for col in 0..<cols {
                 let cell = snapshot[row, col]
-                let isBold = cell.style.attributes.contains(.bold)
-                let atlas = isBold ? boldAtlas : regularAtlas
+                let variant = AttributeProjection.atlasVariant(for: cell.style.attributes)
+                let atlas: GlyphAtlas
+                switch variant {
+                case .regular:    atlas = regularAtlas
+                case .bold:       atlas = boldAtlas
+                case .italic:     atlas = italicAtlas
+                case .boldItalic: atlas = boldItalicAtlas
+                }
                 let uv = atlas.uvRect(for: cell.character)
 
-                let fg = ColorProjection.resolve(
+                let resolvedFg = ColorProjection.resolve(
                     cell.style.foreground, role: .foreground,
                     depth: depth, palette: palette, derivedPalette256: p256
                 ).simdNormalized
-                let bg = ColorProjection.resolve(
+                let resolvedBg = ColorProjection.resolve(
                     cell.style.background, role: .background,
                     depth: depth, palette: palette, derivedPalette256: p256
                 ).simdNormalized
+                let (fg, bg) = AttributeProjection.project(
+                    fg: resolvedFg,
+                    bg: resolvedBg,
+                    attributes: cell.style.attributes
+                )
 
                 let x0 = Float(col)     / Float(cols) * 2.0 - 1.0
                 let x1 = Float(col + 1) / Float(cols) * 2.0 - 1.0
                 let y0 = 1.0 - Float(row)     / Float(rows) * 2.0
                 let y1 = 1.0 - Float(row + 1) / Float(rows) * 2.0
 
-                if isBold {
-                    appendCellQuad(into: &boldVerts,
-                                   x0: x0, x1: x1, y0: y0, y1: y1,
-                                   uv: uv, fg: fg, bg: bg)
-                } else {
-                    appendCellQuad(into: &regularVerts,
-                                   x0: x0, x1: x1, y0: y0, y1: y1,
-                                   uv: uv, fg: fg, bg: bg)
+                switch variant {
+                case .regular:
+                    appendCellQuad(into: &regularVerts, x0: x0, x1: x1, y0: y0, y1: y1, uv: uv, fg: fg, bg: bg)
+                case .bold:
+                    appendCellQuad(into: &boldVerts,    x0: x0, x1: x1, y0: y0, y1: y1, uv: uv, fg: fg, bg: bg)
+                case .italic:
+                    appendCellQuad(into: &italicVerts,  x0: x0, x1: x1, y0: y0, y1: y1, uv: uv, fg: fg, bg: bg)
+                case .boldItalic:
+                    appendCellQuad(into: &boldItalicVerts, x0: x0, x1: x1, y0: y0, y1: y1, uv: uv, fg: fg, bg: bg)
                 }
 
                 if cell.style.attributes.contains(.underline) {
@@ -164,6 +224,18 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
                     let uy0 = uy1 + thickness
                     appendOverlayQuad(into: &underlineVerts,
                                       x0: x0, x1: x1, y0: uy0, y1: uy1,
+                                      color: fg)
+                }
+
+                if cell.style.attributes.contains(.strikethrough) {
+                    // Mid-height thin line.
+                    let cellHeight = y0 - y1
+                    let thickness = cellHeight * 0.08
+                    let mid = (y0 + y1) * 0.5
+                    let sy0 = mid + thickness * 0.5
+                    let sy1 = mid - thickness * 0.5
+                    appendOverlayQuad(into: &strikethroughVerts,
+                                      x0: x0, x1: x1, y0: sy0, y1: sy1,
                                       color: fg)
                 }
             }
@@ -212,24 +284,47 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
             }
         }
 
-        // -- Underline pass (overlay pipeline) -----------------------------------
-        if !underlineVerts.isEmpty {
-            renderEncoder.setRenderPipelineState(overlayPipelineState)
-            // Underline buffers can be large; route through MTLBuffer rather than
-            // setVertexBytes (which is capped at 4 KB).
+        if !italicVerts.isEmpty {
             let buf = device.makeBuffer(
-                bytes: underlineVerts,
-                length: underlineVerts.count * MemoryLayout<Float>.size,
+                bytes: italicVerts,
+                length: italicVerts.count * MemoryLayout<Float>.size,
                 options: .storageModeShared
             )
             if let buf {
                 renderEncoder.setVertexBuffer(buf, offset: 0, index: 0)
+                renderEncoder.setFragmentTexture(italicAtlas.texture, index: 0)
                 renderEncoder.drawPrimitives(
                     type: .triangle,
                     vertexStart: 0,
-                    vertexCount: underlineVerts.count / floatsPerOverlayVertex
+                    vertexCount: italicVerts.count / floatsPerCellVertex
                 )
             }
+        }
+
+        if !boldItalicVerts.isEmpty {
+            let buf = device.makeBuffer(
+                bytes: boldItalicVerts,
+                length: boldItalicVerts.count * MemoryLayout<Float>.size,
+                options: .storageModeShared
+            )
+            if let buf {
+                renderEncoder.setVertexBuffer(buf, offset: 0, index: 0)
+                renderEncoder.setFragmentTexture(boldItalicAtlas.texture, index: 0)
+                renderEncoder.drawPrimitives(
+                    type: .triangle,
+                    vertexStart: 0,
+                    vertexCount: boldItalicVerts.count / floatsPerCellVertex
+                )
+            }
+        }
+
+        // -- Underline + strikethrough passes (overlay pipeline) -----------------
+        // Both share the same overlay pipeline; only the y-geometry differs.
+        // The pipeline state is set once outside the helper.
+        if !underlineVerts.isEmpty || !strikethroughVerts.isEmpty {
+            renderEncoder.setRenderPipelineState(overlayPipelineState)
+            drawOverlayPass(verts: underlineVerts, into: renderEncoder)
+            drawOverlayPass(verts: strikethroughVerts, into: renderEncoder)
         }
 
         // -- Cursor quad ---------------------------------------------------------
@@ -344,6 +439,25 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
     }
 
     // MARK: - Vertex append helpers
+
+    /// Encode one overlay-pipeline draw call from a vertex array. Caller is
+    /// responsible for setting `overlayPipelineState` on the encoder once;
+    /// this helper is a no-op when `verts` is empty so callers can issue
+    /// underline + strikethrough back-to-back without per-array guards.
+    private func drawOverlayPass(verts: [Float], into encoder: MTLRenderCommandEncoder) {
+        guard !verts.isEmpty,
+              let buf = device.makeBuffer(
+                bytes: verts,
+                length: verts.count * MemoryLayout<Float>.size,
+                options: .storageModeShared)
+        else { return }
+        encoder.setVertexBuffer(buf, offset: 0, index: 0)
+        encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: verts.count / Self.floatsPerOverlayVertex
+        )
+    }
 
     /// Append a 6-vertex glyph quad (two triangles) into the buffer.
     /// Each vertex: `[x, y, u, v, fg.x, fg.y, fg.z, fg.w, bg.x, bg.y, bg.z, bg.w]`.
