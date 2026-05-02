@@ -37,10 +37,9 @@
 		E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */; };
 		E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */; };
 		E3AA01102C80A20000AA0001 /* KeyEncoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */; };
+		E3AAD4C42FA5D2ED00A89569 /* Configuration in Frameworks */ = {isa = PBXBuildFile; productRef = E3AAD4C32FA5D2ED00A89569 /* Configuration */; };
 		E3AB01022FC10100001A0001 /* AttributeProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AB01012FC10100001A0001 /* AttributeProjection.swift */; };
 		E3AB01042FC10100001A0001 /* AttributeProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AB01032FC10100001A0001 /* AttributeProjectionTests.swift */; };
-		E3SC01022FC20100001A0001 /* ScrollViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3SC01012FC20100001A0001 /* ScrollViewState.swift */; };
-		E3SC01042FC20100001A0002 /* ScrollViewStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3SC01032FC20100001A0002 /* ScrollViewStateTests.swift */; };
 		E3B801022FC00100001B0001 /* BracketedPasteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3B801012FC00100001B0001 /* BracketedPasteTests.swift */; };
 		E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */; };
 		E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E3BB01102C80B10000BB0001 /* Shaders.metal */; };
@@ -79,6 +78,8 @@
 		E3FA01022FA90600001A0001 /* ScrollbackHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FA01012FA90600001A0001 /* ScrollbackHistory.swift */; };
 		E3FA01042FA90600001A0001 /* ScrollbackHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FA01032FA90600001A0001 /* ScrollbackHistoryTests.swift */; };
 		E3FF01002F89A10000FF0001 /* TermCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E30920B42C23FF6800B6D264 /* TermCore.framework */; };
+		E3SC01022FC20100001A0001 /* ScrollViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3SC01012FC20100001A0001 /* ScrollViewState.swift */; };
+		E3SC01042FC20100001A0002 /* ScrollViewStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3SC01032FC20100001A0002 /* ScrollViewStateTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -233,8 +234,6 @@
 		E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoderTests.swift; sourceTree = "<group>"; };
 		E3AB01012FC10100001A0001 /* AttributeProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttributeProjection.swift; sourceTree = "<group>"; };
 		E3AB01032FC10100001A0001 /* AttributeProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttributeProjectionTests.swift; sourceTree = "<group>"; };
-		E3SC01012FC20100001A0001 /* ScrollViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollViewState.swift; sourceTree = "<group>"; };
-		E3SC01032FC20100001A0002 /* ScrollViewStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollViewStateTests.swift; sourceTree = "<group>"; };
 		E3B801012FC00100001B0001 /* BracketedPasteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BracketedPasteTests.swift; sourceTree = "<group>"; };
 		E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlyphAtlas.swift; sourceTree = "<group>"; };
 		E3BB01102C80B10000BB0001 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
@@ -275,6 +274,8 @@
 		E3F9CA012F900190001F0001 /* ScreenSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSnapshot.swift; sourceTree = "<group>"; };
 		E3FA01012FA90600001A0001 /* ScrollbackHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollbackHistory.swift; sourceTree = "<group>"; };
 		E3FA01032FA90600001A0001 /* ScrollbackHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollbackHistoryTests.swift; sourceTree = "<group>"; };
+		E3SC01012FC20100001A0001 /* ScrollViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollViewState.swift; sourceTree = "<group>"; };
+		E3SC01032FC20100001A0002 /* ScrollViewStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollViewStateTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -317,6 +318,7 @@
 			files = (
 				E30920E82C23FF7800B6D264 /* TermUI.framework in Frameworks */,
 				E342B09F2F89BA9200AE8AE8 /* TermCore.framework in Frameworks */,
+				E3AAD4C42FA5D2ED00A89569 /* Configuration in Frameworks */,
 			);
 		};
 		E309208F2C23FF0800B6D264 /* Frameworks */ = {
@@ -561,6 +563,9 @@
 				E30920E72C23FF7800B6D264 /* PBXTargetDependency */,
 			);
 			name = rTerm;
+			packageProductDependencies = (
+				E3AAD4C32FA5D2ED00A89569 /* Configuration */,
+			);
 			productName = rTerm;
 			productReference = E30920812C23FF0600B6D264 /* rTerm.app */;
 			productType = "com.apple.product-type.application";
@@ -748,6 +753,7 @@
 			mainGroup = E30920782C23FF0600B6D264;
 			packageReferences = (
 				E352C4172C2A851400A15DE9 /* XCRemoteSwiftPackageReference "swift-async-algorithms" */,
+				E3AAD4C22FA5D2ED00A89569 /* XCRemoteSwiftPackageReference "swift-configuration" */,
 			);
 			preferredProjectObjectVersion = 100;
 			productRefGroup = E30920822C23FF0600B6D264 /* Products */;
@@ -1212,6 +1218,14 @@
 				minimumVersion = 1.1.0;
 			};
 		};
+		E3AAD4C22FA5D2ED00A89569 /* XCRemoteSwiftPackageReference "swift-configuration" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-configuration.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.2.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1219,6 +1233,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E352C4172C2A851400A15DE9 /* XCRemoteSwiftPackageReference "swift-async-algorithms" */;
 			productName = AsyncAlgorithms;
+		};
+		E3AAD4C32FA5D2ED00A89569 /* Configuration */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E3AAD4C22FA5D2ED00A89569 /* XCRemoteSwiftPackageReference "swift-configuration" */;
+			productName = Configuration;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
