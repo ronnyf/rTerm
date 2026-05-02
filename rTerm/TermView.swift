@@ -29,7 +29,7 @@ import TermCore
 
 /// An `MTKView` subclass that accepts first-responder status and forwards
 /// keyboard input as raw `Data` through a closure.
-final class TerminalMTKView: MTKView {
+final class TerminalMTKView: MTKView, NSMenuItemValidation {
 
     private let log = Logger(subsystem: "rTerm", category: "TerminalMTKView")
 
@@ -40,6 +40,10 @@ final class TerminalMTKView: MTKView {
     /// `.normal` when nil. The closure is set by the SwiftUI bridge from
     /// `screenModel.latestSnapshot().cursorKeyApplication` at view-make time.
     var cursorKeyModeProvider: (() -> CursorKeyMode)?
+
+    /// Called when the user invokes Edit > Paste (Cmd-V). The handler reads
+    /// the system pasteboard's first plain-text item and forwards it.
+    var onPaste: ((String) -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -59,6 +63,27 @@ final class TerminalMTKView: MTKView {
         }
         // Swallow all key events — do not call super.
     }
+
+    /// AppKit's standard paste action — picked up via responder-chain selector
+    /// dispatch (not a method on MTKView/NSView, so no `override`). Reads the
+    /// system pasteboard's first plain-text item and forwards it via `onPaste`.
+    @objc
+    func paste(_ sender: Any?) {
+        let pb = NSPasteboard.general
+        guard let str = pb.string(forType: .string), !str.isEmpty else { return }
+        log.debug("paste: \(str.count) chars")
+        onPaste?(str)
+    }
+
+    /// `NSMenuItemValidation` conformance — gates the Edit > Paste menu item
+    /// on pasteboard availability. AppKit calls this via the formal protocol.
+    @objc
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(paste(_:)) {
+            return NSPasteboard.general.string(forType: .string) != nil
+        }
+        return true
+    }
 }
 
 // MARK: - TermView
@@ -69,6 +94,7 @@ struct TermView: NSViewRepresentable {
     let screenModel: ScreenModel
     let settings: AppSettings
     var onInput: ((Data) -> Void)?
+    var onPaste: ((String) -> Void)?
 
     func makeCoordinator() -> RenderCoordinator {
         RenderCoordinator(screenModel: screenModel, settings: settings)
@@ -82,12 +108,14 @@ struct TermView: NSViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = clearColor(for: settings.palette.defaultBackground)
         view.onKeyInput = onInput
+        view.onPaste = onPaste
         view.cursorKeyModeProvider = makeCursorKeyModeProvider()
         return view
     }
 
     func updateNSView(_ nsView: TerminalMTKView, context: Context) {
         nsView.onKeyInput = onInput
+        nsView.onPaste = onPaste
         nsView.clearColor = clearColor(for: settings.palette.defaultBackground)
         nsView.cursorKeyModeProvider = makeCursorKeyModeProvider()
     }
@@ -96,8 +124,8 @@ struct TermView: NSViewRepresentable {
     /// between normal and application cursor-key encoding. Reads
     /// `cursorKeyApplication` from `latestSnapshot()` (nonisolated, lock-protected
     /// — safe from the AppKit responder chain). Centralising the closure here
-    /// keeps `makeNSView` and `updateNSView` in lockstep as T8/T10 add more
-    /// view-callback hooks.
+    /// keeps `makeNSView` and `updateNSView` in lockstep as additional view
+    /// callback hooks are added (e.g. T10's scroll handlers).
     private func makeCursorKeyModeProvider() -> () -> CursorKeyMode {
         let model = screenModel
         return { model.latestSnapshot().cursorKeyApplication ? .application : .normal }

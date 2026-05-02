@@ -107,6 +107,33 @@ class TerminalSession {
         }
     }
 
+    // MARK: - Bracketed paste (Phase 2 T8)
+
+    /// Wrap pasted text with the bracketed-paste envelope when enabled.
+    ///
+    /// Shells that have set DEC private mode 2004 expect the envelope so they
+    /// can distinguish pasted bytes from typed bytes (vim, fish, zsh-with-syntax-
+    /// highlighting all use this to suppress autoindent and key-binding triggers
+    /// during paste). When 2004 is off, the raw UTF-8 bytes are sent verbatim.
+    nonisolated public static func bracketedPasteWrap(_ text: String, enabled: Bool) -> Data {
+        let payload = Data(text.utf8)
+        guard enabled else { return payload }
+        var data = Data()
+        data.reserveCapacity(payload.count + 12)
+        data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E])  // ESC [ 2 0 0 ~
+        data.append(payload)
+        data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E])  // ESC [ 2 0 1 ~
+        return data
+    }
+
+    /// Send pasted text to the active session, wrapping if the shell has
+    /// enabled bracketed paste (mode 2004).
+    func paste(_ text: String) {
+        let enabled = screenModel.latestSnapshot().bracketedPaste
+        let data = Self.bracketedPasteWrap(text, enabled: enabled)
+        sendInput(data)
+    }
+
     /// Notify the daemon that the terminal size has changed.
     func resize(rows: UInt16, cols: UInt16) {
         guard let sessionID else { return }
@@ -170,11 +197,12 @@ struct ContentView: View {
     @State private var settings = AppSettings()
 
     var body: some View {
-        TermView(screenModel: session.screenModel,
-                 settings: settings,
-                 onInput: { data in
-            session.sendInput(data)
-        })
+        TermView(
+            screenModel: session.screenModel,
+            settings: settings,
+            onInput: { data in session.sendInput(data) },
+            onPaste: { text in session.paste(text) }
+        )
         .navigationTitle(session.windowTitle ?? "rTerm")
         .task {
             do {
