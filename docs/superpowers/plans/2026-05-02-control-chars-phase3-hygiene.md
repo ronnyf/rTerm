@@ -1028,14 +1028,71 @@ third-party blast radius."
 **Pattern used:** `os.signpost` instrumentation added first to establish a measurement baseline (count of allocations observed via `OSSignposter.beginInterval` inside the arrays' allocation points is infeasible without an allocator hook; instead, count `reserveCapacity` sites and instrument the draw loop to record the per-frame interval duration — the metric is frame time, not allocation count). XCTest `measure` block asserts no regression.
 
 **Files:**
+- Create: `TermCore/PerfCountersDebug.swift` (shared DEBUG counters used by Tasks 6, 7, 9)
 - Modify: `rTerm/RenderCoordinator.swift`
 - Create: `rTermTests/RenderCoordinatorAllocationTests.swift`
 
 ### Steps
 
-- [ ] **Step 1: Add signposter + arrays as instance properties**
+- [ ] **Step 1: Add signposter + arrays as instance properties + shared `PerfCountersDebug` enum**
 
-Open `rTerm/RenderCoordinator.swift`. Near the top of the class:
+Tasks 6, 7, and 9 each want a DEBUG-only counter visible to unit tests. Three separate `nonisolated(unsafe) static var xxxForTesting` declarations with three near-identical Swift 6 isolation rationale paragraphs is not reviewer-friendly. Factor one shared file up front.
+
+Create `rTerm/PerfCountersDebug.swift`:
+
+```swift
+//
+//  PerfCountersDebug.swift
+//  rTerm
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+//  DEBUG-only shared perf counters exposed to rTermTests +
+//  TermCoreTests. Consolidated into one namespace so the Swift 6
+//  isolation rationale is written once, not three times.
+//
+//  `nonisolated(unsafe)` correctness invariant (applies to every field
+//  below): the counter is written from whatever actor/queue owns the
+//  code path it instruments AND read from a @MainActor test after a
+//  deterministic synchronization point (an `await` on the instrumented
+//  actor, or `MTKView.draw` completion on the MainActor). Violating
+//  either — e.g., reading the counter without an intervening happens-
+//  before edge — makes the number meaningless. `nonisolated(unsafe)`
+//  here encodes "I have verified happens-before in the calling test,
+//  do not diagnose the data race."
+//
+
+#if DEBUG
+public enum PerfCountersDebug {
+    /// Metal buffer allocations observed in the current `draw(in:)` pass.
+    /// Written by `RenderCoordinator.draw(in:)` on the MainActor; read
+    /// by `RenderCoordinatorAllocationTests` on the MainActor after the
+    /// frame completes. Task 7 instruments this.
+    nonisolated(unsafe) public static var makeBufferCount: Int = 0
+
+    /// Vertex-array capacities observed after a `beginFrameCleanup`
+    /// call. Written by `RenderCoordinator.beginFrameCleanup` on the
+    /// MainActor; read by `RenderCoordinatorAllocationTests`. Task 6
+    /// uses this (via an instance accessor that reads the capacities
+    /// directly — the array storage itself is the counter).
+    nonisolated(unsafe) public static var vertexCapacitySnapshot: [Int] = []
+
+    /// `ScrollbackHistory.Row` allocations per scrolling LF. Written
+    /// by `ScreenModel.scrollAndMaybeEvict` on the actor's serial
+    /// executor (daemon queue); read by
+    /// `ScrollbackHistoryAllocationTests` after awaiting the
+    /// deterministic number of actor-isolated applies. Task 9 uses this.
+    nonisolated(unsafe) public static var rowAllocationCount: Int = 0
+}
+#endif
+```
+
+Add the file to the **rTerm app target** — `PerfCountersDebug` is read by both `rTermTests` (which imports `rTerm`) and needs to be visible to `TermCore` for the Row-allocation increment in `ScreenModel.scrollAndMaybeEvict`. Since TermCore is a framework that rTerm imports (not the other way around), place the counter write site in TermCore too — use the same name but declared in `TermCore/PerfCountersDebug.swift` OR have TermCore export its own counter that rTerm's test imports through `@testable import TermCore`.
+
+**Layering note:** simplest layout is `TermCore/PerfCountersDebug.swift` because TermCore's `ScrollbackHistory` needs to write one of the counters. Reading from `rTermTests` works via `@testable import TermCore` (already used). `rTerm/RenderCoordinator` reads / writes from its own module via `import TermCore`.
+
+Then in `rTerm/RenderCoordinator.swift`, near the top of the class:
 
 ```swift
 import os
@@ -1267,21 +1324,13 @@ rTermTests exercise the preamble without a live Metal drawable."
 
 - [ ] **Step 1: Add measurement first — baseline count**
 
-In `rTerm/RenderCoordinator.swift`, add a DEBUG-only counter:
-
-**Swift 6 isolation note:** `nonisolated(unsafe)` tells the compiler "I take responsibility for the races." In this test counter's case the invariant we rely on is that only the MainActor draws frames (so writes happen on the MainActor) and only the MainActor runs the allocation test's assertions (so reads happen on the MainActor). Violating either would make the counter meaningless — the test must also be `@MainActor` (see Step 6 test body below).
-
-```swift
-#if DEBUG
-nonisolated(unsafe) static var makeBufferCountForTesting: Int = 0
-#endif
-```
+Task 6 already landed `TermCore/PerfCountersDebug.swift` with a `makeBufferCount` field under a single shared Swift 6 isolation rationale. Use it here; do NOT add a separate `nonisolated(unsafe) static var` on `RenderCoordinator`.
 
 Wrap each `device.makeBuffer(...)` call in `draw(in:)`:
 
 ```swift
 #if DEBUG
-Self.makeBufferCountForTesting += 1
+PerfCountersDebug.makeBufferCount += 1
 #endif
 let buf = device.makeBuffer(bytes: ..., length: ..., options: ...)
 ```
@@ -1567,11 +1616,11 @@ commandBuffer.commit()
 
 Repeat for bold, italic, boldItalic, underline, strikethrough passes. Cursor and overlay (scroll bell flash, etc.) passes that use `setVertexBytes` or separate allocations stay unchanged unless they fit the pattern.
 
-Remove the `#if DEBUG makeBufferCountForTesting += 1` from these sites (since they're no longer making buffers). Keep it on any remaining `makeBuffer` calls that didn't migrate.
+Remove the `#if DEBUG PerfCountersDebug.makeBufferCount += 1` from these sites (since they're no longer making buffers). Keep it on any remaining `makeBuffer` calls that didn't migrate.
 
 - [ ] **Step 6: Add steady-state counter test**
 
-Append to `rTermTests/RenderCoordinatorAllocationTests.swift`. The test exercises the `ensureRings` path directly (not `draw(in:)`) using the same factory-free pattern from Task 7 Step 5:
+Append to `rTermTests/RenderCoordinatorAllocationTests.swift`. The test exercises the `ensureRings` path directly (not `draw(in:)`) using the same factory-free pattern from Task 6 Step 5:
 
 ```swift
 @MainActor
@@ -1586,15 +1635,14 @@ func test_steady_state_makeBuffer_count_is_zero() throws {
     // Prime the rings with an ensureRings call (the warmup that would
     // happen on the first draw frame).
     coord.ensureRingsForTesting(cols: 80, rows: 24)
-    RenderCoordinator.makeBufferCountForTesting = 0
+    PerfCountersDebug.makeBufferCount = 0
 
     // Simulate several steady-state frames. ensureRings at a stable size
-    // is a no-op after the priming call, so makeBufferCountForTesting
-    // must stay at 0.
+    // is a no-op after the priming call, so makeBufferCount must stay at 0.
     for _ in 0..<10 {
         coord.ensureRingsForTesting(cols: 80, rows: 24)
     }
-    XCTAssertEqual(RenderCoordinator.makeBufferCountForTesting, 0,
+    XCTAssertEqual(PerfCountersDebug.makeBufferCount, 0,
                    "steady-state draw should allocate no MTLBuffers")
 }
 ```
@@ -1734,23 +1782,15 @@ Approach: add allocation instrumentation, run a sustained-throughput benchmark, 
 
 ### Steps
 
-- [ ] **Step 1: Add an allocation counter to `ScrollbackHistory`**
+- [ ] **Step 1: Add an allocation counter increment to `ScrollbackHistory`**
 
-In `TermCore/ScrollbackHistory.swift`:
+Task 6 already landed `TermCore/PerfCountersDebug.swift` with a shared `rowAllocationCount` field under a single Swift 6 isolation rationale. Use it; do NOT introduce a second `nonisolated(unsafe)` declaration here.
 
-**Swift 6 isolation note:** `nonisolated(unsafe)` is a pointed escape hatch. For this counter the invariant we rely on is that the actor's executor serializes writes (every increment happens inside `ScreenModel`'s actor context on the daemon queue) AND the allocation test reads after awaiting a deterministic number of actor-isolated applies (so the read happens-after all writes). Violating either — e.g., reading the counter without an intervening `await` — makes the number meaningless.
-
-```swift
-#if DEBUG
-nonisolated(unsafe) public static var rowAllocationCountForTesting: Int = 0
-#endif
-```
-
-In the `push(_:)` method (or wherever the new Row is constructed inside `scrollAndMaybeEvict`), add:
+In `TermCore/ScrollbackHistory.swift`, in `push(_:)` (or wherever the new Row is constructed inside `scrollAndMaybeEvict`), add:
 
 ```swift
 #if DEBUG
-ScrollbackHistory.rowAllocationCountForTesting += 1
+PerfCountersDebug.rowAllocationCount += 1
 #endif
 ```
 
@@ -1783,12 +1823,12 @@ struct ScrollbackHistoryAllocationTests {
         for _ in 0..<24 {
             await model.apply([.c0(.lineFeed)])
         }
-        ScrollbackHistory.rowAllocationCountForTesting = 0
+        PerfCountersDebug.rowAllocationCount = 0
         let lfCount = 1_000
         for _ in 0..<lfCount {
             await model.apply([.c0(.lineFeed)])
         }
-        let allocs = ScrollbackHistory.rowAllocationCountForTesting
+        let allocs = PerfCountersDebug.rowAllocationCount
         #expect(allocs == lfCount,
                 "Expected exactly one Row allocation per scrolling LF; got \(allocs) for \(lfCount) LFs")
     }

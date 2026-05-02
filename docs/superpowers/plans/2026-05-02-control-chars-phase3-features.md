@@ -17,27 +17,101 @@
 - If the report shows failures, the controller re-dispatches the implementer with a fix-focused prompt.
 - After the build reporter passes, the controller dispatches spec-compliance and code-quality reviewers per `superpowers:subagent-driven-development`. Only then is the task marked complete and `/simplify` is invoked before the next task.
 
+**Task dependency map.** Track A tasks must land in the order rows appear — a remediation pass that parallelizes would hit compile errors at shared enum / struct extension points (`CSICommand`, `OSCCommand`, `ScreenSnapshot`, `TerminalModes`).
+
+| Task | Depends on | Delivers | Parallelizable with |
+|------|-----------|----------|---------------------|
+| T1 | Track B | `ScreenModelOutput` enum + `installOutputSink` + `.ptyWriteback` daemon path | — |
+| T2 | T1 | DA1 + DA2 + CPR parser cases + writeback replies | T5, T6, T7 once landed |
+| T3 | T1, Track B T4 (`Cursor.zero`) | DECSCUSR parser + model state + renderer shape | T5, T6, T7 once landed |
+| T4 | T3 (needs `cursorShape` state), Track B T4 (TerminalState convenience init) | `cursorShape` + `iconName` fields on `ScreenSnapshot` + Codable back-compat | T5, T6, T7 once landed |
+| T5 | Track B (renderer prerequisites) | Blink fragment-shader uniform | T2, T3, T6, T7 |
+| T6 | T1 (adds `TerminalModes.originMode`) | DECOM origin-mode translation | T2, T3, T5, T7 (enum-case sequencing) |
+| T7 | T6 (references `originMode` reset) | DECCOLM 132-column + 4-side-effect reset | — (serialize after T6) |
+| T8 | Track B (Codable convention) | OSC 8 parser + `Hyperlink` value + `CellStyle.hyperlink` + pen state | — |
+| T9 | T8 (reads `cell.style.hyperlink`) | OSC 8 hover + click + `NSWorkspace` URI open | — |
+| T10 | T1 (adds `.clipboardWrite` enum case) | OSC 52 set path + consent prompt + NSPasteboard | T8, T9 |
+| T11 | Track B T4 (AppSettings palette field), Phase 2 renderer | Palette chooser Settings scene + preset lookup | — |
+
+Within Track A, the rule is: **never start a task whose "Depends on" row has not landed.** T2/T3/T4 all wire into `CSICommand.swift` + `ScreenModel.handleCSI`; landing them out of order causes merge conflicts at the enum-case addition site. T6/T7 similarly wire into `DECPrivateMode.swift` + `handleSetMode`.
+
 ---
 
-## Task 1: PTY writeback infrastructure
+## Task 1: Unified `ScreenModelOutput` sink + PTY writeback infrastructure
 
 **Spec reference:** §8 Phase 3 Track A — Terminal identification responses prelude.
 
-**Goal:** The daemon must accept byte-write requests originating from `ScreenModel` (in response to DA1/DA2/CPR) and forward them to the PTY primary. Today the daemon only receives bytes from the shell and from the client's keyboard input. Add:
+**Goal:** The daemon must accept output events originating from `ScreenModel` (writeback bytes in response to DA1/DA2/CPR, or clipboard writes from OSC 52) and route each to the appropriate destination. Today the daemon only receives bytes from the shell and from the client's keyboard input. Introduce **one** typed output enum + one installer on `ScreenModel` so every future side-effect event is a new enum case, not a new `@Sendable` property:
 
-1. `DaemonResponse.writeback(sessionID: SessionID, data: Data)` — new XPC push case, sent from daemon → client on a writeback emit so the client can log or inspect; *no client action required*.
-2. Internal daemon path: `Session.writeback(_:)` writes the bytes directly into the PTY primary (same FD used for client-input bytes). No XPC roundtrip — the writeback originates inside the daemon, executed synchronously on the daemon queue.
-3. Hook point: `ScreenModel.writebackSink: (@Sendable (Data) -> Void)?` — a closure the daemon installs at session-create time. Invoked by the model when a DA1/DA2/CPR response is required. `nil` on client-side (the client never originates writeback).
+```swift
+public enum ScreenModelOutput: Sendable {
+    /// PTY-writeback bytes (DA1, DA2, CPR, future DSR, XtSmGraphics,
+    /// terminal parameters, …). Daemon writes directly to the PTY
+    /// primary and fans out on the writeback XPC case.
+    case ptyWriteback(Data)
+
+    /// OSC 52 clipboard set. `base64Payload` is the raw payload
+    /// verbatim — the daemon fans out to clients who decode + prompt +
+    /// write to `NSPasteboard.general`.
+    case clipboardWrite(targets: ClipboardTargets, base64Payload: String)
+
+    // Phase 4 adds e.g. `.osc4ColorReply`, `.focusEvent`, …
+}
+```
+
+**Why unified?** Reference terminals converge on a single output stream:
+- wezterm (`~/dev/public/wezterm/term/src/terminalstate/mod.rs:356`): `writer: BufWriter<ThreadedWriter>` — every emission (DA1 line 1296, DA2 1311, DA3 1316, status 1336, focus 788–789, keyboard 843–844) flows through `self.writer.write(...)`.
+- iTerm2 (`~/rdev/iTerm2/sources/VT100TerminalDelegate.h:112`): one delegate method `- (void)terminalSendReport:(NSData *)report` for all non-clipboard writeback. A specialized variant routes OSC 4 color reports; even then, signature-identical.
+- Terminal.app (`~/dev/swe/terminal/TTVT100Emulator.m`): every DA1/DA2/CPR/status/keyboard reply routes through `[_shell writeData:]`.
+
+Splitting `ScreenModel` output into separate `_writebackSink`/`_clipboardSink` per kind would invite a third sink the moment Phase 4 adds OSC 4 replies. Collapsing to one typed enum means future kinds are one-line enum additions.
+
+**Task 1 delivers:** `ScreenModelOutput` enum, `ScreenModel.installOutputSink(_:)`, `emitOutput(_:)`, the writeback case routed through `Session` + the `DaemonResponse.writeback` XPC push. Task 10 (OSC 52) adds the `.clipboardWrite` case to the same enum and registers one case-matching branch in the daemon's output handler.
+
+For convenience at call sites that only emit writeback bytes, expose a thin wrapper `emitWriteback(_ data: Data)` that forwards to `emitOutput(.ptyWriteback(data))`.
 
 **Files:**
 - Modify: `TermCore/DaemonProtocol.swift` (add `.writeback` case)
-- Modify: `TermCore/ScreenModel.swift` (add `writebackSink` property + actor-isolated `installWritebackSink(_:)`)
-- Modify: `rtermd/Session.swift` (install sink from within `startOutputHandler()`'s `assumeIsolated` block; write to PTY primary when sink fires)
-- Create: `TermCoreTests/WritebackSinkTests.swift`
+- Create: `TermCore/ScreenModelOutput.swift` (new enum + its `Sendable` conformance)
+- Modify: `TermCore/ScreenModel.swift` (add `_outputSink` + `installOutputSink(_:)` + `emitOutput(_:)` + `emitWriteback` wrapper)
+- Modify: `rtermd/Session.swift` (install sink from within `startOutputHandler()`'s `assumeIsolated` block; switch on the event, write writeback bytes to PTY primary, broadcast XPC)
+- Create: `TermCoreTests/ScreenModelOutputTests.swift`
 
 ### Steps
 
-- [ ] **Step 1: Add the XPC response case**
+- [ ] **Step 1: Create `ScreenModelOutput` + add XPC response case**
+
+Create `TermCore/ScreenModelOutput.swift`:
+
+```swift
+//
+//  ScreenModelOutput.swift
+//  TermCore
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+
+import Foundation
+
+/// Typed output events originating inside `ScreenModel`. A single
+/// `installOutputSink` pair hosts every model-originated side effect;
+/// adding a new kind is a new enum case, not a new `@Sendable` sink
+/// property. Reference-terminal consensus (wezterm `self.writer`,
+/// iTerm2 `terminalSendReport:`, Terminal.app `[_shell writeData:]`):
+/// one typed output channel.
+public enum ScreenModelOutput: Sendable {
+    /// PTY-writeback bytes — DA1/DA2/CPR today; DSR / XtSmGraphics /
+    /// terminal parameters / focus events in later phases. The daemon
+    /// writes directly to the PTY primary and fans out on the
+    /// `DaemonResponse.writeback` XPC push so mirrored clients see
+    /// the inbound bytes.
+    case ptyWriteback(Data)
+
+    /// OSC 52 clipboard set. Phase 3 Task 10 adds this case.
+    case clipboardWrite(targets: ClipboardTargets, base64Payload: String)
+}
+```
 
 In `TermCore/DaemonProtocol.swift`, add a new case to `DaemonResponse`:
 
@@ -53,74 +127,80 @@ case writeback(sessionID: SessionID, data: Data)
 
 Extend the `Codable` conformance accordingly (if hand-coded). If `DaemonResponse` uses an auto-derived `Codable` enum, no further work is needed.
 
-- [ ] **Step 2: Add `writebackSink` to `ScreenModel`**
+- [ ] **Step 2: Add `_outputSink` + `installOutputSink` + `emitOutput` + `emitWriteback` to `ScreenModel`**
 
-**Isolation note — verified against `TermCore/ScreenModel.swift:49`:** `ScreenModel` is a `public actor`. The sink install and `emitWriteback` run inside the actor (either via `assumeIsolated` at daemon-queue callsites, or via `await` elsewhere). The sink closure type is `@Sendable (Data) -> Void` so it can be safely stored on the actor and invoked from any actor-isolated method; the closure itself does not need to be isolated because the daemon's implementation synchronizes through its own serial queue.
-
-In `TermCore/ScreenModel.swift`:
+`ScreenModel` is a `public actor` (verified `TermCore/ScreenModel.swift:49`). The sink install and emit run inside the actor (either via `assumeIsolated` at daemon-queue callsites, or via `await` elsewhere). The sink closure is `@Sendable (ScreenModelOutput) -> Void` so it's safe to store on the actor and invoke from any actor-isolated method; the daemon's implementation synchronizes through its own serial queue.
 
 ```swift
 /// Installed by the daemon's `Session` at create time so the model can
-/// originate writes to the PTY primary (e.g., DA1/DA2/CPR responses).
-/// `nil` when running client-side — the client never originates writeback.
+/// originate PTY writebacks, clipboard writes, or future side-effect
+/// events. `nil` when running client-side — the client never originates
+/// these events.
 ///
 /// Mutated only inside the actor; readers are also actor-isolated so
 /// no additional sync is needed beyond the actor's existing serial
 /// executor.
-private var _writebackSink: (@Sendable (Data) -> Void)? = nil
+private var _outputSink: (@Sendable (ScreenModelOutput) -> Void)? = nil
 
-/// Install a writeback sink. Called exactly once per model instance;
-/// a second call is a programmer error.
-///
-/// Actor-isolated — callers must be inside the actor. From the daemon's
-/// `Session.startOutputHandler()`, wrap the call in
-/// `screenModel.assumeIsolated { model in model.installWritebackSink(…) }`.
-/// From an `async` context, call `await model.installWritebackSink(…)`.
-public func installWritebackSink(_ sink: @escaping @Sendable (Data) -> Void) {
-    precondition(_writebackSink == nil, "writeback sink already installed")
-    _writebackSink = sink
+/// Install an output sink. Called exactly once per model instance;
+/// a second call is a programmer error. Actor-isolated.
+public func installOutputSink(_ sink: @escaping @Sendable (ScreenModelOutput) -> Void) {
+    precondition(_outputSink == nil, "output sink already installed")
+    _outputSink = sink
 }
 
-/// Invoke the writeback sink with `data`. No-op if no sink is installed
-/// (e.g., client-side). Actor-isolated.
+/// Invoke the output sink with `event`. No-op if no sink is installed.
+/// Actor-isolated.
+internal func emitOutput(_ event: ScreenModelOutput) {
+    _outputSink?(event)
+}
+
+/// Convenience: emit a PTY writeback. Used by DA1/DA2/CPR + future
+/// writeback-shaped sequences (DSR, terminal parameters, …).
 internal func emitWriteback(_ data: Data) {
-    _writebackSink?(data)
+    emitOutput(.ptyWriteback(data))
 }
 ```
 
 - [ ] **Step 3: Install the sink in `rtermd/Session.swift`**
 
-**API notes — verified against `rtermd/Session.swift` and `TermCore/ScreenModel.swift`:**
-- `ScreenModel` is a `public actor` (line 49). Calling an actor-isolated method from `Session.init` (which is nonisolated) is illegal without `await` or `assumeIsolated`. The existing Phase 2 pattern (line 199) uses `screenModel.assumeIsolated { model in model.apply(events) }` because the actor's executor queue is the daemon queue we're already on.
-- `Session` has a `broadcast(_:)` method (line 216) that takes a `DaemonResponse` and iterates `attachedClients`. It does **not** have a method named `fanOutResponse`. The `fanOutToClients(_:)` helper wraps raw bytes; `broadcast(_:)` is the typed helper to use here.
-- `Session.init` runs before `startOutputHandler()` on a different thread than the daemon queue — it is NOT safe to call `assumeIsolated` from `init`. Install the sink lazily in `startOutputHandler()`, where the handler is already guaranteed to execute on the daemon queue (the actor's executor).
-
-Extend `Session` with sink installation tied to `startOutputHandler`, which already runs on the daemon queue:
+`Session.init` runs before `startOutputHandler()` on a different thread than the daemon queue — it is NOT safe to call `assumeIsolated` from `init`. Install the sink lazily in `startOutputHandler()`, where the handler is already guaranteed to execute on the daemon queue (the actor's executor).
 
 ```swift
-// In Session.swift, inside startOutputHandler(), after the precondition checks
-// and before installing the dispatch source:
+// In Session.swift, inside startOutputHandler(), after the precondition
+// checks and before installing the dispatch source:
 screenModel.assumeIsolated { model in
-    model.installWritebackSink { [weak self] bytes in
-        // This closure is invoked from inside the actor (on the daemon queue)
-        // whenever ScreenModel.emitWriteback fires. Session's own storage is
-        // queue-serialized, so writeToPTY and broadcast are safe to call here.
+    model.installOutputSink { [weak self] event in
         guard let self else { return }
-        self.writeToPTY(bytes)
-        self.broadcast(.writeback(sessionID: self.id, data: bytes))
+        switch event {
+        case .ptyWriteback(let bytes):
+            // Writeback bytes — write directly to the PTY primary so
+            // the shell receives the reply. Broadcast the writeback to
+            // attached clients so their mirrors stay in sync.
+            self.write(bytes)
+            self.broadcast(.writeback(sessionID: self.id, data: bytes))
+
+        case .clipboardWrite(let targets, let base64Payload):
+            // Phase 3 Task 10 lands this case — fan out via
+            // DaemonResponse.clipboardWrite; the client side decodes
+            // base64, prompts for consent, writes NSPasteboard.
+            self.broadcast(.clipboardWrite(sessionID: self.id,
+                                            targets: targets,
+                                            base64Payload: base64Payload))
+        }
     }
 }
 ```
 
-Implement `writeToPTY(_:)` as a private wrapper over the existing `write(_:)` method (line 272 of `Session.swift`), or inline the call — `Session.write(_:)` already performs the full-write loop against `primaryFD`. Name choice: keep the existing `write(_:)` signature and call `self.write(bytes)` directly from the sink closure.
+`Session.write(_:)` (line 272) already performs the full-write loop against `primaryFD`; no new helper required. Implementing the `.clipboardWrite` arm is scheduled as part of Task 10 — until that commit lands, the switch can temporarily omit `.clipboardWrite` (or include a `@unknown default` in the compile-matrix to satisfy exhaustiveness).
 
-- [ ] **Step 4: Write unit test for the sink**
+- [ ] **Step 4: Unit tests**
 
-Create `TermCoreTests/WritebackSinkTests.swift`:
+Create `TermCoreTests/ScreenModelOutputTests.swift`:
 
 ```swift
 //
-//  WritebackSinkTests.swift
+//  ScreenModelOutputTests.swift
 //  TermCoreTests
 //
 //  This file is part of rTerm.
@@ -131,19 +211,25 @@ import Foundation
 import Testing
 @testable import TermCore
 
-@Suite("ScreenModel writeback sink")
-struct WritebackSinkTests {
+@Suite("ScreenModel output sink")
+struct ScreenModelOutputTests {
 
-    @Test("emitWriteback forwards bytes when sink installed")
-    func test_sink_receives_bytes() async {
+    @Test("emitWriteback forwards ptyWriteback events to the sink")
+    func test_sink_receives_writeback() async {
         let model = ScreenModel(cols: 80, rows: 24)
-        let received = DataSink()
-        model.installWritebackSink { data in received.append(data) }
+        let received = LockedAccumulator<ScreenModelOutput>()
+        model.installOutputSink { event in received.append(event) }
         await model._testEmitWriteback(Data([0x41, 0x42]))
-        #expect(received.all() == Data([0x41, 0x42]))
+        let events = received.all()
+        #expect(events.count == 1)
+        if case .ptyWriteback(let data) = events[0] {
+            #expect(data == Data([0x41, 0x42]))
+        } else {
+            Issue.record("expected .ptyWriteback")
+        }
     }
 
-    @Test("emitWriteback is a no-op with no sink")
+    @Test("emitOutput is a no-op with no sink")
     func test_no_sink_is_noop() async {
         let model = ScreenModel(cols: 80, rows: 24)
         await model._testEmitWriteback(Data([0x7E]))
@@ -153,19 +239,18 @@ struct WritebackSinkTests {
     @Test("Second sink install traps")
     func test_double_install_traps() async {
         // Precondition trap — cannot be asserted from Swift Testing
-        // directly. Verify manually by uncommenting:
+        // directly. Manual inspection:
         // let model = ScreenModel(cols: 80, rows: 24)
-        // model.installWritebackSink { _ in }
-        // model.installWritebackSink { _ in }   // ← traps
-        // The test body is intentionally empty; the precondition is
-        // enforced at runtime and covered by manual inspection.
+        // model.installOutputSink { _ in }
+        // model.installOutputSink { _ in }   // ← traps
     }
 }
 
-// `DataSink` comes from `TermCoreTests/TestHelpers.swift` (Track B Task 0).
+// `LockedAccumulator` comes from `TermCoreTests/TestHelpers.swift`
+// (Track B Task 0).
 ```
 
-Add a `@testable`-scope helper on `ScreenModel` to exercise `emitWriteback` from tests without faking a full DA1/DA2/CPR event path:
+Add a `@testable`-scope helper on `ScreenModel` to exercise the sink from tests without faking a full DA1/DA2/CPR event path:
 
 ```swift
 #if DEBUG
@@ -188,17 +273,27 @@ xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -qu
 
 ```bash
 git add TermCore/DaemonProtocol.swift \
+        TermCore/ScreenModelOutput.swift \
         TermCore/ScreenModel.swift \
         rtermd/Session.swift \
-        TermCoreTests/WritebackSinkTests.swift
-git commit -m "feat(TermCore): PTY writeback sink infrastructure
+        TermCoreTests/ScreenModelOutputTests.swift
+git commit -m "feat(TermCore): unified ScreenModelOutput sink (writeback + clipboard)
 
-ScreenModel gains installWritebackSink(_:) so it can originate byte
-writes to the PTY primary — needed by DA1/DA2/CPR responses in later
-Phase 3 tasks. DaemonResponse.writeback XPC case lets attached clients
-observe the writeback for parser consistency. Daemon's Session installs
-the sink at create time; client never installs (emitWriteback is a
-no-op with no sink)."
+Introduces one typed output enum + one installOutputSink so
+ScreenModel-originated side effects flow through a single channel.
+Reference terminals converge on this shape: wezterm 'self.writer',
+iTerm2 '[delegate terminalSendReport:]', Terminal.app
+'[_shell writeData:]' — splitting into per-kind sinks invites a
+third sink the moment Phase 4 adds OSC 4 / focus events.
+
+Phase 3 cases: .ptyWriteback(Data) (DA1/DA2/CPR + future DSR) and
+.clipboardWrite(targets: base64Payload:) (OSC 52, landing in Task 10).
+Future kinds are one-line enum additions.
+
+Daemon's Session installs the sink at session-create time inside
+startOutputHandler's assumeIsolated block, switches on the event, and
+routes writeback to PTY primary + XPC fanout. Client never installs
+(emitOutput is a no-op with no sink)."
 ```
 
 ---
@@ -1693,15 +1788,15 @@ scheme is logged and ignored."
 
 **Spec reference:** §8 Phase 3 Track A — OSC 52 clipboard (set only, query deferred to Phase 4 per answered Q1).
 
-**Goal:** Parser promotes OSC 52 into typed `OSCCommand.setClipboard(targets: ClipboardTargets, base64Payload: String)`. Model routes the payload via a new `DaemonResponse.clipboardWrite` push. Client app writes to `NSPasteboard.general` under a user-consent gate (OSC 52 is not a user-triggered action, so surface a prompt on every fire).
+**Goal:** Parser promotes OSC 52 into typed `OSCCommand.setClipboard(targets: ClipboardTargets, base64Payload: String)`. Model routes the payload via the unified `ScreenModelOutput` sink's `.clipboardWrite` case (landed in Task 1). Daemon fan-out uses the existing `switch event` block in `Session.startOutputHandler()`. Client app writes to `NSPasteboard.general` under a user-consent gate (OSC 52 is not a user-triggered action, so surface a prompt on every fire).
 
 **Files:**
 - Modify: `TermCore/OSCCommand.swift`
 - Create: `TermCore/ClipboardTargets.swift`
 - Modify: `TermCore/TerminalParser.swift`
 - Modify: `TermCore/DaemonProtocol.swift` (new `DaemonResponse` case)
-- Modify: `TermCore/ScreenModel.swift` (emit a new nonisolated "clipboard sink" closure)
-- Modify: `rtermd/Session.swift` (fan out to clients)
+- Modify: `TermCore/ScreenModel.swift` (handle in `handleOSC` → `emitOutput(.clipboardWrite(...))`)
+- Modify: `rtermd/Session.swift` (concrete `.clipboardWrite` arm in the unified switch)
 - Modify: `rTerm/ContentView.swift` (receive + consent prompt + NSPasteboard write)
 - Create: `TermCoreTests/ClipboardTests.swift`
 
@@ -1812,50 +1907,28 @@ In `TermCore/DaemonProtocol.swift`:
 case clipboardWrite(sessionID: SessionID, targets: ClipboardTargets, base64Payload: String)
 ```
 
-- [ ] **Step 5: `ScreenModel` → clipboard sink**
+- [ ] **Step 5: `ScreenModel` emits `.clipboardWrite` on the unified output sink**
 
-Add a sibling of `writebackSink`. Isolation rules are identical to Task 1: install/emit are actor-isolated; the closure itself is `@Sendable`. The daemon installs via `assumeIsolated` inside `startOutputHandler()`.
-
-```swift
-// Mutated only inside the actor; no @ObservationIgnored needed —
-// ScreenModel is not @Observable (it's a plain actor).
-private var _clipboardSink: (@Sendable (ClipboardTargets, String) -> Void)? = nil
-
-public func installClipboardSink(_ sink: @escaping @Sendable (ClipboardTargets, String) -> Void) {
-    precondition(_clipboardSink == nil, "clipboard sink already installed")
-    _clipboardSink = sink
-}
-
-internal func emitClipboardWrite(targets: ClipboardTargets, base64Payload: String) {
-    _clipboardSink?(targets, base64Payload)
-}
-```
-
-Handle in `handleOSC`:
+The Task 1 `ScreenModelOutput` enum already carries `.clipboardWrite(targets:base64Payload:)`. No new sink property, no new install method — just handle `.setClipboard` in `handleOSC` by calling `emitOutput`:
 
 ```swift
 case .setClipboard(let targets, let payload):
-    emitClipboardWrite(targets: targets, base64Payload: payload)
+    emitOutput(.clipboardWrite(targets: targets, base64Payload: payload))
     return false  // pure side effect; no snapshot bump
 ```
 
 - [ ] **Step 6: Daemon fan-out**
 
-**API note — see Task 1 Step 3: `Session.broadcast(_:)` is the typed helper; `fanOutResponse` does not exist. The writeback-sink install pattern from Task 1 applies identically.**
-
-In `rtermd/Session.swift`, install the clipboard sink inside `startOutputHandler()` adjacent to the writeback-sink install (both go inside the same `screenModel.assumeIsolated { model in … }` block so there's only one `assumeIsolated` hop at handler-install time):
+The Task 1 sink install already includes a `.clipboardWrite` arm in the `switch event` block. If Task 1's placeholder for `.clipboardWrite` was left as `@unknown default`, replace that arm now with the concrete fan-out. The arm already shipped in Task 1 reads:
 
 ```swift
-screenModel.assumeIsolated { model in
-    model.installWritebackSink { [weak self] bytes in … }  // Task 1
-    model.installClipboardSink { [weak self] targets, payload in
-        guard let self else { return }
-        self.broadcast(.clipboardWrite(sessionID: self.id,
-                                        targets: targets,
-                                        base64Payload: payload))
-    }
-}
+case .clipboardWrite(let targets, let base64Payload):
+    self.broadcast(.clipboardWrite(sessionID: self.id,
+                                    targets: targets,
+                                    base64Payload: base64Payload))
 ```
+
+No additional `assumeIsolated` hop needed — the one installed at `startOutputHandler()` handles every output kind.
 
 - [ ] **Step 7: Client consent + pasteboard write**
 
@@ -1966,8 +2039,10 @@ struct ClipboardTests {
     func test_model_emits_clipboard_sink() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let received = LockedAccumulator<(ClipboardTargets, String)>()
-        model.installClipboardSink { targets, payload in
-            received.append((targets, payload))
+        model.installOutputSink { event in
+            if case .clipboardWrite(let targets, let payload) = event {
+                received.append((targets, payload))
+            }
         }
         await model.apply([.osc(.setClipboard(targets: .clipboard, base64Payload: "aGk="))])
         let all = received.all()
@@ -1994,10 +2069,11 @@ git add TermCore/ClipboardTargets.swift \
         TermCoreTests/ClipboardTests.swift
 git commit -m "feat: OSC 52 clipboard set path (Phase 3 — query deferred)
 
-Parser promotes OSC 52 set variant to setClipboard(target:,
-base64Payload:). ClipboardTarget maps xterm 'c'/'p'/'s' to sendable
-enum cases. ScreenModel routes payload through a clipboard sink (sibling
-of Phase 3 writeback sink). Daemon fans out via new
+Parser promotes OSC 52 set variant to setClipboard(targets:,
+base64Payload:). ClipboardTargets models xterm's target-string
+grammar as an OptionSet. ScreenModel routes the payload through the
+unified ScreenModelOutput sink from Task 1 — no new sink property,
+just a new arm in the existing switch. Daemon fans out via
 DaemonResponse.clipboardWrite XPC case. Client decodes base64 on the
 MainActor, prompts for consent, writes to NSPasteboard.general.
 
