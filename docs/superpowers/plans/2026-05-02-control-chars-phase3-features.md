@@ -904,13 +904,7 @@ Pass it in the uniform buffer/struct bound to the fragment stage. Reuse an exist
 
 - [ ] **Step 3: Ensure the view redraws at 1 Hz**
 
-`MTKView` with `isPaused = true` and `enableSetNeedsDisplay = true` won't auto-redraw. If the current `RenderCoordinator` uses `isPaused = false` with `preferredFramesPerSecond = 60`, no change is needed. If it uses on-demand rendering (`setNeedsDisplay`), add a `Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true)` that calls `view.setNeedsDisplay(view.bounds)` — this drives both cursor and cell blink.
-
-Grep the current render mode:
-
-```bash
-rg -n "isPaused|enableSetNeedsDisplay|preferredFramesPerSecond" rTerm/
-```
+Verified against `rTerm/TermView.swift:148` (plan-time snapshot — see appendix): the `MTKView` is configured with `preferredFramesPerSecond = 60` (not on-demand). No timer is needed — the 60 fps loop drives both cursor and cell blink via the `blinkPhase` uniform recomputed on every `draw(in:)` call.
 
 - [ ] **Step 4: Manual visual test + commit**
 
@@ -971,7 +965,7 @@ struct TerminalModes: Equatable, Codable {
 
 - [ ] **Step 3: Wire `handleSetMode`**
 
-**API note — verified against `TermCore/ScreenModel.swift`:** `active` is a get-only computed property (line 191-193); mutations must route through `mutateActive { buf in … }`. `scrollRegion` is a `ScrollRegion?` field on `Buffer` (line 158), not on `ScreenModel`; `ScrollRegion.top: Int` is non-optional. `Cursor.zero` is added by Track B Task 4; this task depends on it.
+**API note (see appendix — `TermCore/ScreenModel.swift`):** `active` is a get-only computed property; mutations route through `mutateActive`. `scrollRegion` is on `Buffer`, not `ScreenModel`; `ScrollRegion.top` is non-optional. `Cursor.zero` arrives via Track B Task 4 — this task depends on it.
 
 ```swift
 case .originMode:
@@ -993,7 +987,7 @@ case .originMode:
 
 - [ ] **Step 4: Translate cursor-position CSI handlers**
 
-**API note — verified against `TermCore/ScreenModel.swift`:** the existing handlers for `.cursorPosition`, `.cursorHorizontalAbsolute`, `.verticalPositionAbsolute` already go through `mutateActive { buf in … clampCursor(in: &buf) … }`. The translation below preserves that pattern; add DECOM-aware offsets inside the existing closure.
+**API note (see appendix — `TermCore/ScreenModel.swift`):** existing handlers for `.cursorPosition`, `.cursorHorizontalAbsolute`, `.verticalPositionAbsolute` go through `mutateActive { buf in … clampCursor(in: &buf) … }`. The translation below preserves that pattern; add DECOM-aware offsets inside the existing closure.
 
 In `handleCSI`, modify each absolute-positioning handler (`cursorPosition`, `verticalPositionAbsolute`, `cursorHorizontalAbsolute`) to translate when DECOM is set. `saveCursor`/`restoreCursor` operate on whatever coordinate space was active at save time — no DECOM translation needed on either side (save stores the absolute row/col; restore puts them back absolute). Example rewrite for `.cursorPosition`:
 
@@ -1125,7 +1119,7 @@ case 3: self = .column132
 3. **Reset DECSTBM (scroll region) to the full screen** — any prior `CSI <top> ; <bot> r` is discarded.
 4. **Reset DECOM (origin mode) to off** — any prior `CSI ? 6 h` is cleared.
 
-The earlier draft of this plan covered (1) and (2) only. tmux and vim use DECCOLM on entry and rely on the post-toggle state being "full-screen region, origin off"; without (3) a prior `CSI 5;22 r` leaks into the 132-column session; without (4) a prior `CSI ?6 h` silently re-origins subsequent cursor-position commands.
+Side effects 3 and 4 are load-bearing — tmux/vim rely on the post-DECCOLM state being "full-screen region, origin off". Without (3), a prior `CSI 5;22 r` leaks into the 132-column session; without (4), a prior `CSI ?6 h` silently re-origins subsequent cursor-position commands.
 
 DECCOLM is a mode that changes buffer dimensions. The actor cannot directly drive a PTY resize — that's the daemon's job. The model:
 1. Clears both screens (alt and main) via ED-style grid clear.
@@ -1326,7 +1320,7 @@ In other words:
 - Outer: `OSC 8 ; <params> ; <uri> ST` — `;` separates the three fields (8, params, uri).
 - Inner (inside `<params>`): **`:`** separates key=value entries.
 
-The earlier draft of this plan split `<params>` on `;` — that would never find multiple entries because the outer split already consumed them. Correct separator is `:`.
+Inner separator is `:` per OSC 8 grammar (iTerm2, wezterm, kitty, Alacritty are concordant). The outer `;` only splits the three top-level fields (8, params, uri).
 
 In `mapOSC(ps:pt:)`:
 
@@ -1653,9 +1647,7 @@ struct HyperlinkSchemeTests {
 
 - [ ] **Step 3: Add hover tracking to `TerminalMTKView`**
 
-**API notes — verified against `rTerm/RenderCoordinator.swift` and `rTerm/GlyphAtlas.swift`:**
-- `RenderCoordinator` does not expose any `glyphMetrics` accessor. Per-atlas cell metrics live on `GlyphAtlas.cellWidth: CGFloat` and `GlyphAtlas.cellHeight: CGFloat` (lines 66, 68). All four atlas variants share the same cell metrics because they use the same monospace font face and size.
-- Add a `cellSize: CGSize` computed property to `RenderCoordinator` that reads from the cached `regularAtlas` — this is the new accessor the hover math depends on. Landing it is a prerequisite sub-step.
+**API note (see appendix — `rTerm/RenderCoordinator.swift`, `rTerm/GlyphAtlas.swift`):** `RenderCoordinator` exposes no `glyphMetrics` accessor today; per-atlas cell metrics live on `GlyphAtlas.cellWidth` / `cellHeight`. All four atlas variants share the metrics (same monospace face + size). Landing a `cellSize: CGSize` accessor on `RenderCoordinator` that reads from `regularAtlas` is a prerequisite sub-step — the hover math depends on it.
 
 Add to `RenderCoordinator` (e.g., near the existing `screenModelForView` accessor around line 72):
 
@@ -1814,7 +1806,7 @@ scheme is logged and ignored."
 | `s`  | "select" — bracket around whichever of primary/clipboard applies |
 | `0`–`7` | cut buffers (xterm-only; no macOS equivalent) |
 
-Shells commonly send `"cs"` (clipboard + select) or `""` (use default `s0`). The Phase 3 scope is the set-path only; we route any `target` set that includes `c` to `NSPasteboard.general`, and log the other letters for completeness (macOS has no separate primary selection, so `p`/`q`/`s`/`0`-`7` all collapse to the same pasteboard).
+Shells commonly send `"cs"` (clipboard + select) or `""` (use default `s0`). The Phase 3 scope is the set-path only; any `target` set that includes `c` routes to `NSPasteboard.general`, and the other letters are logged for completeness (macOS has no separate primary selection, so `p`/`q`/`s`/`0`-`7` all collapse to the same pasteboard).
 
 Create `TermCore/ClipboardTargets.swift`:
 
@@ -2016,7 +2008,7 @@ struct ClipboardTests {
 
     @Test("OSC 52 ; ; <base64> ST (empty target) defaults to .select")
     func test_osc52_empty_target_default() {
-        // Empty target per xterm = 's0' default; we collapse to .select.
+        // Empty target per xterm = 's0' default; rTerm collapses to .select.
         var p = TerminalParser()
         let payload = "aGk="
         let events = p.parse(.osc(52, ";\(payload)"))
@@ -2099,20 +2091,18 @@ Query form (OSC 52 ; <target> ; ? ST) routes to .osc(.unknown) — Phase
 
 ### Steps
 
-- [ ] **Step 1: Inspect current palette infrastructure**
+- [ ] **Step 1: Plan-time palette-infrastructure snapshot (see appendix)**
 
-```bash
-rg -n "TerminalPalette|AppStorage|palette" TermCore/ rTerm/ | head -30
-```
-
-Verified during plan remediation (2026-05-02):
+Pre-verified (snapshot 2026-05-02, see appendix):
 - `TerminalPalette.xtermDefault` at `rTerm/TerminalPalette.swift:100` is the ONLY preset currently defined — no `solarizedDark`, no `solarizedLight`, no `xterm` alias. Step 2 below lands the missing presets.
 - `AppSettings` at `rTerm/AppSettings.swift:30` is `@Observable @MainActor public final class` with `public var palette: TerminalPalette = .xtermDefault`. Step 2 extends it; no replacement needed.
 - `RenderCoordinator.init` at `rTerm/RenderCoordinator.swift:91` takes the `settings: AppSettings` reference and caches `derivedPalette256` from `settings.palette` (line 105). The existing Phase 2 code already recomputes the 256-color table when `palette` changes; re-verify Step 5 uses that hook rather than bypassing it.
 
+No implementer-side grep needed — the findings are recorded. Jump to Step 2.
+
 - [ ] **Step 2: Add `paletteName` to settings**
 
-**API note — verified against `rTerm/TerminalPalette.swift`:** the only preset currently defined is `TerminalPalette.xtermDefault` (line 100). `.solarizedDark` and `.solarizedLight` do not exist. This step lands the new presets **before** the settings surface wires them up, so `TerminalPalette.preset(named:)` has something to dispatch on.
+**API note (see appendix — `rTerm/TerminalPalette.swift`):** the only preset currently defined is `TerminalPalette.xtermDefault` (line 100). `.solarizedDark` and `.solarizedLight` do not exist. This step lands the new presets **before** the settings surface wires them up, so `TerminalPalette.preset(named:)` has something to dispatch on.
 
 Add the two Solarized presets to `rTerm/TerminalPalette.swift` — RGB values are the canonical 16-slot mapping from Ethan Schoonover's Solarized palette, with "base" colors in ANSI slots 0 and 15 (dark variant inverts which base is foreground vs. background; light variant uses the opposite):
 
@@ -2254,7 +2244,7 @@ If `ContentView` constructs its own `AppSettings`, migrate the construction to `
 
 - [ ] **Step 5: Propagate to renderer**
 
-**API note:** `RenderCoordinator` already caches `palette256Source: TerminalPalette` and recomputes `derivedPalette256` when the palette changes. The existing mechanism is the canonical place to pick up settings changes — do **not** add a separate `palette` property on `RenderCoordinator` that duplicates `settings.palette`.
+**API note (see appendix — `rTerm/RenderCoordinator.swift`):** `RenderCoordinator` already caches `palette256Source: TerminalPalette` and recomputes `derivedPalette256` when the palette changes. Use the existing mechanism to pick up settings changes — do **not** add a separate `palette` property on `RenderCoordinator` that duplicates `settings.palette`.
 
 In `rTerm/ContentView.swift`:
 
@@ -2343,3 +2333,46 @@ After Task 11 lands, verify:
 - `cursorShape` flows through `TerminalState` (from Track B Task 4 convenience init). Task 3 (DECSCUSR) + Task 4 (snapshot-field exposure) in Track A depend on the Track B convenience init existing.
 
 If any gap surfaces during implementation, insert a sub-task rather than dropping the feature. No TODOs in production code.
+
+---
+
+## Appendix: Source-tree verification snapshot (2026-05-02)
+
+Plan-time facts verified against `/Users/ronny/rdev/rTerm/` (branch `phase-2-control-chars`). Steps above that previously carried inline `**API note — verified against …:**` blocks reference this appendix; the facts live here to reduce per-step noise. Matches the Phase 1 `**Verified toolchain**` idiom.
+
+### `TermCore/ScreenModel.swift`
+- `public actor ScreenModel` at line 49.
+- `active` is a get-only computed property at lines 191–193; mutations route through `mutateActive { buf in … }`.
+- `scrollRegion` is a `ScrollRegion?` field on `Buffer` (line 158), **not** on `ScreenModel`; `ScrollRegion.top: Int` is non-optional.
+- Existing handlers for `.cursorPosition`, `.cursorHorizontalAbsolute`, `.verticalPositionAbsolute` go through `mutateActive { buf in … clampCursor(in: &buf) … }` — Task 6 (DECOM) preserves this pattern and adds DECOM-aware offsets inside the closure.
+- Two `Cursor(row: 0, col: 0)` sites (lines 162, 922) — migrated to `Cursor.zero` in Track B Task 4.
+
+### `rtermd/Session.swift`
+- `broadcast(_:)` at line 216 takes a typed `DaemonResponse`. No method named `fanOutResponse`; `fanOutToClients(_:)` wraps raw bytes — Task 1 uses `broadcast` for the typed writeback fan-out.
+- `Session.init` (line 111) runs before `startOutputHandler()` on a different thread than the daemon queue — it is NOT safe to call `assumeIsolated` from `init`. Install the output sink lazily inside `startOutputHandler()`.
+- `Session.write(_:)` at line 272 performs the full-write loop against `primaryFD`. Task 1's output-sink closure calls `self.write(bytes)` directly.
+- Current `ScreenModel` construction site at line 123: `ScreenModel(cols: Int(cols), rows: Int(rows), queue: queue)` — Track B Task 5 retypes the `queue` parameter.
+
+### `TermCore/TerminalParser.swift`
+- `csiParam` / `csiIntermediate` states (lines 42, 43, 112, 122) already carry `intermediates: [UInt8]` into `mapCSI`.
+- Private-mode markers (`<`, `=`, `>`, `?`) are stashed in intermediates at line 278.
+- Tasks 2 + 3 + 4 extend `mapCSI` with new final-byte arms (`c`, `n`, `q`); the intermediates threading is already in place.
+
+### `rTerm/RenderCoordinator.swift`
+- `RenderCoordinator.init` at line 91 takes a `settings: AppSettings` reference and caches `derivedPalette256` from `settings.palette` (line 105). The Phase 2 code recomputes the 256-color table when `palette` changes — Task 11 (palette chooser) hooks into that existing path rather than adding a duplicate `palette` property.
+- `RenderCoordinator` already caches `palette256Source: TerminalPalette` and recomputes `derivedPalette256` on identity change — Task 11 reuses this mechanism.
+- No existing `maxBuffersInFlight` constant; no existing `DispatchSemaphore`. Track B Task 7 introduces both with `count = 3` (Apple triple-buffer canonical).
+- `cellAt(row:col:)` at line 197 is `@inline(__always)` with `let historyRow = history[historyRowIdx]` read inside the closure (line 200). Track B Task 8 hoists the read to the outer row loop; Efficiency research noted LLVM LICM may already hoist — Task 8 adds a measurement step before the restructure.
+
+### `rTerm/GlyphAtlas.swift`
+- `GlyphAtlas.cellWidth: CGFloat` (line 66) and `GlyphAtlas.cellHeight: CGFloat` (line 68). All four atlas variants share identical cell metrics because they share the same monospace font face + size.
+- Task 9 (OSC 8 renderer hover) adds a `cellSize: CGSize` computed property on `RenderCoordinator` reading from `regularAtlas.cellWidth/cellHeight` — the canonical accessor for pixel-to-cell mapping.
+
+### `rTerm/TerminalPalette.swift`
+- `TerminalPalette.xtermDefault` at line 100 is the only preset defined. No `solarizedDark`, `solarizedLight`, `xterm` alias. File lives in the **rTerm app target**, NOT TermCore — Task 11 corrects the path.
+
+### `rTerm/AppSettings.swift`
+- `AppSettings` at line 30 is `@Observable @MainActor public final class`. Existing `public var palette: TerminalPalette = .xtermDefault` is mutated by Task 11's new `paletteName` setter so observers (the renderer) pick up changes without extra wiring.
+
+### `rTerm/TermView.swift`
+- Line 148: `view.preferredFramesPerSecond = 60`. The view is NOT on-demand; Task 5 (blink) does not need to add a redraw timer.

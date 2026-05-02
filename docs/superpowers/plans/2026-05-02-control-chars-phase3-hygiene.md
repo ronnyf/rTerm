@@ -374,7 +374,7 @@ Use the existing fixture structure. The sequence should:
 
 - [ ] **Step 2: Add the fixture + test**
 
-**Assertion design note:** the earlier draft of this fixture applied the entire byte stream in a single `model.apply(events)` call and asserted only the final `activeBuffer == .main` state. That admits a buggy handler that treats `1049 h`/`1049 l` as no-ops — both enter and exit become no-ops, the shell's content goes to main, and the end state still satisfies `.main`. The rewritten test splits the stream into two halves so we assert (a) alt was entered AND (b) alt grid holds the shell-drawn content, THEN (c) exit restores main with the MAIN content intact.
+**Assertion design note:** split the byte stream into enter + exit halves so the test can assert (a) alt was entered, (b) the alt grid holds the shell-drawn content, AND (c) exit restores main with the main content intact. A single `model.apply(events)` call asserting only `activeBuffer == .main` at the end would admit a buggy handler that treats `1049 h`/`1049 l` as no-ops — both enter and exit become no-ops, the shell's content goes to main, and the end state still satisfies `.main`.
 
 Append to `TerminalIntegrationTests.swift`:
 
@@ -893,7 +893,7 @@ iconName) which otherwise would push the flat init to 14 params."
 
 **Goal:** `ScreenModel.init(..., queue: DispatchQueue? = nil)` force-casts to `DispatchSerialQueue` at runtime. A caller that accidentally passes a `.concurrent` queue crashes with no compile-time warning. Land a single typed init that takes `serialQueue: DispatchSerialQueue?` and migrate the one in-tree caller that passes a queue (`rtermd/Session.swift:123`) in the same commit.
 
-**Design decision — overload resolution hazard avoided.** An earlier draft of this plan kept BOTH inits (typed + deprecated untyped) with defaulted-nil. Swift's overload resolution on `nil` against `DispatchQueue?` vs `DispatchSerialQueue?` is **ambiguous** (no canonical tiebreaker). The rewrite below drops the untyped init entirely rather than keeping both — every default-nil call site would otherwise emit either an ambiguity error or a surprise deprecation warning.
+**Design decision — overload resolution hazard avoided.** A single typed init, no deprecated overload. Swift's overload resolution on `nil` against `DispatchQueue?` vs `DispatchSerialQueue?` is ambiguous (no canonical tiebreaker); keeping both would force every default-nil call site to emit either an ambiguity error or a surprise deprecation warning.
 
 **Binary-compat note for BUILD_LIBRARY_FOR_DISTRIBUTION:** TermCore enables `BUILD_LIBRARY_FOR_DISTRIBUTION` only for Release. Since rTerm ships daemon + client in lockstep (spec §6), removing a `public init` is a **source** break but not a meaningful wire/binary break — there is no third-party consumer of TermCore to worry about. All in-tree callers migrate in the same commit.
 
@@ -1184,15 +1184,15 @@ If the original code had `var regularVerts = [Float]()` as a local, the local sh
 
 - [ ] **Step 5: Add allocation-count test**
 
-**Test design note:** rather than faking the full Metal pipeline, we factor the bookkeeping preamble of `draw(in:)` into a standalone helper that can run without a drawable. The test exercises the preamble only — the Metal render passes stay untested by unit tests, but the vertex-array capacity invariant (the thing this task is protecting) is exercised end-to-end.
+**Test design note:** extract the bookkeeping preamble of `draw(in:)` into a standalone helper that can run without a drawable. The test exercises the preamble only — the Metal render passes stay untested by unit tests, but the vertex-array capacity invariant (the thing this task is protecting) is exercised end-to-end.
 
 In `rTerm/RenderCoordinator.swift`, factor the capacity-reserve + clear preamble out of `draw(in:)` into an internal method the tests can call:
 
 ```swift
 /// Reset vertex buffers for a new frame. `removeAll(keepingCapacity:
 /// true)` keeps the backing allocation; the capacity-grow check
-/// ensures we re-reserve if the grid has grown beyond what we
-/// reserved previously.
+/// re-reserves if the grid has grown beyond the previously reserved
+/// capacity.
 ///
 /// Internal (not private) so the allocation-regression test can call
 /// it without going through `draw(in:)`'s full Metal pipeline.
@@ -1544,11 +1544,11 @@ final class MetalBufferRingTests: XCTestCase {
 In `rTerm/RenderCoordinator.swift`, add instance properties:
 
 ```swift
-// One ring per vertex-pass category. Sized to the worst-case grid and
-// maxBuffersInFlight (3, matching the Metal semaphore triple-buffer
-// convention used elsewhere in the coordinator — confirm by grepping
-// `maxBuffersInFlight` or `semaphore` in the current file; if none,
-// default count to 3).
+// One ring per vertex-pass category. Verified against plan-time
+// `rTerm/RenderCoordinator.swift` (see appendix): there is NO existing
+// `maxBuffersInFlight` constant and NO existing `DispatchSemaphore` in
+// the file. Default count to 3 — Apple's canonical triple-buffer
+// value (see the GPU-sync design note above).
 private static let maxBuffersInFlight = 3
 private var regularRing: MetalBufferRing?
 private var boldRing: MetalBufferRing?
@@ -1857,8 +1857,8 @@ Add a throughput test alongside the allocation-count test:
 func test_throughput_gate() async {
     // 80 cols × 40 B/cell = 3.2 KB per Row.
     // 3.2 KB × 37,500 / 2.0 s = 60 MB/s — exactly the spec §8 Track B
-    // item 3 threshold. Passing in under 2 s means we meet the gate;
-    // failing means we're below it and the ring-buffer implementation
+    // item 3 threshold. Passing in under 2 s meets the gate; failing
+    // means throughput is below it and the ring-buffer implementation
     // is warranted.
     let model = ScreenModel(cols: 80, rows: 24, historyCapacity: 10_000)
     for _ in 0..<24 { await model.apply([.c0(.lineFeed)]) }
@@ -1912,7 +1912,7 @@ Measurement: 1,000 scrolling LFs produce exactly 1,000 Row allocations.
 Throughput gate: ScrollbackHistoryAllocationTests.test_throughput_gate —
 37,500 scrolling LFs in under 2.0 s on Apple Silicon = 60 MB/s
 sustained, the spec §8 Track B item 3 threshold. Passing the gate pins
-that we are NOT regressing it.
+that the baseline is NOT regressing.
 
 Ring-buffer optimization deferred by Step 5a's baseline commit.
 Counter + throughput test remain as living documentation."
