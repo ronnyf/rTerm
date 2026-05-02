@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Pay down the Phase 2 engineering debt enumerated in the Phase 2 research docs so Phase 3 features do not compound regressions. Ten items: one file split, one API-hardening rename, one sub-struct extraction, two test gaps, one fixture, two renderer hot-path fixes, one render-loop hoist, one measurement-gated scrollback fix.
+**Goal:** Pay down the Phase 2 engineering debt enumerated in the Phase 2 research docs so Phase 3 features do not compound regressions. Nine items: one file split (landing the ordering-invariant doc comment on `publishHistoryTail` in the same commit), one API-hardening rename, one sub-struct extraction, two test gaps, one fixture, two renderer hot-path fixes, one render-loop hoist, one measurement-gated scrollback fix.
 
 **Architecture:** All changes are in-place refactors. No new public types cross the TermCore boundary except where explicitly noted (`Cursor.zero`, `TerminalStateSnapshot` nested type, deprecated-then-new `ScreenModel.init(..., queue: DispatchSerialQueue?)`). No wire-format changes — `ScreenSnapshot` Codable stays byte-identical. Measurement-gated tasks use `os_signpost` + XCTest `measure` blocks; Metal frame-capture and Instruments-only paths are off-table.
 
@@ -439,6 +439,31 @@ extension ScreenModel {
 }
 ```
 
+**Attach the ordering-invariant doc comment to `publishHistoryTail()` as part of the move (spec §8 Track B item 8).** Immediately above the moved `publishHistoryTail()` declaration, insert:
+
+```swift
+/// Publish a fresh history-tail snapshot to the `_latestHistoryTail`
+/// mutex for nonisolated render-thread reads.
+///
+/// **Ordering invariant — callers must preserve this.** Inside
+/// `apply(_:)` and `restore(from payload:)`, `publishHistoryTail()` runs
+/// *before* `publishSnapshot()` (on the apply side) and *before*
+/// `_latestSnapshot.withLock { … }` (on the restore side). The reason:
+/// a renderer reading both nonisolated mutexes between the two calls
+/// must not observe a snapshot newer than the history tail, because
+/// that would briefly composite a stale history tail above a freshly-
+/// cleared grid (ghost-row effect). Publishing history first means the
+/// worst observable state is a briefly-duplicate row at scrollOffset
+/// > 0, which is visually benign. Inverting the two calls breaks the
+/// invariant silently — there is no compile-time check.
+///
+/// If a third publish channel is added in a future phase, it must
+/// decide its own ordering against both existing mutexes and document
+/// it here.
+```
+
+While here, re-verify ordering at the two call sites: in `apply(_:)` (ScreenModel.swift) `publishHistoryTail()` must be called before `publishSnapshot()`; in `restore(from payload:)` (ScreenModel+History.swift) `_latestHistoryTail.withLock` clearing must happen before `_latestSnapshot.withLock` restoration. If either site has been accidentally inverted, correct it as part of this same commit. `RestoreOrderingTests` (Task 1) remains the guardrail.
+
 - [ ] **Step 4: Trim `ScreenModel.swift`**
 
 Delete the moved method bodies from the original file. What remains: stored properties, nested types (`Buffer`, `ScrollRegion`, `SnapshotBox`, `HistoryBox`), `init`, `apply(_:)`, `publishSnapshot`, `makeSnapshot(from:)`, all event dispatchers (`handlePrintable`, `handleC0`, `handleCSI`, `applySGR`, `handleOSC`), `eraseInDisplay`, `eraseInLine`, `handleSetMode`, `handleSetScrollRegion`, `handleAltScreen`, `snapshotCursor`, `restoreActiveCursor`, `latestSnapshot()`, `snapshot()`, `applyAndCurrentTitle()`, `currentWindowTitle()`, `currentIconName()`, `clampCursor(in:)`.
@@ -489,7 +514,9 @@ ScreenModel.swift at 941 lines with 10 logical sections. Split into:
 - ScreenModel+Buffer.swift: mutateActive<R>, active computed, static
   scrollAndMaybeEvict, static clearGrid.
 - ScreenModel+History.swift: publishHistoryTail, buildAttachPayload,
-  latestHistoryTail, restore(from:) x2.
+  latestHistoryTail, restore(from:) x2 — publishHistoryTail gains the
+  history-before-snapshot ordering-invariant doc comment (spec §8
+  Track B item 8) as the method moves.
 
 Pure physical split — no access-level changes. Swift forbids stored
 properties on extensions, so all stored state stays on the actor's
@@ -718,74 +745,7 @@ iconName) which otherwise would push the flat init to 14 params."
 
 ---
 
-## Task 5: `publishHistoryTail()` ordering doc comment
-
-**Spec reference:** §8 Track B item 8.
-
-**Goal:** Add a doc comment on `publishHistoryTail()` in `TermCore/ScreenModel+History.swift` (post-split) describing the history-before-snapshot ordering invariant, so a future refactor that adds a third publish point does not accidentally invert the calls. Small task, no behavior change.
-
-**Files:**
-- Modify: `TermCore/ScreenModel+History.swift`
-
-### Steps
-
-- [ ] **Step 1: Locate `publishHistoryTail`**
-
-Grep: `rg -n "publishHistoryTail" TermCore/`. Locate the definition in `ScreenModel+History.swift` (post-Task-3).
-
-- [ ] **Step 2: Insert ordering-invariant doc comment**
-
-Immediately above the `publishHistoryTail()` declaration, insert:
-
-```swift
-/// Publish a fresh history-tail snapshot to the `_latestHistoryTail`
-/// mutex for nonisolated render-thread reads.
-///
-/// **Ordering invariant — callers must preserve this.** Inside
-/// `apply(_:)` and `restore(from payload:)`, `publishHistoryTail()` runs
-/// *before* `publishSnapshot()` (on the apply side) and *before*
-/// `_latestSnapshot.withLock { … }` (on the restore side). The reason:
-/// a renderer reading both nonisolated mutexes between the two calls
-/// must not observe a snapshot newer than the history tail, because
-/// that would briefly composite a stale history tail above a freshly-
-/// cleared grid (ghost-row effect). Publishing history first means the
-/// worst observable state is a briefly-duplicate row at scrollOffset
-/// > 0, which is visually benign. Inverting the two calls breaks the
-/// invariant silently — there is no compile-time check.
-///
-/// If a third publish channel is added in a future phase, it must
-/// decide its own ordering against both existing mutexes and document
-/// it here.
-```
-
-- [ ] **Step 3: Verify ordering at the two call sites**
-
-Grep: `rg -n "publishHistoryTail|publishSnapshot|_latestSnapshot.withLock" TermCore/`. Confirm in `apply(_:)` (ScreenModel.swift) that `publishHistoryTail()` is called before `publishSnapshot()`, and in `restore(from payload:)` (ScreenModel+History.swift) that `_latestHistoryTail.withLock` clearing happens before `_latestSnapshot.withLock` restoration. If either site has been accidentally inverted, correct it.
-
-- [ ] **Step 4: Build + test**
-
-```bash
-xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
-xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
-```
-
-No behavior change, no new tests. Existing `RestoreOrderingTests` (Task 1) remains green.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add TermCore/ScreenModel+History.swift
-git commit -m "doc(TermCore): publishHistoryTail ordering invariant
-
-Document the history-before-snapshot publication ordering at the
-function declaration so a future refactor introducing a third publish
-channel is prompted to choose its position deliberately. No behavior
-change — existing call-site comments remain."
-```
-
----
-
-## Task 6: `DispatchSerialQueue` typed init
+## Task 5: `DispatchSerialQueue` typed init
 
 **Spec reference:** §8 Track B item 6.
 
@@ -917,7 +877,7 @@ third-party blast radius."
 
 ---
 
-## Task 7: RenderCoordinator vertex array reuse
+## Task 6: RenderCoordinator vertex array reuse
 
 **Spec reference:** §8 Track B item 1.
 
@@ -1148,7 +1108,7 @@ rTermTests exercise the preamble without a live Metal drawable."
 
 ---
 
-## Task 8: Metal buffer pre-allocation ring
+## Task 7: Metal buffer pre-allocation ring
 
 **Spec reference:** §8 Track B item 2.
 
@@ -1536,7 +1496,7 @@ zero-steady-state invariant."
 
 ---
 
-## Task 9: `cellAt` scrolled-render loop hoist
+## Task 8: `cellAt` scrolled-render loop hoist
 
 **Spec reference:** §8 Track B item 7.
 
@@ -1618,7 +1578,7 @@ unchanged."
 
 ---
 
-## Task 10: `ScrollbackHistory.Row` pre-allocation (measurement-gated)
+## Task 9: `ScrollbackHistory.Row` pre-allocation (measurement-gated)
 
 **Spec reference:** §8 Track B item 3.
 
@@ -1805,7 +1765,7 @@ are unchanged."
 
 ## Track B completion checklist
 
-After Task 10 lands, verify the following before opening a PR:
+After Task 9 lands, verify the following before opening a PR:
 
 - [ ] `wc -l TermCore/ScreenModel*.swift` shows the split is intact.
 - [ ] `rg -c "Cursor\(row: 0, col: 0\)" TermCore/` returns 0 (all migrated to `Cursor.zero`).
@@ -1815,4 +1775,4 @@ After Task 10 lands, verify the following before opening a PR:
 - [ ] PR description cites Phase 2 research doc findings, not just "fixes lint."
 - [ ] CLAUDE.md does **not** need a new "Key Conventions" bullet for `nonisolated` value types — the spec reviewer flagged this as low priority and the pattern is already consistently applied.
 
-**Self-review note:** this plan covers items 1–10, 12 from §8 Track B. Items 11 (`ImmutableBox<T>`) and 13 (comment cleanup) are deliberately not-in-Phase-3 per the spec. Item 10 (`CircularCollection` TODO) is deferred to a tracking comment only. If any item in §8 Track B lacks a task, add it inline.
+**Self-review note:** this plan covers items 1–10, 12 from §8 Track B. Track B item 8 (`publishHistoryTail` ordering doc comment) lands inside Task 3 (file split) rather than its own task — the doc comment attaches to the method as it moves. Items 11 (`ImmutableBox<T>`) and 13 (comment cleanup) are deliberately not-in-Phase-3 per the spec. Item 10 (`CircularCollection` TODO) is deferred to a tracking comment only. If any item in §8 Track B lacks a task, add it inline.

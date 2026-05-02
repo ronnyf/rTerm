@@ -209,29 +209,28 @@ no-op with no sink)."
 
 ---
 
-## Task 2: DA1 + DA2 responses
+## Task 2: Device Attribute + Cursor Position Responses (DA1 + DA2 + CPR)
 
 **Spec reference:** §8 Phase 3 Track A — Terminal identification responses.
 
-**Goal:** Parser emits `.csi(.deviceAttributes(.primary))` for `CSI c` / `CSI 0 c` and `.csi(.deviceAttributes(.secondary))` for `CSI > c` / `CSI > 0 c`. `ScreenModel` responds via `emitWriteback` with xterm-compatible identifiers.
+**Goal:** Parser emits `.csi(.deviceAttributes(.primary))` for `CSI c` / `CSI 0 c`, `.csi(.deviceAttributes(.secondary))` for `CSI > c` / `CSI > 0 c`, and `.csi(.cursorPositionReport)` for `CSI 6 n`. `ScreenModel` responds via `emitWriteback` with xterm-compatible identifiers (DA1, DA2) or `ESC [ <row> ; <col> R` with 1-indexed coordinates (CPR). All three share the writeback path from Task 1 and the same parser-extension / handler / writeback impl shape — one coherent reviewable unit.
 
 **VT semantics — grounded against xterm's documented behavior:**
 
-- **DA1 (primary):** xterm's canonical default DA1 response is `ESC [ ? 1 ; 2 c` — VT102 terminal class (1) with advanced video option (2). This is the response most terminal detection logic (tmux, vim, less, ncurses) pattern-matches against for "baseline xterm-class." Emitting anything else risks tmux concluding "this is not xterm-class." We adopt the `1 ; 2` pair.
-- **DA2 (secondary):** xterm's DA2 is `ESC [ > 0 ; Pv ; 0 c` where the first `0` is terminal class ("xterm"), `Pv` is xterm's patch level (version), and final `0` is cartridge ROM. Real xterm patch numbers are usually 3-digit (e.g., 314, 322, 358). We emit `Pv = 322` — a concrete, credible xterm patch level that maps to an actual xterm release. This is not critical (tmux mostly ignores the patch number) but we cite a specific xterm patch so the choice is grounded rather than arbitrary.
-
-(The earlier draft's `65 ; 22` DA1 and `> 1 ; 95 ; 0` DA2 were speculative. `65` in DA1 means VT525 and may cause tmux to reject the terminal as non-xterm; `95` in DA2 is not an xterm patch version.)
+- **DA1 (primary):** xterm's canonical default DA1 response is `ESC [ ? 1 ; 2 c` — VT102 terminal class (1) with advanced video option (2). Most terminal detection logic (tmux, vim, less, ncurses) pattern-matches this for "baseline xterm-class." Emit `1 ; 2` (xterm default).
+- **DA2 (secondary):** xterm's DA2 is `ESC [ > 0 ; Pv ; 0 c` where the first `0` is terminal class ("xterm"), `Pv` is xterm's patch level, final `0` is cartridge ROM. Emit `Pv = 322` — a concrete, credible xterm patch level that clears the vim/emacs `>= 277 mouse_sgr` threshold.
+- **CPR (Cursor Position Report):** `CSI 6 n` → `ESC [ <row> ; <col> R` where `<row>` and `<col>` are the active buffer's cursor position, converted from the internal 0-indexed representation to the VT 1-indexed wire format.
 
 **Files:**
-- Modify: `TermCore/CSICommand.swift` (add `.deviceAttributes(DeviceAttributesKind)`)
-- Modify: `TermCore/TerminalParser.swift` (dispatch `c` and `> c`)
-- Modify: `TermCore/ScreenModel.swift` (handle in `handleCSI`, emit writeback bytes)
+- Modify: `TermCore/CSICommand.swift` (add `.deviceAttributes(DeviceAttributesKind)` + `.cursorPositionReport`)
+- Modify: `TermCore/TerminalParser.swift` (dispatch `c`, `> c`, and `n` with param `6`)
+- Modify: `TermCore/ScreenModel.swift` (handle all three in `handleCSI`, emit writeback bytes)
 - Modify: `TermCoreTests/TerminalParserTests.swift`
 - Create: `TermCoreTests/DeviceAttributesTests.swift`
 
 ### Steps
 
-- [ ] **Step 1: Add `DeviceAttributesKind` + extend `CSICommand`**
+- [ ] **Step 1: Extend `CSICommand` + add `DeviceAttributesKind`**
 
 In `TermCore/CSICommand.swift`:
 
@@ -244,21 +243,16 @@ In `TermCore/CSICommand.swift`:
 }
 ```
 
-Add a new case to `CSICommand`:
+Add two new cases to `CSICommand`:
 
 ```swift
 case deviceAttributes(DeviceAttributesKind)
+case cursorPositionReport
 ```
 
-- [ ] **Step 2: Parse `CSI c` and `CSI > c`**
+- [ ] **Step 2: Parse `CSI c`, `CSI > c`, and `CSI 6 n`**
 
-In `TermCore/TerminalParser.swift`, the `mapCSI(params:intermediates:final:)` dispatcher must distinguish the `>` secondary-intermediate form. Check current behavior:
-
-```bash
-rg -n "intermediates" TermCore/TerminalParser.swift | head -20
-```
-
-The parser already carries intermediates into `mapCSI`. Extend the switch:
+The parser already carries intermediates into `mapCSI` (verified: `TermCore/TerminalParser.swift:42-43,112,122` — `csiParam` / `csiIntermediate` states both thread `intermediates: [UInt8]` through, and `>` is stashed in intermediates at line 278). Extend the `mapCSI` switch with two new arms:
 
 ```swift
 case 0x63 /* c */:
@@ -269,6 +263,14 @@ case 0x63 /* c */:
     } else {
         return .unknown(params: params, intermediates: intermediates, final: final)
     }
+
+case 0x6E /* n */:
+    // Only param 6 is implemented — Device Status Report; param 5
+    // (Device Status) falls through to .unknown for now.
+    if intermediates.isEmpty, params.first == 6 {
+        return .cursorPositionReport
+    }
+    return .unknown(params: params, intermediates: intermediates, final: final)
 ```
 
 - [ ] **Step 3: Write parser tests**
@@ -296,9 +298,16 @@ func test_csi_gt_c_secondary() {
     let events = parser.parse(Data([0x1B, 0x5B, 0x3E, 0x63]))
     #expect(events == [.csi(.deviceAttributes(.secondary))])
 }
+
+@Test("CSI 6 n emits cursorPositionReport")
+func test_csi_6n_cpr() {
+    var parser = TerminalParser()
+    let events = parser.parse(Data([0x1B, 0x5B, 0x36, 0x6E]))
+    #expect(events == [.csi(.cursorPositionReport)])
+}
 ```
 
-- [ ] **Step 4: Handle in `ScreenModel.handleCSI`**
+- [ ] **Step 4: Handle all three in `ScreenModel.handleCSI`**
 
 Add to the `handleCSI` switch:
 
@@ -307,17 +316,26 @@ case .deviceAttributes(let kind):
     switch kind {
     case .primary:
         // CSI ? 1 ; 2 c  — xterm default: VT102 + advanced video.
-        // Bytes: 0x1B 0x5B 0x3F 0x31 0x3B 0x32 0x63
         emitWriteback(Data([0x1B, 0x5B, 0x3F, 0x31, 0x3B, 0x32, 0x63]))
     case .secondary:
         // CSI > 0 ; 322 ; 0 c  — xterm-class (0), patch 322, cartridge 0.
-        // Bytes: 0x1B 0x5B 0x3E 0x30 0x3B 0x33 0x32 0x32 0x3B 0x30 0x63
         emitWriteback(Data([0x1B, 0x5B, 0x3E, 0x30, 0x3B, 0x33, 0x32, 0x32, 0x3B, 0x30, 0x63]))
     }
     return false  // no snapshot bump — pure writeback
-```
 
-The `return false` matches the pattern of other non-state-mutating handlers (see `handleAltScreen`'s pattern if any). If `handleCSI` returns `Void`, the emit is enough.
+case .cursorPositionReport:
+    // Active-buffer cursor is 0-indexed internally; VT reports 1-indexed.
+    let cursor = active.cursor
+    let row = cursor.row + 1
+    let col = cursor.col + 1
+    var reply = Data([0x1B, 0x5B])
+    reply.append(contentsOf: String(row).utf8)
+    reply.append(0x3B)
+    reply.append(contentsOf: String(col).utf8)
+    reply.append(0x52)
+    emitWriteback(reply)
+    return false
+```
 
 - [ ] **Step 5: Write model tests**
 
@@ -358,110 +376,6 @@ struct DeviceAttributesTests {
     }
 }
 
-final class DataSink: @unchecked Sendable {
-    private var buf = Data()
-    private let lock = NSLock()
-    func append(_ more: Data) { lock.lock(); buf.append(more); lock.unlock() }
-    func all() -> Data { lock.lock(); defer { lock.unlock() }; return buf }
-}
-```
-
-- [ ] **Step 6: Build + test**
-
-```bash
-xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add TermCore/CSICommand.swift \
-        TermCore/TerminalParser.swift \
-        TermCore/ScreenModel.swift \
-        TermCoreTests/TerminalParserTests.swift \
-        TermCoreTests/DeviceAttributesTests.swift
-git commit -m "feat(TermCore): DA1 + DA2 device-attribute responses
-
-Parse CSI c / CSI 0 c as deviceAttributes(.primary) and CSI > c /
-CSI > 0 c as deviceAttributes(.secondary). Model responds via the
-Phase 3 writeback sink with xterm-compatible identifiers:
-  - DA1: ESC [ ? 1 ; 2 c  (xterm default: VT102 + advanced video)
-  - DA2: ESC [ > 0 ; 322 ; 0 c  (xterm class, patch 322, cartridge 0)
-These match xterm's own default responses — chosen so tmux, vim,
-and mosh detection logic (which pattern-matches 'CSI ? 1' and 'CSI > 0'
-for xterm-class) recognizes rTerm correctly."
-```
-
----
-
-## Task 3: CPR (Cursor Position Report) response
-
-**Spec reference:** §8 Phase 3 Track A — Terminal identification responses.
-
-**Goal:** Parser emits `.csi(.cursorPositionReport)` for `CSI 6 n`. Model responds via writeback with `ESC [ <row> ; <col> R` (1-indexed, per VT spec). Cursor row and col come from the active buffer's cursor.
-
-**Files:**
-- Modify: `TermCore/CSICommand.swift` (add `.cursorPositionReport`)
-- Modify: `TermCore/TerminalParser.swift` (dispatch `n` with param `6`)
-- Modify: `TermCore/ScreenModel.swift` (respond with cursor position)
-- Modify: `TermCoreTests/TerminalParserTests.swift`
-- Modify: `TermCoreTests/DeviceAttributesTests.swift` (add CPR suite)
-
-### Steps
-
-- [ ] **Step 1: Extend `CSICommand`**
-
-```swift
-case cursorPositionReport
-```
-
-- [ ] **Step 2: Parse `CSI 6 n`**
-
-In `mapCSI`:
-
-```swift
-case 0x6E /* n */:
-    // Only param 6 is implemented — Device Status Report; param 5
-    // (Device Status) falls through to .unknown for now.
-    if intermediates.isEmpty, params.first == 6 {
-        return .cursorPositionReport
-    }
-    return .unknown(params: params, intermediates: intermediates, final: final)
-```
-
-- [ ] **Step 3: Parser test**
-
-```swift
-@Test("CSI 6 n emits cursorPositionReport")
-func test_csi_6n_cpr() {
-    var parser = TerminalParser()
-    let events = parser.parse(Data([0x1B, 0x5B, 0x36, 0x6E]))
-    #expect(events == [.csi(.cursorPositionReport)])
-}
-```
-
-- [ ] **Step 4: Handle in `ScreenModel.handleCSI`**
-
-```swift
-case .cursorPositionReport:
-    // Active-buffer cursor is 0-indexed internally; VT reports 1-indexed.
-    let cursor = active.cursor
-    let row = cursor.row + 1
-    let col = cursor.col + 1
-    // Build "ESC [ <row> ; <col> R" as ASCII bytes.
-    var reply = Data([0x1B, 0x5B])
-    reply.append(contentsOf: String(row).utf8)
-    reply.append(0x3B)
-    reply.append(contentsOf: String(col).utf8)
-    reply.append(0x52)
-    emitWriteback(reply)
-```
-
-- [ ] **Step 5: Model test**
-
-In `TermCoreTests/DeviceAttributesTests.swift`, add:
-
-```swift
 @Suite("CPR response")
 struct CPRTests {
 
@@ -488,6 +402,13 @@ struct CPRTests {
         #expect(sink.all() == Data([0x1B, 0x5B, 0x35, 0x3B, 0x31, 0x30, 0x52]))
     }
 }
+
+final class DataSink: @unchecked Sendable {
+    private var buf = Data()
+    private let lock = NSLock()
+    func append(_ more: Data) { lock.lock(); buf.append(more); lock.unlock() }
+    func all() -> Data { lock.lock(); defer { lock.unlock() }; return buf }
+}
 ```
 
 - [ ] **Step 6: Build + test + commit**
@@ -499,21 +420,25 @@ git add TermCore/CSICommand.swift \
         TermCore/ScreenModel.swift \
         TermCoreTests/TerminalParserTests.swift \
         TermCoreTests/DeviceAttributesTests.swift
-git commit -m "feat(TermCore): CPR response (CSI 6 n)
+git commit -m "feat(TermCore): DA1 + DA2 + CPR responses
 
-Parse CSI 6 n as cursorPositionReport. Model writes back
-'ESC [ <row> ; <col> R' with 1-indexed coordinates per VT spec.
-Active-buffer cursor is read; the report reflects the user-visible
-cursor position, not any pending unpublished state."
+Parse CSI c / CSI 0 c / CSI > c / CSI > 0 c as deviceAttributes;
+parse CSI 6 n as cursorPositionReport. All three respond via the
+Phase 3 writeback sink with xterm-compatible identifiers:
+  - DA1: ESC [ ? 1 ; 2 c  (xterm default: VT102 + advanced video)
+  - DA2: ESC [ > 0 ; 322 ; 0 c  (xterm class, patch 322, cartridge 0)
+  - CPR: ESC [ <row> ; <col> R  (1-indexed per VT spec)
+Chosen so tmux/vim/mosh detection logic (pattern-matches 'CSI ? 1' +
+'CSI > 0' for xterm-class) recognizes rTerm correctly."
 ```
 
 ---
 
-## Task 4: DECSCUSR cursor shape
+## Task 3: DECSCUSR cursor shape (parser + model + renderer)
 
 **Spec reference:** §8 Phase 3 Track A — DECSCUSR (`CSI Ps SP q`).
 
-**Goal:** Parser emits `.csi(.setCursorShape(CursorShape))` for `CSI Ps SP q`. Snapshot gains a `cursorShape: CursorShape` field via `decodeIfPresent ?? .block`. Renderer draws the shape variant.
+**Goal:** Parser emits `.csi(.setCursorShape(CursorShape))` for `CSI Ps SP q`. Model stores the current shape on `ScreenModel`. Renderer draws the shape variant + respects blinking. The snapshot-field exposure (+ Codable migration) is combined with the `iconName` snapshot-field work in Task 4 — see that task for the `ScreenSnapshot` / `TerminalState` / `CodingKeys` / `makeSnapshot` changes.
 
 `Ps` mapping (xterm convention):
 - 0 or 1 — blinking block (default)
@@ -527,8 +452,7 @@ cursor position, not any pending unpublished state."
 - Modify: `TermCore/CSICommand.swift`
 - Create: `TermCore/CursorShape.swift`
 - Modify: `TermCore/TerminalParser.swift`
-- Modify: `TermCore/ScreenModel.swift` (+ ScreenSnapshot.TerminalState)
-- Modify: `TermCore/ScreenSnapshot.swift` (add field + Codable path)
+- Modify: `TermCore/ScreenModel.swift` (stored property + handler)
 - Modify: `rTerm/RenderCoordinator.swift`
 - Create: `TermCoreTests/CursorShapeTests.swift`
 
@@ -599,32 +523,7 @@ case 0x71 /* q */:
     return .unknown(params: params, intermediates: intermediates, final: final)
 ```
 
-- [ ] **Step 4: Add to `ScreenSnapshot`**
-
-In `TermCore/ScreenSnapshot.swift`, add to `ScreenSnapshot`:
-
-```swift
-public let cursorShape: CursorShape
-```
-
-Extend both inits (flat + `TerminalState` convenience). Extend `TerminalState`:
-
-```swift
-public struct TerminalState: Sendable, Equatable {
-    // ... existing fields ...
-    public var cursorShape: CursorShape = .default
-}
-```
-
-Update the convenience init to pass `cursorShape: terminalState.cursorShape`, and the flat init to accept `cursorShape: CursorShape = .default`. In `Codable`:
-
-```swift
-self.cursorShape = try container.decodeIfPresent(CursorShape.self, forKey: .cursorShape) ?? .default
-```
-
-Add `cursorShape` to `CodingKeys`.
-
-- [ ] **Step 5: Handle in `ScreenModel`**
+- [ ] **Step 4: Handle in `ScreenModel`**
 
 Add a stored property `private var cursorShape: CursorShape = .default` on `ScreenModel` (not inside `TerminalModes` — `TerminalModes` is the DEC-private-mode flags; cursor shape is separate).
 
@@ -637,11 +536,9 @@ case .setCursorShape(let shape):
     return true  // snapshot bump
 ```
 
-In `makeSnapshot(from:)`, pass `cursorShape: cursorShape` into the `TerminalState` bundle.
+(`makeSnapshot(from:)` will surface `cursorShape` into the snapshot in Task 4.)
 
-In `restore(from snapshot:)` (the one that takes a `ScreenSnapshot`), restore: `cursorShape = snapshot.cursorShape`.
-
-- [ ] **Step 6: Renderer — draw the shape**
+- [ ] **Step 5: Renderer — draw the shape**
 
 In `rTerm/RenderCoordinator.swift`, find the cursor-drawing block (currently a filled rectangle at the cursor cell). Replace the rectangle generation with a switch on `snapshot.cursorShape.style`:
 
@@ -666,7 +563,7 @@ Document the constants inline:
 private static let cursorBlinkHz: Double = 1.0
 ```
 
-- [ ] **Step 7: Tests**
+- [ ] **Step 6: Tests**
 
 Create `TermCoreTests/CursorShapeTests.swift`:
 
@@ -698,29 +595,12 @@ struct CursorShapeTests {
         #expect(p.parse(Data([0x1B, 0x5B, 0x36, 0x20, 0x71]))
                 == [.csi(.setCursorShape(CursorShape(style: .bar, blinking: false)))])
     }
-
-    @Test("Snapshot carries cursorShape")
-    func test_snapshot_has_shape() async {
-        let model = ScreenModel(cols: 80, rows: 24)
-        await model.apply([.csi(.setCursorShape(CursorShape(style: .underline, blinking: false)))])
-        let snap = model.latestSnapshot()
-        #expect(snap.cursorShape.style == .underline)
-        #expect(snap.cursorShape.blinking == false)
-    }
-
-    @Test("Unknown Ps values are ignored, shape stays at default")
-    func test_unknown_ps() async {
-        let model = ScreenModel(cols: 80, rows: 24)
-        var p = TerminalParser()
-        let events = p.parse(Data([0x1B, 0x5B, 0x39, 0x20, 0x71]))  // Ps=9 unknown
-        await model.apply(events)
-        let snap = model.latestSnapshot()
-        #expect(snap.cursorShape == .default)
-    }
 }
 ```
 
-- [ ] **Step 8: Build + commit**
+Snapshot-level tests (`test_snapshot_has_shape`, `test_unknown_ps`) live in Task 4 alongside the `iconName` back-compat tests.
+
+- [ ] **Step 7: Build + commit**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
@@ -728,18 +608,168 @@ xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -qu
 git add TermCore/CursorShape.swift \
         TermCore/CSICommand.swift \
         TermCore/TerminalParser.swift \
-        TermCore/ScreenSnapshot.swift \
         TermCore/ScreenModel.swift \
         rTerm/RenderCoordinator.swift \
         TermCoreTests/CursorShapeTests.swift
 git commit -m "feat: DECSCUSR cursor shape (block/underline/bar + blinking)
 
-Parse CSI Ps SP q into setCursorShape(CursorShape). Snapshot gains a
-cursorShape field (decodeIfPresent ?? .default — wire compat preserved).
-Renderer draws block / underline / bar geometry per Ps, and respects
-the blinking flag via a 1 Hz timer uniform. Shell writes like
-'printf \"\\033[4 q\"' now switch the visible cursor to a steady
-underline."
+Parse CSI Ps SP q into setCursorShape(CursorShape). ScreenModel stores
+the active shape; renderer draws block / underline / bar geometry per
+Ps, and respects the blinking flag via a 1 Hz timer uniform. The
+snapshot-field exposure + Codable migration lands in Task 4 (combined
+with iconName)."
+```
+
+---
+
+## Task 4: Expose `cursorShape` + `iconName` on `ScreenSnapshot`
+
+**Spec reference:** §8 Phase 3 Track A — DECSCUSR (snapshot exposure) + open question 7 (`iconName` answered: yes).
+
+**Goal:** Add two fields to `ScreenSnapshot` in one Codable migration. Both use `decodeIfPresent` with a default so pre-Phase-3 JSON payloads still decode unchanged. Combined into one task because both fields extend `ScreenSnapshot.TerminalState`, both add `CodingKeys` entries, and both use the same rewrite of `makeSnapshot(from:)` — doing them together avoids three separate rewrites of the init + CodingKeys + `makeSnapshot` body.
+
+**Files:**
+- Modify: `TermCore/ScreenSnapshot.swift` (add two fields + extend `TerminalState` + CodingKeys + Codable path)
+- Modify: `TermCore/ScreenModel.swift` (pass `cursorShape` + `iconName` into `makeSnapshot`; restore in `restore(from:)`)
+- Modify: `TermCoreTests/CodableTests.swift` (or `CursorShapeTests.swift` / `ScreenModelTests.swift`) — snapshot-level tests
+
+### Steps
+
+- [ ] **Step 1: Extend `ScreenSnapshot.TerminalState`**
+
+In `TermCore/ScreenSnapshot.swift`, add two fields to `TerminalState`:
+
+```swift
+public struct TerminalState: Sendable, Equatable {
+    // ... existing fields ...
+    public var cursorShape: CursorShape = .default
+    public var iconName: String? = nil
+}
+```
+
+Extend the `TerminalState.init` to accept both defaults. The convenience `ScreenSnapshot.init` forwards them to the flat init.
+
+- [ ] **Step 2: Extend flat `ScreenSnapshot` + CodingKeys**
+
+Add two flat public fields parallel to the existing ones:
+
+```swift
+public let cursorShape: CursorShape
+public let iconName: String?
+```
+
+Extend the 12-param init signature with both (with `.default` and `nil` as defaults respectively, so existing call sites compile unchanged if they use trailing-default arguments).
+
+Extend `CodingKeys`:
+
+```swift
+case cursorShape, iconName
+```
+
+Hand-coded `init(from:)`:
+
+```swift
+self.cursorShape = try container.decodeIfPresent(CursorShape.self, forKey: .cursorShape) ?? .default
+self.iconName = try container.decodeIfPresent(String.self, forKey: .iconName)
+```
+
+`encode(to:)`:
+
+```swift
+try container.encode(cursorShape, forKey: .cursorShape)
+try container.encodeIfPresent(iconName, forKey: .iconName)
+```
+
+- [ ] **Step 3: Pass into `makeSnapshot(from:)`**
+
+In `TermCore/ScreenModel.swift`:
+
+```swift
+let terminalState = ScreenSnapshot.TerminalState(
+    cursorVisible: modes.cursorVisible,
+    activeBuffer: activeKind,
+    windowTitle: windowTitle,
+    cursorKeyApplication: modes.cursorKeyApplication,
+    bracketedPaste: modes.bracketedPaste,
+    bellCount: bellCount,
+    autoWrap: modes.autoWrap,
+    cursorShape: cursorShape,
+    iconName: iconName)
+```
+
+In `restore(from snapshot:)`: `cursorShape = snapshot.cursorShape` and `iconName = snapshot.iconName`.
+
+- [ ] **Step 4: Snapshot-level tests**
+
+Append to `TermCoreTests/CodableTests.swift` (or a new `ScreenSnapshotFieldsTests.swift`):
+
+```swift
+@Test("Snapshot carries cursorShape")
+func test_snapshot_has_shape() async {
+    let model = ScreenModel(cols: 80, rows: 24)
+    await model.apply([.csi(.setCursorShape(CursorShape(style: .underline, blinking: false)))])
+    let snap = model.latestSnapshot()
+    #expect(snap.cursorShape.style == .underline)
+    #expect(snap.cursorShape.blinking == false)
+}
+
+@Test("Unknown Ps values are ignored, shape stays at default")
+func test_unknown_ps() async {
+    let model = ScreenModel(cols: 80, rows: 24)
+    var p = TerminalParser()
+    let events = p.parse(Data([0x1B, 0x5B, 0x39, 0x20, 0x71]))  // Ps=9 unknown
+    await model.apply(events)
+    let snap = model.latestSnapshot()
+    #expect(snap.cursorShape == .default)
+}
+
+@Test("OSC 1 sets iconName visible on snapshot")
+func test_osc1_icon_name_on_snapshot() async {
+    let model = ScreenModel(cols: 80, rows: 24)
+    await model.apply([.osc(.setIconName("my-icon"))])
+    let snap = model.latestSnapshot()
+    #expect(snap.iconName == "my-icon")
+}
+
+@Test("Legacy ScreenSnapshot JSON without cursorShape / iconName decodes to defaults")
+func test_legacy_snapshot_back_compat() throws {
+    // Minimal snapshot JSON carrying only the Phase 1/2 fields — no
+    // cursorShape key, no iconName key. decodeIfPresent must yield the
+    // defaults (.default / nil).
+    let cells = ContiguousArray<Cell>(repeating: Cell(character: "x"), count: 1)
+    let snap = ScreenSnapshot(
+        activeCells: cells, cols: 1, rows: 1,
+        cursor: Cursor.zero,
+        terminalState: ScreenSnapshot.TerminalState(),
+        version: 0)
+    let data = try JSONEncoder().encode(snap)
+    let decoded = try JSONDecoder().decode(ScreenSnapshot.self, from: data)
+    #expect(decoded.cursorShape == .default)
+    #expect(decoded.iconName == nil)
+}
+```
+
+- [ ] **Step 5: Build + commit**
+
+```bash
+xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
+xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
+git add TermCore/ScreenSnapshot.swift \
+        TermCore/ScreenModel.swift \
+        TermCoreTests/CodableTests.swift
+git commit -m "feat(TermCore): expose cursorShape + iconName on ScreenSnapshot
+
+Two new snapshot fields land in a single Codable migration. Both use
+decodeIfPresent with a default (.default / nil) so Phase 1/2 wire
+payloads still decode unchanged. Combined because both fields extend
+ScreenSnapshot.TerminalState, both add CodingKeys entries, and both
+rewrite makeSnapshot(from:) the same way — doing them together avoids
+three round trips through the Codable boilerplate.
+
+Phase 1 stored OSC 1's iconName internally with no consumer; exposing
+on the snapshot unblocks Phase 4 dock-icon wiring. cursorShape
+exposure completes Task 3 (DECSCUSR) — parser + model + renderer land
+in Task 3; snapshot surface lands here."
 ```
 
 ---
@@ -806,8 +836,8 @@ git commit -m "feat(rTerm): blink attribute rendering
 
 Fragment shader swaps fg for bg when (attr & kAttrBlink) != 0 and
 global blinkPhase is in the off-half of a 1 Hz cycle. Matches xterm
-and is phase-aligned with cursor blink from Task 4. Cells without
-.blink are unaffected."
+and is phase-aligned with the cursor blink uniform introduced in
+Task 3 (DECSCUSR). Cells without .blink are unaffected."
 ```
 
 Flag manual verification required — unit tests cannot observe Metal pixel output.
@@ -2008,100 +2038,7 @@ Query form (OSC 52 ; <target> ; ? ST) routes to .osc(.unknown) — Phase
 
 ---
 
-## Task 11: `iconName` on `ScreenSnapshot`
-
-**Spec reference:** §8 Phase 3 open question 7 (answered: yes).
-
-**Goal:** `ScreenModel` already stores `iconName: String?` from OSC 1. Currently hidden. Expose on `ScreenSnapshot` parallel to `windowTitle`. `decodeIfPresent ?? nil` preserves wire compat.
-
-**Files:**
-- Modify: `TermCore/ScreenSnapshot.swift` (add field + TerminalState + Codable)
-- Modify: `TermCore/ScreenModel.swift` (pass into `makeSnapshot`)
-- Modify: `rTerm/ContentView.swift` (optional: bind to dock icon name if desired)
-
-### Steps
-
-- [ ] **Step 1: Add `iconName` to `ScreenSnapshot.TerminalState`**
-
-```swift
-public var iconName: String? = nil
-```
-
-Extend the convenience init to forward it. In the flat `ScreenSnapshot.init`, add:
-
-```swift
-public let iconName: String?
-
-public init(...,
-            iconName: String? = nil,
-            ...) {
-    self.iconName = iconName
-    ...
-}
-```
-
-Update Codable:
-
-```swift
-self.iconName = try container.decodeIfPresent(String.self, forKey: .iconName)
-```
-
-Add to `CodingKeys`.
-
-- [ ] **Step 2: Pass in `makeSnapshot(from:)`**
-
-```swift
-let terminalState = ScreenSnapshot.TerminalState(
-    ...,
-    iconName: iconName,
-    cursorShape: cursorShape)
-```
-
-- [ ] **Step 3: Test**
-
-Append to `TermCoreTests/ScreenModelTests.swift` (or `CodableTests.swift`):
-
-```swift
-@Test("OSC 1 sets iconName visible on snapshot")
-func test_osc1_icon_name_on_snapshot() async {
-    let model = ScreenModel(cols: 80, rows: 24)
-    await model.apply([.osc(.setIconName("my-icon"))])
-    let snap = model.latestSnapshot()
-    #expect(snap.iconName == "my-icon")
-}
-
-@Test("ScreenSnapshot decoded without iconName key has nil iconName")
-func test_iconName_back_compat_nil() throws {
-    // Minimal snapshot JSON without an iconName key.
-    let cells = ContiguousArray<Cell>(repeating: Cell(character: "x"), count: 1)
-    let snap = ScreenSnapshot(
-        activeCells: cells, cols: 1, rows: 1,
-        cursor: Cursor.zero,
-        terminalState: ScreenSnapshot.TerminalState(),
-        version: 0)
-    let data = try JSONEncoder().encode(snap)
-    let decoded = try JSONDecoder().decode(ScreenSnapshot.self, from: data)
-    #expect(decoded.iconName == nil)
-}
-```
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add TermCore/ScreenSnapshot.swift \
-        TermCore/ScreenModel.swift \
-        TermCoreTests/
-git commit -m "feat(TermCore): expose iconName on ScreenSnapshot
-
-Phase 1 stored OSC 1's iconName internally with no consumer. Expose
-on ScreenSnapshot parallel to windowTitle, via decodeIfPresent ?? nil
-so Phase 1/2 wire payloads still decode unchanged. No behavior wired
-on the app side yet — that's a Phase 4 concern (dock icon swap)."
-```
-
----
-
-## Task 12: Palette chooser UI
+## Task 11: Palette chooser UI
 
 **Spec reference:** §8 Phase 3 Track A — Palette chooser UI.
 
@@ -2337,7 +2274,7 @@ on the next draw — no session restart required."
 
 ## Track A completion checklist
 
-After Task 12 lands, verify:
+After Task 11 lands, verify:
 
 - [ ] `xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test` — all green (expect ≥ 240 tests, up from Track B's ~230).
 - [ ] `xcodebuild -project rTerm.xcodeproj -scheme rTermTests test` — all green (expect ≥ 62 tests).
@@ -2345,8 +2282,8 @@ After Task 12 lands, verify:
   - `printf '\033]0;hello\007'` updates window title (Phase 1 regression check).
   - `printf '\033[5mHELLO\033[0m\n'` blinks "HELLO" (Task 5).
   - `printf '\033]8;id=1;https://apple.com\033\\Apple\033]8;;\033\\\n'` renders "Apple" as a hyperlink; hover highlights; click opens Safari (Task 8+9).
-  - `printf '\033[4 q'` changes cursor to steady underline (Task 4).
-  - In vim, `:q` should work without stuck states (DA1/DA2/CPR responses work — Tasks 2+3).
+  - `printf '\033[4 q'` changes cursor to steady underline (Task 3).
+  - In vim, `:q` should work without stuck states (DA1/DA2/CPR responses work — Task 2).
   - `tput setaf 4; echo foo` still colors correctly (Phase 1 regression check).
 - [ ] OSC 52 prompt fires once per session on `printf '\033]52;c;aGVsbG8=\007'`; "Allow" writes "hello" to the macOS clipboard; "Deny" is silently ignored.
 - [ ] Settings → palette switch applies live.
@@ -2358,6 +2295,6 @@ After Task 12 lands, verify:
 - DECOM (Task 6) and DECCOLM (Task 7) both route through `handleSetMode` — confirm `DECPrivateMode.init(rawParam:)` has both `.originMode` and `.column132` entries after Task 7 lands.
 - OSC 52 query path is deliberately routed to `.unknown` per the Phase 3 scope answer; the Phase 4 plan will revisit.
 - Fixture corpus completion (spec §8 bullet "Integration fixture corpus completion") was delivered in Track B Task 2, not here — verify the bullet isn't duplicated.
-- `cursorShape` flows through `TerminalStateSnapshot` (from Track B Task 4 convenience init). Task 4 (DECSCUSR) in Track A depends on the Track B convenience init existing.
+- `cursorShape` flows through `TerminalState` (from Track B Task 4 convenience init). Task 3 (DECSCUSR) + Task 4 (snapshot-field exposure) in Track A depend on the Track B convenience init existing.
 
 If any gap surfaces during implementation, insert a sub-task rather than dropping the feature. No TODOs in production code.
