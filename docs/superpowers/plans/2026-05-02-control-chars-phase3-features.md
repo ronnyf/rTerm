@@ -137,7 +137,7 @@ struct WritebackSinkTests {
     @Test("emitWriteback forwards bytes when sink installed")
     func test_sink_receives_bytes() async {
         let model = ScreenModel(cols: 80, rows: 24)
-        let received = UnsafeBytesCollector()
+        let received = DataSink()
         model.installWritebackSink { data in received.append(data) }
         await model._testEmitWriteback(Data([0x41, 0x42]))
         #expect(received.all() == Data([0x41, 0x42]))
@@ -162,13 +162,7 @@ struct WritebackSinkTests {
     }
 }
 
-/// Thread-safe byte accumulator for test assertions.
-private final class UnsafeBytesCollector: @unchecked Sendable {
-    private var data = Data()
-    private let lock = NSLock()
-    func append(_ more: Data) { lock.lock(); data.append(more); lock.unlock() }
-    func all() -> Data { lock.lock(); defer { lock.unlock() }; return data }
-}
+// `DataSink` comes from `TermCoreTests/TestHelpers.swift` (Track B Task 0).
 ```
 
 Add a `@testable`-scope helper on `ScreenModel` to exercise `emitWriteback` from tests without faking a full DA1/DA2/CPR event path:
@@ -281,31 +275,33 @@ Append to `TermCoreTests/TerminalParserTests.swift`:
 @Test("CSI c emits deviceAttributes(.primary)")
 func test_csi_c_primary() {
     var parser = TerminalParser()
-    let events = parser.parse(Data([0x1B, 0x5B, 0x63]))
+    let events = parser.parse(.csi("c"))
     #expect(events == [.csi(.deviceAttributes(.primary))])
 }
 
 @Test("CSI 0 c also emits deviceAttributes(.primary)")
 func test_csi_zero_c_primary() {
     var parser = TerminalParser()
-    let events = parser.parse(Data([0x1B, 0x5B, 0x30, 0x63]))
+    let events = parser.parse(.csi("0c"))
     #expect(events == [.csi(.deviceAttributes(.primary))])
 }
 
 @Test("CSI > c emits deviceAttributes(.secondary)")
 func test_csi_gt_c_secondary() {
     var parser = TerminalParser()
-    let events = parser.parse(Data([0x1B, 0x5B, 0x3E, 0x63]))
+    let events = parser.parse(.csi(">c"))
     #expect(events == [.csi(.deviceAttributes(.secondary))])
 }
 
 @Test("CSI 6 n emits cursorPositionReport")
 func test_csi_6n_cpr() {
     var parser = TerminalParser()
-    let events = parser.parse(Data([0x1B, 0x5B, 0x36, 0x6E]))
+    let events = parser.parse(.csi("6n"))
     #expect(events == [.csi(.cursorPositionReport)])
 }
 ```
+
+`Data.csi` comes from `TermCoreTests/TestHelpers.swift` (Track B Task 0).
 
 - [ ] **Step 4: Handle all three in `ScreenModel.handleCSI`**
 
@@ -363,7 +359,7 @@ struct DeviceAttributesTests {
         let sink = DataSink()
         model.installWritebackSink { sink.append($0) }
         await model.apply([.csi(.deviceAttributes(.primary))])
-        #expect(sink.all() == Data([0x1B, 0x5B, 0x3F, 0x31, 0x3B, 0x32, 0x63]))
+        #expect(sink.all() == .csi("?1;2c"))
     }
 
     @Test("DA2 writes CSI > 0 ; 322 ; 0 c (xterm class, patch 322)")
@@ -372,7 +368,7 @@ struct DeviceAttributesTests {
         let sink = DataSink()
         model.installWritebackSink { sink.append($0) }
         await model.apply([.csi(.deviceAttributes(.secondary))])
-        #expect(sink.all() == Data([0x1B, 0x5B, 0x3E, 0x30, 0x3B, 0x33, 0x32, 0x32, 0x3B, 0x30, 0x63]))
+        #expect(sink.all() == .csi(">0;322;0c"))
     }
 }
 
@@ -386,7 +382,7 @@ struct CPRTests {
         model.installWritebackSink { sink.append($0) }
         await model.apply([.csi(.cursorPositionReport)])
         // Cursor at (0,0) → "ESC [ 1 ; 1 R"
-        #expect(sink.all() == Data([0x1B, 0x5B, 0x31, 0x3B, 0x31, 0x52]))
+        #expect(sink.all() == .csi("1;1R"))
     }
 
     @Test("CPR reports after cursor moved")
@@ -399,16 +395,11 @@ struct CPRTests {
             .csi(.cursorPositionReport),
         ])
         // Cursor at (4,9) 0-indexed = (5,10) 1-indexed → "ESC [ 5 ; 10 R"
-        #expect(sink.all() == Data([0x1B, 0x5B, 0x35, 0x3B, 0x31, 0x30, 0x52]))
+        #expect(sink.all() == .csi("5;10R"))
     }
 }
 
-final class DataSink: @unchecked Sendable {
-    private var buf = Data()
-    private let lock = NSLock()
-    func append(_ more: Data) { lock.lock(); buf.append(more); lock.unlock() }
-    func all() -> Data { lock.lock(); defer { lock.unlock() }; return buf }
-}
+// `DataSink` + `Data.csi` come from `TermCoreTests/TestHelpers.swift` (Track B Task 0).
 ```
 
 - [ ] **Step 6: Build + test + commit**
@@ -1354,26 +1345,21 @@ struct HyperlinkTests {
     @Test("OSC 8 ; id=A ; http://x ST parses to setHyperlink")
     func test_osc8_with_id() {
         var p = TerminalParser()
-        let bytes: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B] +
-            Array("id=A".utf8) + [0x3B] +
-            Array("http://x".utf8) + [0x1B, 0x5C]
-        let events = p.parse(Data(bytes))
+        let events = p.parse(.osc(8, "id=A;http://x"))
         #expect(events == [.osc(.setHyperlink(Hyperlink(id: "A", uri: "http://x")))])
     }
 
     @Test("OSC 8 ; ; http://x ST parses without id")
     func test_osc8_no_id() {
         var p = TerminalParser()
-        let bytes: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B, 0x3B] +
-            Array("http://x".utf8) + [0x1B, 0x5C]
-        let events = p.parse(Data(bytes))
+        let events = p.parse(.osc(8, ";http://x"))
         #expect(events == [.osc(.setHyperlink(Hyperlink(id: nil, uri: "http://x")))])
     }
 
     @Test("OSC 8 ; ; ST terminates hyperlink")
     func test_osc8_terminator() {
         var p = TerminalParser()
-        let events = p.parse(Data([0x1B, 0x5D, 0x38, 0x3B, 0x3B, 0x1B, 0x5C]))
+        let events = p.parse(.osc(8, ";"))
         #expect(events == [.osc(.setHyperlink(nil))])
     }
 
@@ -1384,18 +1370,12 @@ struct HyperlinkTests {
         // id == "A", regardless of whether 'user' appears before or
         // after 'id' in the list.
         var p = TerminalParser()
-        let bytes: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B] +
-            Array("id=A:user=joe".utf8) + [0x3B] +
-            Array("http://x".utf8) + [0x1B, 0x5C]
-        let events = p.parse(Data(bytes))
+        let events = p.parse(.osc(8, "id=A:user=joe;http://x"))
         #expect(events == [.osc(.setHyperlink(Hyperlink(id: "A", uri: "http://x")))])
 
         // Also verify order-independence.
-        let bytes2: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B] +
-            Array("user=joe:id=B".utf8) + [0x3B] +
-            Array("http://y".utf8) + [0x1B, 0x5C]
         var p2 = TerminalParser()
-        let events2 = p2.parse(Data(bytes2))
+        let events2 = p2.parse(.osc(8, "user=joe:id=B;http://y"))
         #expect(events2 == [.osc(.setHyperlink(Hyperlink(id: "B", uri: "http://y")))])
     }
 
@@ -1947,9 +1927,7 @@ struct ClipboardTests {
     func test_osc52_clipboard() {
         var p = TerminalParser()
         let payload = "aGVsbG8="  // "hello"
-        let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x63, 0x3B] +
-            Array(payload.utf8) + [0x1B, 0x5C]
-        let events = p.parse(Data(bytes))
+        let events = p.parse(.osc(52, "c;\(payload)"))
         #expect(events == [.osc(.setClipboard(targets: .clipboard, base64Payload: payload))])
     }
 
@@ -1958,9 +1936,7 @@ struct ClipboardTests {
         // Per xterm grammar, <target> is a string: 'cs' = clipboard + select.
         var p = TerminalParser()
         let payload = "aGk="
-        let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x63, 0x73, 0x3B] +
-            Array(payload.utf8) + [0x1B, 0x5C]
-        let events = p.parse(Data(bytes))
+        let events = p.parse(.osc(52, "cs;\(payload)"))
         let expected: ClipboardTargets = [.clipboard, .select]
         #expect(events == [.osc(.setClipboard(targets: expected, base64Payload: payload))])
     }
@@ -1970,9 +1946,7 @@ struct ClipboardTests {
         // Empty target per xterm = 's0' default; we collapse to .select.
         var p = TerminalParser()
         let payload = "aGk="
-        let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x3B] +
-            Array(payload.utf8) + [0x1B, 0x5C]
-        let events = p.parse(Data(bytes))
+        let events = p.parse(.osc(52, ";\(payload)"))
         #expect(events == [.osc(.setClipboard(targets: .select, base64Payload: payload))])
     }
 
@@ -1980,8 +1954,7 @@ struct ClipboardTests {
     func test_osc52_query_is_unknown() {
         var p = TerminalParser()
         // OSC 52 ; c ; ? ST
-        let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x63, 0x3B, 0x3F, 0x1B, 0x5C]
-        let events = p.parse(Data(bytes))
+        let events = p.parse(.osc(52, "c;?"))
         if case .osc(.unknown(let ps, _)) = events[0] {
             #expect(ps == 52)
         } else {
@@ -1992,9 +1965,9 @@ struct ClipboardTests {
     @Test("Model emits clipboard write via sink")
     func test_model_emits_clipboard_sink() async {
         let model = ScreenModel(cols: 80, rows: 24)
-        let received = ClipboardSpy()
+        let received = LockedAccumulator<(ClipboardTargets, String)>()
         model.installClipboardSink { targets, payload in
-            received.record(targets, payload)
+            received.append((targets, payload))
         }
         await model.apply([.osc(.setClipboard(targets: .clipboard, base64Payload: "aGk="))])
         let all = received.all()
@@ -2004,12 +1977,8 @@ struct ClipboardTests {
     }
 }
 
-private final class ClipboardSpy: @unchecked Sendable {
-    private var log: [(ClipboardTargets, String)] = []
-    private let lock = NSLock()
-    func record(_ t: ClipboardTargets, _ p: String) { lock.lock(); log.append((t, p)); lock.unlock() }
-    func all() -> [(ClipboardTargets, String)] { lock.lock(); defer { lock.unlock() }; return log }
-}
+// `LockedAccumulator` + `Data.osc` come from `TermCoreTests/TestHelpers.swift`
+// (Track B Task 0).
 ```
 
 - [ ] **Step 9: Commit**

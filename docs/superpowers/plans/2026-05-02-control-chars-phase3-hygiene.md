@@ -19,6 +19,155 @@
 
 ---
 
+## Task 0: Test infrastructure prerequisite — `TermCoreTests/TestHelpers.swift`
+
+**Spec reference:** simplify-review recommendation §4 Reuse #1 (LockedAccumulator) + simplify-review §2.3 Efficiency #3 (escape-sequence helpers).
+
+**Goal:** Land one shared test-helpers file up front so every downstream Track A + Track B task that needs a lock-protected spy or a hand-assembled `[UInt8]` escape sequence references a single canonical helper instead of duplicating `@unchecked Sendable` boilerplate. Previously `UnsafeBytesCollector`, `DataSink`, `ClipboardSpy`, `AtomicBool` each appeared as near-identical private classes in 4+ test files; the OSC / CSI byte arrays were hand-assembled with `+ Array("payload".utf8) +` splices everywhere.
+
+**Files:**
+- Create: `TermCoreTests/TestHelpers.swift`
+
+### Steps
+
+- [ ] **Step 1: Create `TermCoreTests/TestHelpers.swift`**
+
+```swift
+//
+//  TestHelpers.swift
+//  TermCoreTests
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+//  Shared test-helper scaffolding. Lock-protected accumulator replaces
+//  the per-test UnsafeBytesCollector / DataSink / ClipboardSpy / AtomicBool
+//  classes that otherwise duplicate across tasks. Byte-level helpers
+//  (Data.csi, Data.osc) replace hand-assembled [UInt8] escape-sequence
+//  literals in parser / writeback tests, eliminating off-by-one risk from
+//  mid-sequence .utf8 splices.
+//
+
+import Foundation
+
+/// Lock-protected accumulator used by every test that spies on a
+/// `@Sendable` callback. One generic replaces the four hand-written
+/// spies that otherwise repeat the same NSLock body.
+public final class LockedAccumulator<T>: @unchecked Sendable {
+    private var items: [T] = []
+    private let lock = NSLock()
+
+    public init() {}
+
+    public func append(_ item: T) {
+        lock.lock(); defer { lock.unlock() }
+        items.append(item)
+    }
+
+    public func all() -> [T] {
+        lock.lock(); defer { lock.unlock() }
+        return items
+    }
+
+    public func count() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return items.count
+    }
+}
+
+/// Specialization convenience — the most common shape is a `Data` sink
+/// that concatenates writes into one contiguous blob.
+public final class DataSink: @unchecked Sendable {
+    private var buf = Data()
+    private let lock = NSLock()
+    public init() {}
+    public func append(_ more: Data) {
+        lock.lock(); defer { lock.unlock() }
+        buf.append(more)
+    }
+    public func all() -> Data {
+        lock.lock(); defer { lock.unlock() }
+        return buf
+    }
+}
+
+/// Atomic-bool replacement for the ad-hoc class in Track B Task 1's
+/// `RestoreOrderingTests`. Semantics: a lock-gated boolean that is safe
+/// to read/write from arbitrary Task contexts.
+public final class AtomicBool: @unchecked Sendable {
+    private var value: Bool
+    private let lock = NSLock()
+    public init(value: Bool) { self.value = value }
+    public func load() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return value
+    }
+    public func store(_ new: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        value = new
+    }
+}
+
+// MARK: - Byte-level escape-sequence helpers
+
+public extension Data {
+    /// Build a CSI sequence from its parameter+final body. `body` is the
+    /// text that follows `ESC [`, e.g. `"?1;2c"` for DA1 response,
+    /// `"6n"` for CPR, `"32m"` for an SGR. Prepends the two lead bytes
+    /// (ESC, `[`) and encodes the body as ASCII.
+    ///
+    /// Intent-revealing: `Data.csi("?1;2c")` reads as "CSI ? 1 ; 2 c",
+    /// not `Data([0x1B, 0x5B, 0x3F, 0x31, 0x3B, 0x32, 0x63])`.
+    static func csi(_ body: String) -> Data {
+        var d = Data([0x1B, 0x5B])
+        d.append(contentsOf: body.utf8)
+        return d
+    }
+
+    /// Build an OSC sequence with ST (ESC \) terminator.
+    /// `ps` is the numeric parameter (0..=1999); `pt` is the text
+    /// payload that follows the semicolon. `Data.osc(8, "id=A;http://x")`
+    /// → `ESC ] 8 ; id=A;http://x ESC \`.
+    static func osc(_ ps: Int, _ pt: String) -> Data {
+        var d = Data([0x1B, 0x5D])
+        d.append(contentsOf: String(ps).utf8)
+        d.append(0x3B)
+        d.append(contentsOf: pt.utf8)
+        d.append(contentsOf: [0x1B, 0x5C])
+        return d
+    }
+}
+```
+
+- [ ] **Step 2: Add the file to the TermCoreTests target in Xcode**
+
+Drag into the TermCoreTests group, confirm target membership = TermCoreTests only. No pbxproj hand-editing.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add TermCoreTests/TestHelpers.swift rTerm.xcodeproj/project.pbxproj
+git commit -m "test(TermCoreTests): shared test helpers (LockedAccumulator, Data.csi/osc)
+
+Land one file up front so downstream Phase 3 Track A + Track B tasks
+that need a lock-protected spy or a hand-assembled escape sequence
+reference a single canonical helper rather than duplicating
+@unchecked Sendable boilerplate or re-deriving byte-array offsets:
+
+- LockedAccumulator<T> generic — replaces the UnsafeBytesCollector /
+  DataSink / ClipboardSpy / AtomicBool per-test private classes that
+  otherwise repeat the same NSLock body in 4+ files.
+- DataSink typealias-style specialization for Data concatenation.
+- AtomicBool for the few remaining bool-spin cases.
+- Data.csi(String) / Data.osc(Int, String) — intent-revealing
+  factories so parser/writeback tests read as 'CSI ? 1 ; 2 c' rather
+  than [0x1B, 0x5B, 0x3F, 0x31, 0x3B, 0x32, 0x63]. Eliminates the
+  off-by-one risk present in OSC tests with mid-sequence .utf8
+  splices."
+```
+
+---
+
 ## Task 1: Test gap — `AttributeProjection.atlasVariant` invariance + `restore(from payload:)` ordering test
 
 **Spec reference:** §8 Track B item 12 (test gaps).
@@ -161,15 +310,8 @@ struct RestoreOrderingTests {
     }
 }
 
-/// Minimal sendable atomic bool — local to this test file. Avoids pulling
-/// in Atomics package just for one test.
-private final class AtomicBool: @unchecked Sendable {
-    private var value: Bool
-    private let lock = NSLock()
-    init(value: Bool) { self.value = value }
-    func load() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
-    func store(_ new: Bool) { lock.lock(); defer { lock.unlock() }; value = new }
-}
+// `AtomicBool` above comes from `TermCoreTests/TestHelpers.swift` (Task 0).
+// No per-file copy is needed.
 ```
 
 - [ ] **Step 3: Run new tests**
