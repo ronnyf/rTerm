@@ -37,9 +37,11 @@
 		E3AA010C2C80A10000AA0001 /* ScreenModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */; };
 		E3AA010E2C80A10000AA0001 /* KeyEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */; };
 		E3AA01102C80A20000AA0001 /* KeyEncoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */; };
-		E3B801022FC00100001B0001 /* BracketedPasteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3B801012FC00100001B0001 /* BracketedPasteTests.swift */; };
 		E3AB01022FC10100001A0001 /* AttributeProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AB01012FC10100001A0001 /* AttributeProjection.swift */; };
 		E3AB01042FC10100001A0001 /* AttributeProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3AB01032FC10100001A0001 /* AttributeProjectionTests.swift */; };
+		E3SC01022FC20100001A0001 /* ScrollViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3SC01012FC20100001A0001 /* ScrollViewState.swift */; };
+		E3SC01042FC20100001A0002 /* ScrollViewStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3SC01032FC20100001A0002 /* ScrollViewStateTests.swift */; };
+		E3B801022FC00100001B0001 /* BracketedPasteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3B801012FC00100001B0001 /* BracketedPasteTests.swift */; };
 		E3BA01022C80B10000BA0001 /* GlyphAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */; };
 		E3BB01112C80B10000BB0001 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E3BB01102C80B10000BB0001 /* Shaders.metal */; };
 		E3C634DC2C34B23D00BF09C7 /* TermMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C634DB2C34B23D00BF09C7 /* TermMessage.swift */; };
@@ -229,9 +231,11 @@
 		E3AA010B2C80A10000AA0001 /* ScreenModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenModelTests.swift; sourceTree = "<group>"; };
 		E3AA010D2C80A10000AA0001 /* KeyEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoder.swift; sourceTree = "<group>"; };
 		E3AA010F2C80A20000AA0001 /* KeyEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyEncoderTests.swift; sourceTree = "<group>"; };
-		E3B801012FC00100001B0001 /* BracketedPasteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BracketedPasteTests.swift; sourceTree = "<group>"; };
 		E3AB01012FC10100001A0001 /* AttributeProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttributeProjection.swift; sourceTree = "<group>"; };
 		E3AB01032FC10100001A0001 /* AttributeProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttributeProjectionTests.swift; sourceTree = "<group>"; };
+		E3SC01012FC20100001A0001 /* ScrollViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollViewState.swift; sourceTree = "<group>"; };
+		E3SC01032FC20100001A0002 /* ScrollViewStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollViewStateTests.swift; sourceTree = "<group>"; };
+		E3B801012FC00100001B0001 /* BracketedPasteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BracketedPasteTests.swift; sourceTree = "<group>"; };
 		E3BA01012C80B10000BA0001 /* GlyphAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlyphAtlas.swift; sourceTree = "<group>"; };
 		E3BB01102C80B10000BB0001 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
 		E3C634DB2C34B23D00BF09C7 /* TermMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermMessage.swift; sourceTree = "<group>"; };
@@ -408,6 +412,7 @@
 				E3F8CA072F900180001F0001 /* AppSettings.swift */,
 				E3F8CA092F900180001F0001 /* ColorProjection.swift */,
 				E3AB01012FC10100001A0001 /* AttributeProjection.swift */,
+				E3SC01012FC20100001A0001 /* ScrollViewState.swift */,
 				E30920882C23FF0700B6D264 /* Assets.xcassets */,
 				E3E00EE62C279ABC00DE1213 /* rTerm.entitlements */,
 				E309208A2C23FF0700B6D264 /* Preview Content */,
@@ -431,6 +436,7 @@
 				E3F8CA0B2F900180001F0001 /* ColorProjectionTests.swift */,
 				E3B801012FC00100001B0001 /* BracketedPasteTests.swift */,
 				E3AB01032FC10100001A0001 /* AttributeProjectionTests.swift */,
+				E3SC01032FC20100001A0002 /* ScrollViewStateTests.swift */,
 			);
 			path = rTermTests;
 			sourceTree = "<group>";
@@ -838,6 +844,7 @@
 				E3F8CA082F900180001F0001 /* AppSettings.swift in Sources */,
 				E3F8CA0A2F900180001F0001 /* ColorProjection.swift in Sources */,
 				E3AB01022FC10100001A0001 /* AttributeProjection.swift in Sources */,
+				E3SC01022FC20100001A0001 /* ScrollViewState.swift in Sources */,
 			);
 		};
 		E309208E2C23FF0800B6D264 /* Sources */ = {
@@ -848,6 +855,7 @@
 				E3F8CA0C2F900180001F0001 /* ColorProjectionTests.swift in Sources */,
 				E3B801022FC00100001B0001 /* BracketedPasteTests.swift in Sources */,
 				E3AB01042FC10100001A0001 /* AttributeProjectionTests.swift in Sources */,
+				E3SC01042FC20100001A0002 /* ScrollViewStateTests.swift in Sources */,
 			);
 		};
 		E30920982C23FF0800B6D264 /* Sources */ = {

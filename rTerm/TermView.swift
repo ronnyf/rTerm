@@ -45,6 +45,18 @@ final class TerminalMTKView: MTKView, NSMenuItemValidation {
     /// the system pasteboard's first plain-text item and forwards it.
     var onPaste: ((String) -> Void)?
 
+    /// Called when the user scrolls inside the view (wheel, trackpad).
+    var onScrollWheel: ((CGFloat) -> Void)?
+
+    /// Page Up / Page Down handlers — return `true` if the gesture was consumed
+    /// for scrollback navigation, `false` if it should fall through to the encoder.
+    var onPageUp:   (() -> Bool)?
+    var onPageDown: (() -> Bool)?
+
+    /// Called when the user types — RenderCoordinator scrolls back to the
+    /// bottom of the live grid before the input is sent.
+    var onActiveInput: (() -> Void)?
+
     override var acceptsFirstResponder: Bool { true }
 
     override func viewDidMoveToWindow() {
@@ -53,15 +65,44 @@ final class TerminalMTKView: MTKView, NSMenuItemValidation {
     }
 
     override func keyDown(with event: NSEvent) {
+        // Scrollback navigation hooks — Page Up / Page Down drive the
+        // RenderCoordinator's scroll state when we're in the main buffer.
+        // The hooks return true when they consume the event; false means
+        // pass through to the encoder (and on to the shell).
+        switch event.keyCode {
+        case 116:  // kVK_PageUp
+            if let h = onPageUp, h() { return }
+        case 121:  // kVK_PageDown
+            if let h = onPageDown, h() { return }
+        default:
+            break
+        }
         let mode = cursorKeyModeProvider?() ?? .normal
         let encoder = KeyEncoder()
         if let data = encoder.encode(event, cursorKeyMode: mode) {
+            onActiveInput?()
             log.debug("keyDown: keyCode=\(event.keyCode), encoded \(data.count) bytes")
             onKeyInput?(data)
         } else {
             log.debug("keyDown: keyCode=\(event.keyCode), unhandled")
         }
         // Swallow all key events — do not call super.
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        // event.scrollingDeltaY is gesture-aware: with natural scrolling enabled
+        // (macOS default), a two-finger trackpad gesture *up* gives positive
+        // scrollingDeltaY — which matches "scroll back into history" intent.
+        // With natural scrolling disabled (some Mighty Mouse users), the sign
+        // flips to match physical wheel rotation. We pass the value through
+        // unchanged; the user's "natural" preference governs both directions.
+        let deltaY = event.scrollingDeltaY
+        // Convert raw delta into row units. Trackpad emits precise sub-point
+        // deltas (typically ~1-3 per gesture step); mouse wheel emits coarse
+        // ~1.0 notches. ScrollViewState's accumulator aggregates fractions
+        // across calls so trackpad gestures don't all round to zero.
+        let rowsPerUnit: CGFloat = event.hasPreciseScrollingDeltas ? 0.05 : 1.0
+        onScrollWheel?(deltaY * rowsPerUnit)
     }
 
     /// AppKit's standard paste action — picked up via responder-chain selector
@@ -110,6 +151,29 @@ struct TermView: NSViewRepresentable {
         view.onKeyInput = onInput
         view.onPaste = onPaste
         view.cursorKeyModeProvider = makeCursorKeyModeProvider()
+        view.onScrollWheel = { [weak view, weak coordinator] rowsBack in
+            guard let view, let coordinator else { return }
+            coordinator.handleScrollWheel(rowsBack: rowsBack, view: view)
+        }
+        view.onPageUp = { [weak view, weak coordinator] in
+            guard let view, let coordinator else { return false }
+            // Only consume PgUp for scrollback when there IS history and we're on main.
+            let snap = coordinator.screenModelForView.latestSnapshot()
+            guard snap.activeBuffer == .main else { return false }
+            let history = coordinator.screenModelForView.latestHistoryTail()
+            guard history.count > 0 else { return false }
+            return coordinator.handlePageUp(view: view)
+        }
+        view.onPageDown = { [weak view, weak coordinator] in
+            guard let view, let coordinator else { return false }
+            let snap = coordinator.screenModelForView.latestSnapshot()
+            guard snap.activeBuffer == .main else { return false }
+            guard coordinator.scrollState.offset > 0 else { return false }
+            return coordinator.handlePageDown(view: view)
+        }
+        view.onActiveInput = { [weak coordinator] in
+            coordinator?.scrollToBottom()
+        }
         return view
     }
 

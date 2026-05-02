@@ -62,6 +62,15 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
     /// signal that a bell event happened (lastSeenBellCount still advances).
     private static let bellMinInterval: TimeInterval = 0.2
 
+    /// Scrollback view state. Updated by scrollWheel + PgUp/PgDn handlers in
+    /// TerminalMTKView. Reconciled against history growth at the start of each
+    /// draw so anchored-to-history rows stay put when new output arrives.
+    private(set) var scrollState = ScrollViewState()
+
+    /// Same screenModel passed to init — exposed so TermView's PgUp/PgDn closures
+    /// can read snapshot/history without capturing the SwiftUI state separately.
+    var screenModelForView: ScreenModel { screenModel }
+
     /// Per-vertex layout constants for the glyph and overlay pipelines.
     /// Static so private helpers (e.g. `drawOverlayPass`) can read them
     /// without per-call parameter plumbing.
@@ -106,6 +115,40 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
         // No-op for now.
     }
 
+    // MARK: - Scrollback handlers
+
+    /// Apply a scroll-wheel delta. `rowsBack` is positive when the user
+    /// gestures into history (caller normalizes natural-scroll direction).
+    /// `view` is needed only for `view.needsDisplay`.
+    func handleScrollWheel(rowsBack: CGFloat, view: NSView) {
+        let history = screenModel.latestHistoryTail()
+        scrollState.handleWheel(rowsBack: rowsBack, historyCount: history.count)
+        view.needsDisplay = true
+    }
+
+    /// Apply Page Up. Returns `true` if scroll offset changed.
+    @discardableResult
+    func handlePageUp(view: NSView) -> Bool {
+        let history = screenModel.latestHistoryTail()
+        let pageRows = screenModel.latestSnapshot().rows
+        let changed = scrollState.pageUp(pageRows: pageRows, historyCount: history.count)
+        if changed { view.needsDisplay = true }
+        return changed
+    }
+
+    @discardableResult
+    func handlePageDown(view: NSView) -> Bool {
+        let pageRows = screenModel.latestSnapshot().rows
+        let changed = scrollState.pageDown(pageRows: pageRows)
+        if changed { view.needsDisplay = true }
+        return changed
+    }
+
+    /// Force scroll-to-bottom — called when user types into the active session.
+    func scrollToBottom() {
+        scrollState.scrollToBottom()
+    }
+
     func draw(in view: MTKView) {
         guard let drawable = view.currentDrawable,
               let renderPassDescriptor = view.currentRenderPassDescriptor,
@@ -131,8 +174,37 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
 
         // Read latest screen state (nonisolated, no await).
         let snapshot = screenModel.latestSnapshot()
+        let history = screenModel.latestHistoryTail()
+        scrollState.reconcile(historyCount: history.count)
+
         let rows = snapshot.rows
         let cols = snapshot.cols
+        let liveCells = snapshot.activeCells
+        // Cap scrollOffset at BOTH `history.count` (can't scroll past end of history)
+        // AND `rows` (can't push live rows entirely off-screen). The second cap closes
+        // a race window: snapshot and history are read via two independent mutex
+        // acquisitions, so history.count can grow between them. Without the rows cap,
+        // a sufficient-large scrollState.offset would make `liveRow = row - scrollOffset`
+        // go negative on the live-grid path → crash on `liveCells[liveRow * cols + col]`.
+        let scrollOffset = min(scrollState.offset, min(history.count, rows))
+
+        // `cellAt(row:col:)` returns the cell to render at on-screen position
+        // (row, col). When scrollback is active, the top `scrollOffset` rows come
+        // from history (chronological tail-relative), and the bottom rows come
+        // from the live grid shifted upward. The cursor is suppressed when
+        // scrolled back so it doesn't appear in a confusing position.
+        let historyStart = history.count - scrollOffset
+        @inline(__always) func cellAt(row: Int, col: Int) -> Cell {
+            if row < scrollOffset {
+                let historyRowIdx = historyStart + row
+                let historyRow = history[historyRowIdx]
+                guard col < historyRow.count else { return .empty }
+                return historyRow[col]
+            } else {
+                let liveRow = row - scrollOffset
+                return liveCells[liveRow * cols + col]
+            }
+        }
 
         // -- Bell observer -------------------------------------------------------
         if snapshot.bellCount > lastSeenBellCount {
@@ -172,7 +244,7 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
 
         for row in 0..<rows {
             for col in 0..<cols {
-                let cell = snapshot[row, col]
+                let cell = cellAt(row: row, col: col)
                 let variant = AttributeProjection.atlasVariant(for: cell.style.attributes)
                 let atlas: GlyphAtlas
                 switch variant {
@@ -328,7 +400,7 @@ final class RenderCoordinator: NSObject, MTKViewDelegate {
         }
 
         // -- Cursor quad ---------------------------------------------------------
-        if snapshot.cursorVisible {
+        if snapshot.cursorVisible && scrollOffset == 0 {
             let cursorRow = snapshot.cursor.row
             let cursorCol = snapshot.cursor.col
 
