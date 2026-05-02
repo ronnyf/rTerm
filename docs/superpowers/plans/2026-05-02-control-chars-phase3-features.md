@@ -1,0 +1,2017 @@
+# Control-Characters Phase 3 — Track A Features Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Prerequisite:** Track B hygiene (plan `2026-05-02-control-chars-phase3-hygiene.md`) must be landed on `main` before this plan begins. Track B delivers the `ScreenModel` file split, `TerminalStateSnapshot` extraction, Metal buffer ring, and typed `DispatchSerialQueue` init that Track A work builds on.
+
+**Goal:** Land the Phase 3 feature scope — OSC 8 hyperlinks, OSC 52 clipboard set path, DECSCUSR cursor shape, blink rendering, DA1/DA2/CPR terminal-ID responses, DECOM origin mode, DECCOLM 132-column mode, `iconName` snapshot exposure, palette chooser UI.
+
+**Architecture:** Parser emits new typed CSI/OSC variants. `ScreenModel` stores mode state and hyperlink pen. A new "writeback" path lets `ScreenModel` emit bytes destined for the PTY primary — DA1/DA2/CPR responses flow through `DaemonResponse.writeback(sessionID:data:)` (new XPC case) which the daemon routes to the PTY write end. OSC 52 clipboard flows through `DaemonResponse.clipboardWrite(sessionID:target:payload:)` (new XPC case) routed to `NSPasteboard` under a user-consent gate. Renderer gains a blink uniform, cursor-shape variant, and hyperlink hover/click handling.
+
+**Tech Stack:** Swift 6, Swift Testing (`@Test` / `#expect`), XPC (`import XPC`), AppKit (`NSPasteboard`, `NSWorkspace`), Metal, `os.signpost`.
+
+**Execution contract:** Identical to prior phases.
+- Every implementer task ends with `git commit`. Implementers do not run `xcodebuild`.
+- Implementer-facing checkboxes that mention build/test commands are documentation for the controller's verification pass.
+- After each commit, the controller dispatches `agentic:xcode-build-reporter` to run the relevant tests and verify a clean build.
+- If the report shows failures, the controller re-dispatches the implementer with a fix-focused prompt.
+- After the build reporter passes, the controller dispatches spec-compliance and code-quality reviewers per `superpowers:subagent-driven-development`. Only then is the task marked complete and `/simplify` is invoked before the next task.
+
+---
+
+## Task 1: PTY writeback infrastructure
+
+**Spec reference:** §8 Phase 3 Track A — Terminal identification responses prelude.
+
+**Goal:** The daemon must accept byte-write requests originating from `ScreenModel` (in response to DA1/DA2/CPR) and forward them to the PTY primary. Today the daemon only receives bytes from the shell and from the client's keyboard input. Add:
+
+1. `DaemonResponse.writeback(sessionID: SessionID, data: Data)` — new XPC push case, sent from daemon → client on a writeback emit so the client can log or inspect; *no client action required*.
+2. Internal daemon path: `Session.writeback(_:)` writes the bytes directly into the PTY primary (same FD used for client-input bytes). No XPC roundtrip — the writeback originates inside the daemon, executed synchronously on the daemon queue.
+3. Hook point: `ScreenModel.writebackSink: (@Sendable (Data) -> Void)?` — a closure the daemon installs at session-create time. Invoked by the model when a DA1/DA2/CPR response is required. `nil` on client-side (the client never originates writeback).
+
+**Files:**
+- Modify: `TermCore/DaemonProtocol.swift` (add `.writeback` case)
+- Modify: `TermCore/ScreenModel.swift` (add `writebackSink` property + public `installWritebackSink(_:)`)
+- Modify: `rtermd/Session.swift` (install sink on the per-session model; write to PTY primary when sink fires)
+- Create: `TermCoreTests/WritebackSinkTests.swift`
+
+### Steps
+
+- [ ] **Step 1: Add the XPC response case**
+
+In `TermCore/DaemonProtocol.swift`, add a new case to `DaemonResponse`:
+
+```swift
+/// Emitted when the daemon (or the model inside it) originates a byte
+/// write to the PTY primary — typically a DA1/DA2/CPR reply to a shell
+/// query. Clients do NOT have to act on this; the daemon has already
+/// performed the write. It is pushed to attached clients so their local
+/// ScreenModel mirrors stay consistent if they also re-parse shell
+/// output that may arrive after the writeback.
+case writeback(sessionID: SessionID, data: Data)
+```
+
+Extend the `Codable` conformance accordingly (if hand-coded). If `DaemonResponse` uses an auto-derived `Codable` enum, no further work is needed.
+
+- [ ] **Step 2: Add `writebackSink` to `ScreenModel`**
+
+In `TermCore/ScreenModel.swift`:
+
+```swift
+/// Installed by the daemon's `Session` at create time so the model can
+/// originate writes to the PTY primary (e.g., DA1/DA2/CPR responses).
+/// `nil` when running client-side — the client never originates writeback.
+@ObservationIgnored
+private var _writebackSink: (@Sendable (Data) -> Void)? = nil
+
+/// Install a writeback sink. Called exactly once per model instance;
+/// a second call is a programmer error.
+public func installWritebackSink(_ sink: @escaping @Sendable (Data) -> Void) {
+    precondition(_writebackSink == nil, "writeback sink already installed")
+    _writebackSink = sink
+}
+
+/// Invoke the writeback sink with `data`. No-op if no sink is installed
+/// (e.g., client-side).
+internal func emitWriteback(_ data: Data) {
+    _writebackSink?(data)
+}
+```
+
+- [ ] **Step 3: Install the sink in `rtermd/Session.swift`**
+
+Find `Session.init` (or the point where the per-session `ScreenModel` is created). After model construction:
+
+```swift
+model.installWritebackSink { [weak self] bytes in
+    // Runs on the actor's executor. Session queue is serial, so a
+    // direct write to the PTY primary is safe.
+    guard let self else { return }
+    self.writeToPTY(bytes)
+    // Fan out the writeback to attached clients so their parsers see
+    // the same bytes (shell will also see them echoed back via the PTY).
+    self.fanOutResponse(.writeback(sessionID: self.id, data: bytes))
+}
+```
+
+Implement `writeToPTY(_:)` if it does not exist — it is a thin wrapper over the existing `write(primaryFD, bytes, …)` path used for client input. Grep `rg -n "write\(.*primary" rtermd/` to find the existing call site and factor out.
+
+- [ ] **Step 4: Write unit test for the sink**
+
+Create `TermCoreTests/WritebackSinkTests.swift`:
+
+```swift
+//
+//  WritebackSinkTests.swift
+//  TermCoreTests
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+
+import Foundation
+import Testing
+@testable import TermCore
+
+@Suite("ScreenModel writeback sink")
+struct WritebackSinkTests {
+
+    @Test("emitWriteback forwards bytes when sink installed")
+    func test_sink_receives_bytes() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let received = UnsafeBytesCollector()
+        model.installWritebackSink { data in received.append(data) }
+        await model._testEmitWriteback(Data([0x41, 0x42]))
+        #expect(received.all() == Data([0x41, 0x42]))
+    }
+
+    @Test("emitWriteback is a no-op with no sink")
+    func test_no_sink_is_noop() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model._testEmitWriteback(Data([0x7E]))
+        // No crash, no observable effect. Implicit pass.
+    }
+
+    @Test("Second sink install traps")
+    func test_double_install_traps() async {
+        // Precondition trap — cannot be asserted from Swift Testing
+        // directly. Verify manually by uncommenting:
+        // let model = ScreenModel(cols: 80, rows: 24)
+        // model.installWritebackSink { _ in }
+        // model.installWritebackSink { _ in }   // ← traps
+        // The test body is intentionally empty; the precondition is
+        // enforced at runtime and covered by manual inspection.
+    }
+}
+
+/// Thread-safe byte accumulator for test assertions.
+private final class UnsafeBytesCollector: @unchecked Sendable {
+    private var data = Data()
+    private let lock = NSLock()
+    func append(_ more: Data) { lock.lock(); data.append(more); lock.unlock() }
+    func all() -> Data { lock.lock(); defer { lock.unlock() }; return data }
+}
+```
+
+Add a `@testable`-scope helper on `ScreenModel` to exercise `emitWriteback` from tests without faking a full DA1/DA2/CPR event path:
+
+```swift
+#if DEBUG
+extension ScreenModel {
+    func _testEmitWriteback(_ data: Data) async {
+        emitWriteback(data)
+    }
+}
+#endif
+```
+
+- [ ] **Step 5: Build + test**
+
+```bash
+xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
+xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add TermCore/DaemonProtocol.swift \
+        TermCore/ScreenModel.swift \
+        rtermd/Session.swift \
+        TermCoreTests/WritebackSinkTests.swift
+git commit -m "feat(TermCore): PTY writeback sink infrastructure
+
+ScreenModel gains installWritebackSink(_:) so it can originate byte
+writes to the PTY primary — needed by DA1/DA2/CPR responses in later
+Phase 3 tasks. DaemonResponse.writeback XPC case lets attached clients
+observe the writeback for parser consistency. Daemon's Session installs
+the sink at create time; client never installs (emitWriteback is a
+no-op with no sink)."
+```
+
+---
+
+## Task 2: DA1 + DA2 responses
+
+**Spec reference:** §8 Phase 3 Track A — Terminal identification responses.
+
+**Goal:** Parser emits `.csi(.deviceAttributes(.primary))` for `CSI c` / `CSI 0 c` and `.csi(.deviceAttributes(.secondary))` for `CSI > c` / `CSI > 0 c`. `ScreenModel` responds via `emitWriteback` with xterm-compatible identifiers:
+
+- DA1 (primary): `ESC [ ? 65 ; 22 c` — claims VT520 with ANSI color (22). Chose 65 over 6 (VT102) because tmux and mosh treat 65+ as "modern xterm-class" and enable extended features we want.
+- DA2 (secondary): `ESC [ > 1 ; 95 ; 0 c` — VT220 firmware-version-95, cartridge 0. The 95 slot maps to "xterm 95"; tmux reads this verbatim.
+
+**Files:**
+- Modify: `TermCore/CSICommand.swift` (add `.deviceAttributes(DeviceAttributesKind)`)
+- Modify: `TermCore/TerminalParser.swift` (dispatch `c` and `> c`)
+- Modify: `TermCore/ScreenModel.swift` (handle in `handleCSI`, emit writeback bytes)
+- Modify: `TermCoreTests/TerminalParserTests.swift`
+- Create: `TermCoreTests/DeviceAttributesTests.swift`
+
+### Steps
+
+- [ ] **Step 1: Add `DeviceAttributesKind` + extend `CSICommand`**
+
+In `TermCore/CSICommand.swift`:
+
+```swift
+/// Device Attribute query variants. See xterm ctlseqs — "Primary" and
+/// "Secondary" correspond to `CSI c` / `CSI > c` respectively.
+@frozen public enum DeviceAttributesKind: Sendable, Equatable {
+    case primary
+    case secondary
+}
+```
+
+Add a new case to `CSICommand`:
+
+```swift
+case deviceAttributes(DeviceAttributesKind)
+```
+
+- [ ] **Step 2: Parse `CSI c` and `CSI > c`**
+
+In `TermCore/TerminalParser.swift`, the `mapCSI(params:intermediates:final:)` dispatcher must distinguish the `>` secondary-intermediate form. Check current behavior:
+
+```bash
+rg -n "intermediates" TermCore/TerminalParser.swift | head -20
+```
+
+The parser already carries intermediates into `mapCSI`. Extend the switch:
+
+```swift
+case 0x63 /* c */:
+    if intermediates == [0x3E] {  // '>'
+        return .deviceAttributes(.secondary)
+    } else if intermediates.isEmpty {
+        return .deviceAttributes(.primary)
+    } else {
+        return .unknown(params: params, intermediates: intermediates, final: final)
+    }
+```
+
+- [ ] **Step 3: Write parser tests**
+
+Append to `TermCoreTests/TerminalParserTests.swift`:
+
+```swift
+@Test("CSI c emits deviceAttributes(.primary)")
+func test_csi_c_primary() {
+    var parser = TerminalParser()
+    let events = parser.parse(Data([0x1B, 0x5B, 0x63]))
+    #expect(events == [.csi(.deviceAttributes(.primary))])
+}
+
+@Test("CSI 0 c also emits deviceAttributes(.primary)")
+func test_csi_zero_c_primary() {
+    var parser = TerminalParser()
+    let events = parser.parse(Data([0x1B, 0x5B, 0x30, 0x63]))
+    #expect(events == [.csi(.deviceAttributes(.primary))])
+}
+
+@Test("CSI > c emits deviceAttributes(.secondary)")
+func test_csi_gt_c_secondary() {
+    var parser = TerminalParser()
+    let events = parser.parse(Data([0x1B, 0x5B, 0x3E, 0x63]))
+    #expect(events == [.csi(.deviceAttributes(.secondary))])
+}
+```
+
+- [ ] **Step 4: Handle in `ScreenModel.handleCSI`**
+
+Add to the `handleCSI` switch:
+
+```swift
+case .deviceAttributes(let kind):
+    switch kind {
+    case .primary:
+        // CSI ? 65 ; 22 c  — xterm-class VT520 + ANSI color.
+        emitWriteback(Data([0x1B, 0x5B, 0x3F, 0x36, 0x35, 0x3B, 0x32, 0x32, 0x63]))
+    case .secondary:
+        // CSI > 1 ; 95 ; 0 c  — xterm 95, cartridge 0.
+        emitWriteback(Data([0x1B, 0x5B, 0x3E, 0x31, 0x3B, 0x39, 0x35, 0x3B, 0x30, 0x63]))
+    }
+    return false  // no snapshot bump — pure writeback
+```
+
+The `return false` matches the pattern of other non-state-mutating handlers (see `handleAltScreen`'s pattern if any). If `handleCSI` returns `Void`, the emit is enough.
+
+- [ ] **Step 5: Write model tests**
+
+Create `TermCoreTests/DeviceAttributesTests.swift`:
+
+```swift
+//
+//  DeviceAttributesTests.swift
+//  TermCoreTests
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+
+import Foundation
+import Testing
+@testable import TermCore
+
+@Suite("Device Attribute responses")
+struct DeviceAttributesTests {
+
+    @Test("DA1 writes CSI ? 65 ; 22 c")
+    func test_DA1_response() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let sink = DataSink()
+        model.installWritebackSink { sink.append($0) }
+        await model.apply([.csi(.deviceAttributes(.primary))])
+        #expect(sink.all() == Data([0x1B, 0x5B, 0x3F, 0x36, 0x35, 0x3B, 0x32, 0x32, 0x63]))
+    }
+
+    @Test("DA2 writes CSI > 1 ; 95 ; 0 c")
+    func test_DA2_response() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let sink = DataSink()
+        model.installWritebackSink { sink.append($0) }
+        await model.apply([.csi(.deviceAttributes(.secondary))])
+        #expect(sink.all() == Data([0x1B, 0x5B, 0x3E, 0x31, 0x3B, 0x39, 0x35, 0x3B, 0x30, 0x63]))
+    }
+}
+
+final class DataSink: @unchecked Sendable {
+    private var buf = Data()
+    private let lock = NSLock()
+    func append(_ more: Data) { lock.lock(); buf.append(more); lock.unlock() }
+    func all() -> Data { lock.lock(); defer { lock.unlock() }; return buf }
+}
+```
+
+- [ ] **Step 6: Build + test**
+
+```bash
+xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add TermCore/CSICommand.swift \
+        TermCore/TerminalParser.swift \
+        TermCore/ScreenModel.swift \
+        TermCoreTests/TerminalParserTests.swift \
+        TermCoreTests/DeviceAttributesTests.swift
+git commit -m "feat(TermCore): DA1 + DA2 device-attribute responses
+
+Parse CSI c / CSI 0 c as deviceAttributes(.primary) and CSI > c /
+CSI > 0 c as deviceAttributes(.secondary). Model responds via the
+Phase 3 writeback sink with xterm-class identifiers:
+  - DA1: ESC [ ? 65 ; 22 c  (VT520 + ANSI color)
+  - DA2: ESC [ > 1 ; 95 ; 0 c  (xterm 95, cartridge 0)
+Chosen to satisfy tmux, vim, and mosh detection logic."
+```
+
+---
+
+## Task 3: CPR (Cursor Position Report) response
+
+**Spec reference:** §8 Phase 3 Track A — Terminal identification responses.
+
+**Goal:** Parser emits `.csi(.cursorPositionReport)` for `CSI 6 n`. Model responds via writeback with `ESC [ <row> ; <col> R` (1-indexed, per VT spec). Cursor row and col come from the active buffer's cursor.
+
+**Files:**
+- Modify: `TermCore/CSICommand.swift` (add `.cursorPositionReport`)
+- Modify: `TermCore/TerminalParser.swift` (dispatch `n` with param `6`)
+- Modify: `TermCore/ScreenModel.swift` (respond with cursor position)
+- Modify: `TermCoreTests/TerminalParserTests.swift`
+- Modify: `TermCoreTests/DeviceAttributesTests.swift` (add CPR suite)
+
+### Steps
+
+- [ ] **Step 1: Extend `CSICommand`**
+
+```swift
+case cursorPositionReport
+```
+
+- [ ] **Step 2: Parse `CSI 6 n`**
+
+In `mapCSI`:
+
+```swift
+case 0x6E /* n */:
+    // Only param 6 is implemented — Device Status Report; param 5
+    // (Device Status) falls through to .unknown for now.
+    if intermediates.isEmpty, params.first == 6 {
+        return .cursorPositionReport
+    }
+    return .unknown(params: params, intermediates: intermediates, final: final)
+```
+
+- [ ] **Step 3: Parser test**
+
+```swift
+@Test("CSI 6 n emits cursorPositionReport")
+func test_csi_6n_cpr() {
+    var parser = TerminalParser()
+    let events = parser.parse(Data([0x1B, 0x5B, 0x36, 0x6E]))
+    #expect(events == [.csi(.cursorPositionReport)])
+}
+```
+
+- [ ] **Step 4: Handle in `ScreenModel.handleCSI`**
+
+```swift
+case .cursorPositionReport:
+    // Active-buffer cursor is 0-indexed internally; VT reports 1-indexed.
+    let cursor = active.cursor
+    let row = cursor.row + 1
+    let col = cursor.col + 1
+    // Build "ESC [ <row> ; <col> R" as ASCII bytes.
+    var reply = Data([0x1B, 0x5B])
+    reply.append(contentsOf: String(row).utf8)
+    reply.append(0x3B)
+    reply.append(contentsOf: String(col).utf8)
+    reply.append(0x52)
+    emitWriteback(reply)
+```
+
+- [ ] **Step 5: Model test**
+
+In `TermCoreTests/DeviceAttributesTests.swift`, add:
+
+```swift
+@Suite("CPR response")
+struct CPRTests {
+
+    @Test("CPR reports 1-indexed cursor position")
+    func test_cpr_at_origin() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let sink = DataSink()
+        model.installWritebackSink { sink.append($0) }
+        await model.apply([.csi(.cursorPositionReport)])
+        // Cursor at (0,0) → "ESC [ 1 ; 1 R"
+        #expect(sink.all() == Data([0x1B, 0x5B, 0x31, 0x3B, 0x31, 0x52]))
+    }
+
+    @Test("CPR reports after cursor moved")
+    func test_cpr_after_move() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let sink = DataSink()
+        model.installWritebackSink { sink.append($0) }
+        await model.apply([
+            .csi(.cursorPosition(row: 4, col: 9)),  // 0-indexed (5, 10) in VT terms
+            .csi(.cursorPositionReport),
+        ])
+        // Cursor at (4,9) 0-indexed = (5,10) 1-indexed → "ESC [ 5 ; 10 R"
+        #expect(sink.all() == Data([0x1B, 0x5B, 0x35, 0x3B, 0x31, 0x30, 0x52]))
+    }
+}
+```
+
+- [ ] **Step 6: Build + test + commit**
+
+```bash
+xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
+git add TermCore/CSICommand.swift \
+        TermCore/TerminalParser.swift \
+        TermCore/ScreenModel.swift \
+        TermCoreTests/TerminalParserTests.swift \
+        TermCoreTests/DeviceAttributesTests.swift
+git commit -m "feat(TermCore): CPR response (CSI 6 n)
+
+Parse CSI 6 n as cursorPositionReport. Model writes back
+'ESC [ <row> ; <col> R' with 1-indexed coordinates per VT spec.
+Active-buffer cursor is read; the report reflects the user-visible
+cursor position, not any pending unpublished state."
+```
+
+---
+
+## Task 4: DECSCUSR cursor shape
+
+**Spec reference:** §8 Phase 3 Track A — DECSCUSR (`CSI Ps SP q`).
+
+**Goal:** Parser emits `.csi(.setCursorShape(CursorShape))` for `CSI Ps SP q`. Snapshot gains a `cursorShape: CursorShape` field via `decodeIfPresent ?? .block`. Renderer draws the shape variant.
+
+`Ps` mapping (xterm convention):
+- 0 or 1 — blinking block (default)
+- 2 — steady block
+- 3 — blinking underline
+- 4 — steady underline
+- 5 — blinking bar
+- 6 — steady bar
+
+**Files:**
+- Modify: `TermCore/CSICommand.swift`
+- Create: `TermCore/CursorShape.swift`
+- Modify: `TermCore/TerminalParser.swift`
+- Modify: `TermCore/ScreenModel.swift` (+ ScreenSnapshot.TerminalState)
+- Modify: `TermCore/ScreenSnapshot.swift` (add field + Codable path)
+- Modify: `rTerm/RenderCoordinator.swift`
+- Create: `TermCoreTests/CursorShapeTests.swift`
+
+### Steps
+
+- [ ] **Step 1: Create `CursorShape`**
+
+Create `TermCore/CursorShape.swift`:
+
+```swift
+//
+//  CursorShape.swift
+//  TermCore
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+
+/// Cursor shape and blink state selected by DECSCUSR (`CSI Ps SP q`).
+///
+/// - `style` — rectangle / underline / bar.
+/// - `blinking` — whether the cursor blinks. Renderer drives the
+///   blink phase from a shared global timer uniform.
+@frozen public struct CursorShape: Sendable, Equatable, Codable {
+
+    @frozen public enum Style: Sendable, Equatable, Codable {
+        case block
+        case underline
+        case bar
+    }
+
+    public let style: Style
+    public let blinking: Bool
+
+    public init(style: Style, blinking: Bool) {
+        self.style = style
+        self.blinking = blinking
+    }
+
+    public static let `default` = CursorShape(style: .block, blinking: true)
+}
+```
+
+- [ ] **Step 2: Extend `CSICommand`**
+
+```swift
+case setCursorShape(CursorShape)
+```
+
+- [ ] **Step 3: Parse `CSI Ps SP q`**
+
+The intermediate byte is `0x20` (SPACE), final is `q` (`0x71`). Extend `mapCSI`:
+
+```swift
+case 0x71 /* q */:
+    if intermediates == [0x20] {  // SPACE intermediate — DECSCUSR
+        let ps = params.first ?? 0
+        switch ps {
+        case 0, 1: return .setCursorShape(CursorShape(style: .block, blinking: true))
+        case 2:    return .setCursorShape(CursorShape(style: .block, blinking: false))
+        case 3:    return .setCursorShape(CursorShape(style: .underline, blinking: true))
+        case 4:    return .setCursorShape(CursorShape(style: .underline, blinking: false))
+        case 5:    return .setCursorShape(CursorShape(style: .bar, blinking: true))
+        case 6:    return .setCursorShape(CursorShape(style: .bar, blinking: false))
+        default:   return .unknown(params: params, intermediates: intermediates, final: final)
+        }
+    }
+    return .unknown(params: params, intermediates: intermediates, final: final)
+```
+
+- [ ] **Step 4: Add to `ScreenSnapshot`**
+
+In `TermCore/ScreenSnapshot.swift`, add to `ScreenSnapshot`:
+
+```swift
+public let cursorShape: CursorShape
+```
+
+Extend both inits (flat + `TerminalState` convenience). Extend `TerminalState`:
+
+```swift
+public struct TerminalState: Sendable, Equatable {
+    // ... existing fields ...
+    public var cursorShape: CursorShape = .default
+}
+```
+
+Update the convenience init to pass `cursorShape: terminalState.cursorShape`, and the flat init to accept `cursorShape: CursorShape = .default`. In `Codable`:
+
+```swift
+self.cursorShape = try container.decodeIfPresent(CursorShape.self, forKey: .cursorShape) ?? .default
+```
+
+Add `cursorShape` to `CodingKeys`.
+
+- [ ] **Step 5: Handle in `ScreenModel`**
+
+Add a stored property `private var cursorShape: CursorShape = .default` on `ScreenModel` (not inside `TerminalModes` — `TerminalModes` is the DEC-private-mode flags; cursor shape is separate).
+
+In `handleCSI`:
+
+```swift
+case .setCursorShape(let shape):
+    guard cursorShape != shape else { return false }
+    cursorShape = shape
+    return true  // snapshot bump
+```
+
+In `makeSnapshot(from:)`, pass `cursorShape: cursorShape` into the `TerminalState` bundle.
+
+In `restore(from snapshot:)` (the one that takes a `ScreenSnapshot`), restore: `cursorShape = snapshot.cursorShape`.
+
+- [ ] **Step 6: Renderer — draw the shape**
+
+In `rTerm/RenderCoordinator.swift`, find the cursor-drawing block (currently a filled rectangle at the cursor cell). Replace the rectangle generation with a switch on `snapshot.cursorShape.style`:
+
+```swift
+let shape = snapshot.cursorShape
+switch shape.style {
+case .block:
+    // existing rectangle code
+case .underline:
+    // rectangle 2 px tall at the baseline
+case .bar:
+    // rectangle 2 px wide at the cell's left edge
+}
+```
+
+Blink: add a uniform `cursorBlinkPhase: Float` updated each frame (wrap `Date().timeIntervalSince1970 * blinkFrequency`). If `shape.blinking` and phase is in the off-half, skip cursor emission.
+
+Document the constants inline:
+
+```swift
+// Cursor blink cycle: 1 Hz (500 ms on, 500 ms off). Matches xterm default.
+private static let cursorBlinkHz: Double = 1.0
+```
+
+- [ ] **Step 7: Tests**
+
+Create `TermCoreTests/CursorShapeTests.swift`:
+
+```swift
+import Foundation
+import Testing
+@testable import TermCore
+
+@Suite("DECSCUSR cursor shape")
+struct CursorShapeTests {
+
+    @Test("CSI 0 SP q is blinking block")
+    func test_0() {
+        var p = TerminalParser()
+        #expect(p.parse(Data([0x1B, 0x5B, 0x30, 0x20, 0x71]))
+                == [.csi(.setCursorShape(CursorShape(style: .block, blinking: true)))])
+    }
+
+    @Test("CSI 2 SP q is steady block")
+    func test_2() {
+        var p = TerminalParser()
+        #expect(p.parse(Data([0x1B, 0x5B, 0x32, 0x20, 0x71]))
+                == [.csi(.setCursorShape(CursorShape(style: .block, blinking: false)))])
+    }
+
+    @Test("CSI 6 SP q is steady bar")
+    func test_6() {
+        var p = TerminalParser()
+        #expect(p.parse(Data([0x1B, 0x5B, 0x36, 0x20, 0x71]))
+                == [.csi(.setCursorShape(CursorShape(style: .bar, blinking: false)))])
+    }
+
+    @Test("Snapshot carries cursorShape")
+    func test_snapshot_has_shape() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setCursorShape(CursorShape(style: .underline, blinking: false)))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursorShape.style == .underline)
+        #expect(snap.cursorShape.blinking == false)
+    }
+
+    @Test("Unknown Ps values are ignored, shape stays at default")
+    func test_unknown_ps() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        var p = TerminalParser()
+        let events = p.parse(Data([0x1B, 0x5B, 0x39, 0x20, 0x71]))  // Ps=9 unknown
+        await model.apply(events)
+        let snap = model.latestSnapshot()
+        #expect(snap.cursorShape == .default)
+    }
+}
+```
+
+- [ ] **Step 8: Build + commit**
+
+```bash
+xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
+xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
+git add TermCore/CursorShape.swift \
+        TermCore/CSICommand.swift \
+        TermCore/TerminalParser.swift \
+        TermCore/ScreenSnapshot.swift \
+        TermCore/ScreenModel.swift \
+        rTerm/RenderCoordinator.swift \
+        TermCoreTests/CursorShapeTests.swift
+git commit -m "feat: DECSCUSR cursor shape (block/underline/bar + blinking)
+
+Parse CSI Ps SP q into setCursorShape(CursorShape). Snapshot gains a
+cursorShape field (decodeIfPresent ?? .default — wire compat preserved).
+Renderer draws block / underline / bar geometry per Ps, and respects
+the blinking flag via a 1 Hz timer uniform. Shell writes like
+'printf \"\\033[4 q\"' now switch the visible cursor to a steady
+underline."
+```
+
+---
+
+## Task 5: Blink attribute rendering
+
+**Spec reference:** §8 Phase 3 Track A — Blink attribute.
+
+**Goal:** Already parsed in Phase 1 (`SGRAttribute.blink`, `CellAttributes.blink`). Currently has no visual effect. Land the global timer uniform + shader toggle so cells with `.blink` flash at the same 1 Hz phase as the cursor.
+
+**Files:**
+- Modify: `rTerm/Shaders.metal`
+- Modify: `rTerm/RenderCoordinator.swift`
+
+### Steps
+
+- [ ] **Step 1: Extend fragment shader uniform**
+
+In `rTerm/Shaders.metal`, add a uniform struct entry for `blinkPhase: Float` (0.0 = on, 1.0 = off). Existing uniforms: cell grid, atlas, palette. Add `blinkPhase` to the uniform struct used by the per-cell fragment shader.
+
+In the fragment shader's main function, after looking up the cell's color:
+
+```metal
+// Blink: when the cell has the blink flag and the current frame is in
+// the off-phase, substitute the background color for the foreground.
+// Background stays visible so the cell remains selectable by mouse
+// (which Track A doesn't add, but Phase 4 will).
+if ((cell.attrFlags & kAttrBlink) != 0 && u.blinkPhase > 0.5) {
+    color = bg;
+}
+```
+
+Define `kAttrBlink` in the shader as `(1 << 4)` matching `CellAttributes.blink.rawValue` in Swift.
+
+- [ ] **Step 2: Update Swift side uniform binding**
+
+In `RenderCoordinator.draw(in:)`, compute `blinkPhase`:
+
+```swift
+// 1 Hz blink phase: 0..1, repeats per second.
+let now = CACurrentMediaTime()
+let blinkPhase = Float((now.truncatingRemainder(dividingBy: 1.0)) < 0.5 ? 0.0 : 1.0)
+```
+
+Pass it in the uniform buffer/struct bound to the fragment stage. Reuse an existing uniform buffer if one exists; otherwise `setFragmentBytes`.
+
+- [ ] **Step 3: Ensure the view redraws at 1 Hz**
+
+`MTKView` with `isPaused = true` and `enableSetNeedsDisplay = true` won't auto-redraw. If the current `RenderCoordinator` uses `isPaused = false` with `preferredFramesPerSecond = 60`, no change is needed. If it uses on-demand rendering (`setNeedsDisplay`), add a `Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true)` that calls `view.setNeedsDisplay(view.bounds)` — this drives both cursor and cell blink.
+
+Grep the current render mode:
+
+```bash
+rg -n "isPaused|enableSetNeedsDisplay|preferredFramesPerSecond" rTerm/
+```
+
+- [ ] **Step 4: Manual visual test + commit**
+
+Launch the app, run `printf '\033[5mHELLO\033[0m\n'`. The "HELLO" text should blink at 1 Hz. If the renderer is on-demand, add the timer; otherwise the 60 fps loop handles it.
+
+```bash
+git add rTerm/Shaders.metal rTerm/RenderCoordinator.swift
+git commit -m "feat(rTerm): blink attribute rendering
+
+Fragment shader swaps fg for bg when (attr & kAttrBlink) != 0 and
+global blinkPhase is in the off-half of a 1 Hz cycle. Matches xterm
+and is phase-aligned with cursor blink from Task 4. Cells without
+.blink are unaffected."
+```
+
+Flag manual verification required — unit tests cannot observe Metal pixel output.
+
+---
+
+## Task 6: DECOM origin mode (mode 6)
+
+**Spec reference:** §8 Phase 3 Track A — Origin mode.
+
+**Goal:** When DECOM is set, all cursor-position commands (CUP, HVP, CHA, VPA, save/restore cursor) become scroll-region-relative. Default (DECOM unset): absolute positioning.
+
+`DECPrivateMode.init(rawParam:)` already routes unknown modes to `.unknown(Int)`. Add `.originMode` case; wire into `handleSetMode`; update `handleCSI`'s cursor-position arms to translate when DECOM is set.
+
+**Files:**
+- Modify: `TermCore/DECPrivateMode.swift`
+- Modify: `TermCore/TerminalModes.swift`
+- Modify: `TermCore/ScreenModel.swift`
+- Create: `TermCoreTests/OriginModeTests.swift`
+
+### Steps
+
+- [ ] **Step 1: Add `.originMode` to `DECPrivateMode`**
+
+In `TermCore/DECPrivateMode.swift`:
+
+```swift
+case originMode                // 6    DECOM
+```
+
+Update `init(rawParam:)`:
+
+```swift
+case 6: self = .originMode
+```
+
+- [ ] **Step 2: Add `originMode: Bool` to `TerminalModes`**
+
+```swift
+struct TerminalModes: Equatable, Codable {
+    // ... existing fields ...
+    var originMode: Bool = false
+}
+```
+
+- [ ] **Step 3: Wire `handleSetMode`**
+
+```swift
+case .originMode:
+    guard modes.originMode != enabled else { return false }
+    modes.originMode = enabled
+    // Per VT spec, setting/resetting DECOM homes the cursor (to origin
+    // of the new coordinate space).
+    if modes.originMode {
+        active.cursor = Cursor(row: scrollRegion.top ?? 0, col: 0)
+    } else {
+        active.cursor = Cursor.zero
+    }
+    return true
+```
+
+- [ ] **Step 4: Translate cursor-position CSI handlers**
+
+In `handleCSI`, wrap each absolute-positioning handler (`cursorPosition`, `verticalPositionAbsolute`, `cursorHorizontalAbsolute`, `saveCursor`/`restoreCursor`) with a translation:
+
+```swift
+case .cursorPosition(let row, let col):
+    let effectiveRow = modes.originMode ? row + (scrollRegion.top ?? 0) : row
+    active.cursor = Cursor(row: effectiveRow, col: col)
+    clampCursorToRegion()  // if origin mode, clamp to scroll region; else clamp to screen
+```
+
+Introduce a `clampCursorToRegion()` helper that respects DECOM state.
+
+- [ ] **Step 5: Tests**
+
+Create `TermCoreTests/OriginModeTests.swift` with tests for:
+- Default DECOM-off: CUP 5;10 → cursor at (4,9).
+- DECSTBM 10;20 then DECOM-on: CUP 1;1 → cursor at (9, 0).
+- DECOM-on: cursor cannot escape above scroll-region top.
+
+```swift
+@Suite("DECOM origin mode")
+struct OriginModeTests {
+
+    @Test("DECOM off: cursor position is absolute")
+    func test_decom_off_absolute() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.cursorPosition(row: 4, col: 9))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 4)
+        #expect(snap.cursor.col == 9)
+    }
+
+    @Test("DECOM on within DECSTBM 10..20: CUP 0;0 positions to region top")
+    func test_decom_on_with_stbm() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([
+            .csi(.setScrollRegion(top: 10, bottom: 20)),
+            .csi(.setMode(.originMode, enabled: true)),
+            .csi(.cursorPosition(row: 0, col: 0)),
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 9, "0-indexed row 9 = VT 10; region-relative origin")
+    }
+
+    @Test("DECOM off restores absolute positioning")
+    func test_decom_toggle_off() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([
+            .csi(.setScrollRegion(top: 10, bottom: 20)),
+            .csi(.setMode(.originMode, enabled: true)),
+            .csi(.setMode(.originMode, enabled: false)),
+            .csi(.cursorPosition(row: 0, col: 0)),
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 0)
+        #expect(snap.cursor.col == 0)
+    }
+}
+```
+
+- [ ] **Step 6: Build + commit**
+
+```bash
+xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
+git add TermCore/DECPrivateMode.swift \
+        TermCore/TerminalModes.swift \
+        TermCore/ScreenModel.swift \
+        TermCoreTests/OriginModeTests.swift
+git commit -m "feat(TermCore): DECOM origin mode (mode 6)
+
+Cursor-position commands (CUP, HVP, CHA, VPA, s, u) translate to
+scroll-region-relative coordinates when DECOM is set. DECOM toggle
+homes the cursor to the origin of the new coordinate space per VT
+spec. Parser already emits .csi(.setMode(.originMode, ...)); the
+handler wires the behavior end to end."
+```
+
+---
+
+## Task 7: DECCOLM 132-column mode (mode 3)
+
+**Spec reference:** §8 Phase 3 Track A — 132-column mode.
+
+**Goal:** When DECCOLM is set, resize buffer to 132 columns; when reset, resize to 80. Per VT spec DECCOLM also clears the screen and homes the cursor. Requires `ScreenModel.resize(cols:rows:)` and the daemon-side PTY `TIOCSWINSZ` propagation (the daemon already supports resize via `DaemonRequest.resize`, so reuse that path).
+
+**Files:**
+- Modify: `TermCore/DECPrivateMode.swift`
+- Modify: `TermCore/ScreenModel.swift` (add `.deccolm` handling — triggers resize)
+- Modify: `rTerm/ContentView.swift` or wherever the `TerminalSession` owns the resize flow (propagate to daemon + tell the renderer to adopt the new cols)
+- Create: `TermCoreTests/DECCOLMTests.swift`
+
+### Steps
+
+- [ ] **Step 1: Add `.column132` to `DECPrivateMode`**
+
+```swift
+case column132                 // 3    DECCOLM
+```
+
+`init(rawParam:)`:
+
+```swift
+case 3: self = .column132
+```
+
+- [ ] **Step 2: Handle in `ScreenModel.handleSetMode`**
+
+DECCOLM is a mode that changes buffer dimensions. The actor cannot directly drive a PTY resize — that's the daemon's job. Instead, the model:
+1. Clears the screen (full ED 2).
+2. Homes the cursor.
+3. Emits a new `DaemonResponse.deccolmChange(sessionID:, cols:)` push — OR — exposes an internal-only "pending cols change" signal that the daemon reads on the next draw.
+
+For Phase 3 simplicity, expose via an `@Observable` property on `TerminalSession` that the SwiftUI view reacts to by calling `session.resize(rows:, cols:)`. The resize eventually reaches the daemon via the existing `DaemonRequest.resize` path.
+
+Design choice for minimum coupling:
+
+```swift
+// In ScreenModel:
+/// When non-nil, signals that a DECCOLM toggle requested a column
+/// change. Consumer (TerminalSession) should invoke the resize flow
+/// and clear this back to nil.
+public private(set) var pendingCols: Int? = nil
+
+// In handleSetMode:
+case .column132:
+    let newCols = enabled ? 132 : 80
+    // Clear active buffer + home cursor, then signal the pending resize.
+    clearGrid(active)
+    active.cursor = Cursor.zero
+    pendingCols = newCols
+    return true
+```
+
+In `TerminalSession` or `ContentView`, observe `pendingCols` via SwiftUI `onChange` and call the session resize + reset it.
+
+- [ ] **Step 3: Test**
+
+```swift
+@Suite("DECCOLM column-switch mode")
+struct DECCOLMTests {
+
+    @Test("DECCOLM set signals 132 cols pending")
+    func test_deccolm_on_signals_132() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.column132, enabled: true))])
+        #expect(model.pendingCols == 132)
+    }
+
+    @Test("DECCOLM reset signals 80 cols pending")
+    func test_deccolm_off_signals_80() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.column132, enabled: false))])
+        #expect(model.pendingCols == 80)
+    }
+
+    @Test("DECCOLM clears active grid")
+    func test_deccolm_clears_grid() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.printable("X"), .printable("Y")])
+        await model.apply([.csi(.setMode(.column132, enabled: true))])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].character == " ")
+        #expect(snap[0, 1].character == " ")
+        #expect(snap.cursor == Cursor.zero)
+    }
+}
+```
+
+- [ ] **Step 4: Wire the resize observer**
+
+In `rTerm/ContentView.swift`, add an `.onChange(of: session.pendingCols)` modifier that triggers `session.resize(rows: rows, cols: newCols)` and calls `session.screenModel.clearPendingCols()` (a new nonisolated function that resets the pending flag).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add TermCore/DECPrivateMode.swift \
+        TermCore/ScreenModel.swift \
+        rTerm/ContentView.swift \
+        TermCoreTests/DECCOLMTests.swift
+git commit -m "feat(TermCore): DECCOLM 132-column mode (mode 3)
+
+Set/reset DECCOLM clears the active grid, homes the cursor, and
+signals a pending column change via ScreenModel.pendingCols.
+ContentView observes the signal and routes a resize request through
+the existing TerminalSession.resize → daemon → PTY TIOCSWINSZ path,
+preserving the Phase 1/2 resize semantics unchanged."
+```
+
+---
+
+## Task 8: OSC 8 hyperlinks — parser + model
+
+**Spec reference:** §8 Phase 3 Track A — OSC 8 hyperlinks.
+
+**Goal:** Promote OSC 8 out of `.osc(.unknown)` into typed `OSCCommand.setHyperlink(id: String?, uri: String?)`. Extend `CellStyle` with `hyperlink: Hyperlink?`. `ScreenModel` stamps the current hyperlink onto cells via pen state, same as fg/bg.
+
+`OSC 8 ; <params> ; <uri> ST` — params is semicolon-delimited key=value list (typically `id=<id>`). Terminator `OSC 8 ; ; ST` clears the pen hyperlink.
+
+**Files:**
+- Modify: `TermCore/OSCCommand.swift` (new typed case)
+- Create: `TermCore/Hyperlink.swift`
+- Modify: `TermCore/CellStyle.swift` (add field; Codable via decodeIfPresent)
+- Modify: `TermCore/TerminalParser.swift` (dispatch OSC 8 params/uri)
+- Modify: `TermCore/ScreenModel.swift` (pen state)
+- Create: `TermCoreTests/HyperlinkTests.swift`
+
+### Steps
+
+- [ ] **Step 1: Create `Hyperlink`**
+
+Create `TermCore/Hyperlink.swift`:
+
+```swift
+//
+//  Hyperlink.swift
+//  TermCore
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+
+/// OSC 8 hyperlink target. The `id` field is optional; when present,
+/// multiple non-contiguous cells with the same `id` are treated as a
+/// single interactive region by the renderer (e.g., hover highlight
+/// spans all cells in the group, not only the hovered cell).
+public struct Hyperlink: Sendable, Equatable, Codable {
+    public let id: String?
+    public let uri: String
+
+    public init(id: String?, uri: String) {
+        self.id = id
+        self.uri = uri
+    }
+}
+```
+
+- [ ] **Step 2: Extend `OSCCommand`**
+
+```swift
+case setHyperlink(Hyperlink?)   // nil terminates the pen hyperlink
+```
+
+- [ ] **Step 3: Parse OSC 8 in `TerminalParser`**
+
+In `mapOSC(ps:pt:)`:
+
+```swift
+case 8:
+    return Self.parseOSC8(pt: pt)
+```
+
+Implement:
+
+```swift
+private static func parseOSC8(pt: String) -> OSCCommand {
+    // Payload: "<params>;<uri>". Both halves may be empty.
+    // OSC 8 ; ; ST  → clears pen hyperlink (.setHyperlink(nil))
+    guard let sepIdx = pt.firstIndex(of: ";") else {
+        // Malformed — treat as unknown so downstream can log.
+        return .unknown(ps: 8, pt: pt)
+    }
+    let uriStart = pt.index(after: sepIdx)
+    let paramsPart = pt[..<sepIdx]
+    let uriPart = String(pt[uriStart...])
+    if uriPart.isEmpty {
+        return .setHyperlink(nil)
+    }
+    // Extract id= from params
+    let id: String? = paramsPart
+        .split(separator: ";")
+        .compactMap { kv -> String? in
+            let parts = kv.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2, parts[0] == "id" else { return nil }
+            return String(parts[1])
+        }
+        .first
+    return .setHyperlink(Hyperlink(id: id, uri: uriPart))
+}
+```
+
+- [ ] **Step 4: Extend `CellStyle`**
+
+```swift
+public struct CellStyle: Sendable, Equatable, Codable {
+    public var foreground: TerminalColor
+    public var background: TerminalColor
+    public var attributes: CellAttributes
+    public var hyperlink: Hyperlink?   // NEW
+
+    public init(foreground: TerminalColor = .default,
+                background: TerminalColor = .default,
+                attributes: CellAttributes = [],
+                hyperlink: Hyperlink? = nil) {
+        self.foreground = foreground
+        self.background = background
+        self.attributes = attributes
+        self.hyperlink = hyperlink
+    }
+
+    public static let `default` = CellStyle()
+
+    private enum CodingKeys: String, CodingKey {
+        case foreground, background, attributes, hyperlink
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.foreground = try c.decode(TerminalColor.self, forKey: .foreground)
+        self.background = try c.decode(TerminalColor.self, forKey: .background)
+        self.attributes = try c.decode(CellAttributes.self, forKey: .attributes)
+        self.hyperlink = try c.decodeIfPresent(Hyperlink.self, forKey: .hyperlink)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(foreground, forKey: .foreground)
+        try c.encode(background, forKey: .background)
+        try c.encode(attributes, forKey: .attributes)
+        if let h = hyperlink { try c.encode(h, forKey: .hyperlink) }
+    }
+}
+```
+
+The hand-coded Codable + `decodeIfPresent` preserves Phase 1/2 wire compat — existing JSON without a "hyperlink" key still decodes.
+
+- [ ] **Step 5: `ScreenModel` pen state + handler**
+
+In `ScreenModel`, the `pen: CellStyle` already exists. Add to `handleOSC`:
+
+```swift
+case .setHyperlink(let hyperlink):
+    pen.hyperlink = hyperlink
+    return false  // pen change does not alone bump the snapshot
+```
+
+`handlePrintable` already stamps the full pen onto the new cell; no change needed.
+
+- [ ] **Step 6: Tests**
+
+Create `TermCoreTests/HyperlinkTests.swift`:
+
+```swift
+import Foundation
+import Testing
+@testable import TermCore
+
+@Suite("OSC 8 hyperlinks")
+struct HyperlinkTests {
+
+    @Test("OSC 8 ; id=A ; http://x ST parses to setHyperlink")
+    func test_osc8_with_id() {
+        var p = TerminalParser()
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B] +
+            Array("id=A".utf8) + [0x3B] +
+            Array("http://x".utf8) + [0x1B, 0x5C]
+        let events = p.parse(Data(bytes))
+        #expect(events == [.osc(.setHyperlink(Hyperlink(id: "A", uri: "http://x")))])
+    }
+
+    @Test("OSC 8 ; ; http://x ST parses without id")
+    func test_osc8_no_id() {
+        var p = TerminalParser()
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B, 0x3B] +
+            Array("http://x".utf8) + [0x1B, 0x5C]
+        let events = p.parse(Data(bytes))
+        #expect(events == [.osc(.setHyperlink(Hyperlink(id: nil, uri: "http://x")))])
+    }
+
+    @Test("OSC 8 ; ; ST terminates hyperlink")
+    func test_osc8_terminator() {
+        var p = TerminalParser()
+        let events = p.parse(Data([0x1B, 0x5D, 0x38, 0x3B, 0x3B, 0x1B, 0x5C]))
+        #expect(events == [.osc(.setHyperlink(nil))])
+    }
+
+    @Test("Pen hyperlink stamps onto subsequent printable writes")
+    func test_pen_stamps_hyperlink() async {
+        let model = ScreenModel(cols: 10, rows: 1)
+        let link = Hyperlink(id: "L", uri: "http://example")
+        await model.apply([
+            .osc(.setHyperlink(link)),
+            .printable("A"), .printable("B"),
+            .osc(.setHyperlink(nil)),
+            .printable("C"),
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].style.hyperlink == link)
+        #expect(snap[0, 1].style.hyperlink == link)
+        #expect(snap[0, 2].style.hyperlink == nil)
+    }
+
+    @Test("Cell Codable round-trip with hyperlink preserves fidelity")
+    func test_cell_codable_with_hyperlink() throws {
+        let link = Hyperlink(id: "A", uri: "http://example")
+        let cell = Cell(character: "X",
+                        style: CellStyle(hyperlink: link))
+        let data = try JSONEncoder().encode(cell)
+        let decoded = try JSONDecoder().decode(Cell.self, from: data)
+        #expect(decoded == cell)
+    }
+
+    @Test("Legacy Cell without hyperlink key decodes with nil hyperlink")
+    func test_legacy_cell_decodes() throws {
+        // Simulate a pre-Phase-3 wire payload: style without hyperlink key.
+        let legacyJSON = #"{"character":"X","style":{"foreground":{"default":{}},"background":{"default":{}},"attributes":{"rawValue":0}}}"#
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(Cell.self, from: data)
+        #expect(decoded.style.hyperlink == nil)
+    }
+}
+```
+
+- [ ] **Step 7: Build + commit**
+
+```bash
+xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
+git add TermCore/Hyperlink.swift \
+        TermCore/OSCCommand.swift \
+        TermCore/CellStyle.swift \
+        TermCore/TerminalParser.swift \
+        TermCore/ScreenModel.swift \
+        TermCoreTests/HyperlinkTests.swift
+git commit -m "feat(TermCore): OSC 8 hyperlinks — parser + pen state
+
+Promote OSC 8 out of .osc(.unknown). Parser splits the payload on the
+first semicolon, extracts id= from params, and emits
+.osc(.setHyperlink(Hyperlink(id:uri:))) or .osc(.setHyperlink(nil)) on
+terminator. CellStyle gains a hyperlink: Hyperlink? field via
+decodeIfPresent — Phase 1/2 wire format stays compatible."
+```
+
+---
+
+## Task 9: OSC 8 — renderer + click handling
+
+**Spec reference:** §8 Phase 3 Track A — OSC 8 renderer + URI allowlist (`http(s):`, `file:`, `mailto:`).
+
+**Goal:** Renderer adds a hover-underline for cells whose `style.hyperlink` is non-nil. Click handler opens the URI via `NSWorkspace.open(_:)` after validating the scheme against the allowlist.
+
+**Files:**
+- Modify: `rTerm/RenderCoordinator.swift` (hover tracking + underline overlay)
+- Modify: `rTerm/TermView.swift` (mouse tracking + click → URI open)
+- Create: `rTerm/HyperlinkScheme.swift`
+- Create: `rTermTests/HyperlinkSchemeTests.swift`
+
+### Steps
+
+- [ ] **Step 1: Create the scheme allowlist**
+
+Create `rTerm/HyperlinkScheme.swift`:
+
+```swift
+//
+//  HyperlinkScheme.swift
+//  rTerm
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+
+import Foundation
+
+/// Allowlist for OSC 8 hyperlink opening. Phase 3 decision:
+/// `http(s)`, `file`, `mailto` only. Expand in a future phase if
+/// a concrete need surfaces.
+public enum HyperlinkScheme {
+    private static let allowed: Set<String> = [
+        "http", "https", "file", "mailto",
+    ]
+
+    /// Return the URL if `uri` parses, has an allowed scheme, and is
+    /// safe to pass to `NSWorkspace.open(_:)`. Nil otherwise.
+    public static func validated(_ uri: String) -> URL? {
+        guard let url = URL(string: uri) else { return nil }
+        guard let scheme = url.scheme?.lowercased(),
+              allowed.contains(scheme) else { return nil }
+        return url
+    }
+}
+```
+
+- [ ] **Step 2: Test allowlist**
+
+Create `rTermTests/HyperlinkSchemeTests.swift`:
+
+```swift
+import Foundation
+import Testing
+@testable import rTerm
+
+@Suite("Hyperlink scheme allowlist")
+struct HyperlinkSchemeTests {
+
+    @Test("http / https / file / mailto pass")
+    func test_allowed() {
+        #expect(HyperlinkScheme.validated("http://x")?.absoluteString == "http://x")
+        #expect(HyperlinkScheme.validated("https://example.com/path") != nil)
+        #expect(HyperlinkScheme.validated("file:///tmp/x") != nil)
+        #expect(HyperlinkScheme.validated("mailto:a@b") != nil)
+    }
+
+    @Test("javascript / data / ftp are blocked")
+    func test_blocked() {
+        #expect(HyperlinkScheme.validated("javascript:alert(1)") == nil)
+        #expect(HyperlinkScheme.validated("data:text/html,hi") == nil)
+        #expect(HyperlinkScheme.validated("ftp://x/y") == nil)
+    }
+
+    @Test("Malformed URIs rejected")
+    func test_malformed() {
+        #expect(HyperlinkScheme.validated("") == nil)
+        #expect(HyperlinkScheme.validated("   ") == nil)
+    }
+
+    @Test("Uppercase scheme normalized")
+    func test_case_insensitive_scheme() {
+        #expect(HyperlinkScheme.validated("HTTPS://example") != nil)
+    }
+}
+```
+
+- [ ] **Step 3: Add hover tracking to `TerminalMTKView`**
+
+In `rTerm/TermView.swift`, extend `TerminalMTKView` with a `hoveredCell: (row: Int, col: Int)?` property and override `mouseMoved`:
+
+```swift
+override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    for area in trackingAreas { removeTrackingArea(area) }
+    let opts: NSTrackingArea.Options = [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect]
+    addTrackingArea(NSTrackingArea(rect: bounds, options: opts, owner: self, userInfo: nil))
+}
+
+override func mouseMoved(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    let cell = cellCoordinate(at: point)
+    if cell.row != hoveredCell?.row || cell.col != hoveredCell?.col {
+        hoveredCell = cell
+        coordinator?.setHoveredCell(cell, view: self)
+        needsDisplay = true
+    }
+}
+
+private func cellCoordinate(at point: NSPoint) -> (row: Int, col: Int)? {
+    // Pixel-to-cell conversion using coordinator's cached glyph metrics.
+    guard let metrics = coordinator?.glyphMetrics else { return nil }
+    let col = Int(point.x / metrics.width)
+    let row = Int((bounds.height - point.y) / metrics.height)
+    return (row, col)
+}
+```
+
+Expose `RenderCoordinator.setHoveredCell(_:view:)` which stashes the hovered cell for the next draw pass.
+
+- [ ] **Step 4: Render hover underline**
+
+In `RenderCoordinator.draw(in:)`, after drawing all base passes:
+
+```swift
+if let hovered = hoveredCell,
+   let row = snapshotRow(hovered.row, snapshot: snapshot),
+   hovered.col < snapshot.cols {
+    let cell = row < rows ? snapshot[hovered.row, hovered.col] : Cell(character: " ")
+    if let link = cell.style.hyperlink {
+        // Emit a bright underline across ALL cells that share this link's id
+        // (or just this cell if id is nil). Use the existing underline pass
+        // with a hover-color uniform.
+        emitHoverUnderline(for: link, snapshot: snapshot)
+    }
+}
+```
+
+Implement `emitHoverUnderline` to walk the snapshot looking for cells with matching `link.id` (or exactly the hovered cell if `id == nil`), emitting underline-pass vertices with the hover color.
+
+- [ ] **Step 5: Click handling**
+
+Override `mouseDown` in `TerminalMTKView`:
+
+```swift
+override func mouseDown(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    guard let cell = cellCoordinate(at: point),
+          let onHyperlinkClick = onHyperlinkClick else {
+        super.mouseDown(with: event)
+        return
+    }
+    if let link = snapshotHyperlink(at: cell) {
+        onHyperlinkClick(link.uri)
+        return
+    }
+    super.mouseDown(with: event)
+}
+```
+
+Add `onHyperlinkClick: ((String) -> Void)?` to the view's closure properties. Wire in `makeNSView`:
+
+```swift
+view.onHyperlinkClick = { uri in
+    guard let url = HyperlinkScheme.validated(uri) else {
+        os_log(.error, "OSC 8: refused to open uri '%{public}@' (scheme not allowlisted)", uri)
+        return
+    }
+    NSWorkspace.shared.open(url)
+}
+```
+
+- [ ] **Step 6: Build + manual test**
+
+```bash
+xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
+```
+
+Manual test:
+
+```bash
+printf '\033]8;id=1;https://apple.com\033\\Apple\033]8;;\033\\\n'
+```
+
+Expected: "Apple" is underlined; hover highlights; click opens `https://apple.com`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add rTerm/HyperlinkScheme.swift \
+        rTerm/TermView.swift \
+        rTerm/RenderCoordinator.swift \
+        rTermTests/HyperlinkSchemeTests.swift
+git commit -m "feat(rTerm): OSC 8 hyperlink hover + click
+
+Mouse tracking emits hovered-cell updates to RenderCoordinator; cells
+whose style.hyperlink is non-nil receive a hover-color underline that
+spans the id-linked group (or just the cell, if id is nil). Click on
+a hyperlinked cell passes the uri through HyperlinkScheme.validated
+(http/https/file/mailto only) and opens via NSWorkspace. Invalid
+scheme is logged and ignored."
+```
+
+---
+
+## Task 10: OSC 52 clipboard set path
+
+**Spec reference:** §8 Phase 3 Track A — OSC 52 clipboard (set only, query deferred to Phase 4 per answered Q1).
+
+**Goal:** Parser promotes OSC 52 into typed `OSCCommand.setClipboard(target: ClipboardTarget, payload: ClipboardPayload)`. Model routes the payload via a new `DaemonResponse.clipboardWrite` push. Client app writes to `NSPasteboard.general` under a user-consent gate (the app stays sandbox-safe because `NSPasteboard` write permissions do not require entitlements for user-triggered flows — but remote shell write via escape sequence is not user-triggered, so we surface a prompt the first time).
+
+**Files:**
+- Modify: `TermCore/OSCCommand.swift`
+- Create: `TermCore/ClipboardTarget.swift`
+- Modify: `TermCore/TerminalParser.swift`
+- Modify: `TermCore/DaemonProtocol.swift` (new `DaemonResponse` case)
+- Modify: `TermCore/ScreenModel.swift` (emit a new nonisolated "clipboard sink" closure)
+- Modify: `rtermd/Session.swift` (fan out to clients)
+- Modify: `rTerm/ContentView.swift` (receive + consent prompt + NSPasteboard write)
+- Create: `TermCoreTests/ClipboardTests.swift`
+
+### Steps
+
+- [ ] **Step 1: Create `ClipboardTarget`**
+
+Create `TermCore/ClipboardTarget.swift`:
+
+```swift
+//
+//  ClipboardTarget.swift
+//  TermCore
+//
+//  This file is part of rTerm.
+//  Licensed under GPLv3 — see project LICENSE.
+//
+
+/// OSC 52 clipboard target selector. xterm semantics: each letter in
+/// the `<target>` string enables a specific pasteboard slot. The most
+/// common is "c" (the generic clipboard). We collapse the full xterm
+/// matrix to the three relevant slots; less common combinations fall
+/// back to `.clipboard`.
+@frozen public enum ClipboardTarget: Sendable, Equatable, Codable {
+    case clipboard         // "c"
+    case primary           // "p" (X11 primary selection — macOS has no equivalent, but harmless)
+    case selection         // "s" (xterm "select"; macOS treats as .clipboard)
+
+    public static func from(xtermChar ch: Character) -> ClipboardTarget {
+        switch ch {
+        case "p": return .primary
+        case "s": return .selection
+        default:  return .clipboard
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Add to `OSCCommand`**
+
+```swift
+case setClipboard(target: ClipboardTarget, base64Payload: String)
+```
+
+Phase 3 carries the base64-encoded payload verbatim across the XPC boundary; decoding happens on the client side just before the pasteboard write. This keeps `TermCore` from taking an `NSPasteboard` dependency (it's AppKit-only, not framework-safe).
+
+- [ ] **Step 3: Parse OSC 52**
+
+In `mapOSC`:
+
+```swift
+case 52:
+    // Format: "<target>;<base64-payload>"
+    guard let sep = pt.firstIndex(of: ";") else {
+        return .unknown(ps: 52, pt: pt)
+    }
+    let targetStr = pt[..<sep]
+    let payload = String(pt[pt.index(after: sep)...])
+    let target: ClipboardTarget = ClipboardTarget.from(
+        xtermChar: targetStr.first ?? "c")
+    // Query form ("?") is OSC 52's query path — deferred to Phase 4.
+    // Treat as unknown for now.
+    if payload == "?" {
+        return .unknown(ps: 52, pt: pt)
+    }
+    return .setClipboard(target: target, base64Payload: payload)
+```
+
+- [ ] **Step 4: Add `DaemonResponse.clipboardWrite`**
+
+In `TermCore/DaemonProtocol.swift`:
+
+```swift
+case clipboardWrite(sessionID: SessionID, target: ClipboardTarget, base64Payload: String)
+```
+
+- [ ] **Step 5: `ScreenModel` → clipboard sink**
+
+Add a sibling of `writebackSink`:
+
+```swift
+@ObservationIgnored
+private var _clipboardSink: (@Sendable (ClipboardTarget, String) -> Void)? = nil
+
+public func installClipboardSink(_ sink: @escaping @Sendable (ClipboardTarget, String) -> Void) {
+    precondition(_clipboardSink == nil, "clipboard sink already installed")
+    _clipboardSink = sink
+}
+
+internal func emitClipboardWrite(target: ClipboardTarget, base64Payload: String) {
+    _clipboardSink?(target, base64Payload)
+}
+```
+
+Handle in `handleOSC`:
+
+```swift
+case .setClipboard(let target, let payload):
+    emitClipboardWrite(target: target, base64Payload: payload)
+    return false  // pure side effect; no snapshot bump
+```
+
+- [ ] **Step 6: Daemon fan-out**
+
+In `rtermd/Session.swift`, install the sink at model-create time:
+
+```swift
+model.installClipboardSink { [weak self] target, payload in
+    guard let self else { return }
+    self.fanOutResponse(.clipboardWrite(sessionID: self.id, target: target, base64Payload: payload))
+}
+```
+
+- [ ] **Step 7: Client consent + pasteboard write**
+
+In `rTerm/ContentView.swift`'s response handler:
+
+```swift
+case .clipboardWrite(_, let target, let base64):
+    Task { @MainActor in
+        guard let data = Data(base64Encoded: base64),
+              let text = String(data: data, encoding: .utf8) else {
+            log.warning("OSC 52: ignoring undecodable payload")
+            return
+        }
+        if await clipboardConsent(for: target, preview: text) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            log.info("OSC 52: wrote \(text.count) chars to \(String(describing: target))")
+        }
+    }
+```
+
+Define `clipboardConsent(for:preview:)`:
+
+```swift
+@MainActor
+private func clipboardConsent(for target: ClipboardTarget, preview: String) async -> Bool {
+    // Simple modal — one prompt per session. Accept-remembered is a
+    // future feature; for Phase 3 prompt every time unless user has
+    // opted in via Settings (not yet built — always prompts).
+    let alert = NSAlert()
+    alert.messageText = "Terminal app requests clipboard write"
+    let snippet = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
+    alert.informativeText = "About to write to the clipboard:\n\n\(snippet)"
+    alert.addButton(withTitle: "Allow")
+    alert.addButton(withTitle: "Deny")
+    return alert.runModal() == .alertFirstButtonReturn
+}
+```
+
+- [ ] **Step 8: Tests**
+
+Create `TermCoreTests/ClipboardTests.swift`:
+
+```swift
+import Foundation
+import Testing
+@testable import TermCore
+
+@Suite("OSC 52 clipboard (set)")
+struct ClipboardTests {
+
+    @Test("OSC 52 ; c ; <base64> ST parses to setClipboard(.clipboard, payload)")
+    func test_osc52_clipboard() {
+        var p = TerminalParser()
+        let payload = "aGVsbG8="  // "hello"
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x63, 0x3B] +
+            Array(payload.utf8) + [0x1B, 0x5C]
+        let events = p.parse(Data(bytes))
+        #expect(events == [.osc(.setClipboard(target: .clipboard, base64Payload: payload))])
+    }
+
+    @Test("OSC 52 query form routes to unknown (Phase 3 set-only)")
+    func test_osc52_query_is_unknown() {
+        var p = TerminalParser()
+        // OSC 52 ; c ; ? ST
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x63, 0x3B, 0x3F, 0x1B, 0x5C]
+        let events = p.parse(Data(bytes))
+        if case .osc(.unknown(let ps, _)) = events[0] {
+            #expect(ps == 52)
+        } else {
+            Issue.record("expected .osc(.unknown(52, ...))")
+        }
+    }
+
+    @Test("Model emits clipboard write via sink")
+    func test_model_emits_clipboard_sink() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let received = ClipboardSpy()
+        model.installClipboardSink { target, payload in
+            received.record(target, payload)
+        }
+        await model.apply([.osc(.setClipboard(target: .clipboard, base64Payload: "aGk="))])
+        #expect(received.all() == [(ClipboardTarget.clipboard, "aGk=")])
+    }
+}
+
+private final class ClipboardSpy: @unchecked Sendable {
+    private var log: [(ClipboardTarget, String)] = []
+    private let lock = NSLock()
+    func record(_ t: ClipboardTarget, _ p: String) { lock.lock(); log.append((t, p)); lock.unlock() }
+    func all() -> [(ClipboardTarget, String)] { lock.lock(); defer { lock.unlock() }; return log }
+}
+```
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add TermCore/ClipboardTarget.swift \
+        TermCore/OSCCommand.swift \
+        TermCore/TerminalParser.swift \
+        TermCore/DaemonProtocol.swift \
+        TermCore/ScreenModel.swift \
+        rtermd/Session.swift \
+        rTerm/ContentView.swift \
+        TermCoreTests/ClipboardTests.swift
+git commit -m "feat: OSC 52 clipboard set path (Phase 3 — query deferred)
+
+Parser promotes OSC 52 set variant to setClipboard(target:,
+base64Payload:). ClipboardTarget maps xterm 'c'/'p'/'s' to sendable
+enum cases. ScreenModel routes payload through a clipboard sink (sibling
+of Phase 3 writeback sink). Daemon fans out via new
+DaemonResponse.clipboardWrite XPC case. Client decodes base64 on the
+MainActor, prompts for consent, writes to NSPasteboard.general.
+
+Query form (OSC 52 ; <target> ; ? ST) routes to .osc(.unknown) — Phase
+4 adds the query path (requires client→daemon byte injection)."
+```
+
+---
+
+## Task 11: `iconName` on `ScreenSnapshot`
+
+**Spec reference:** §8 Phase 3 open question 7 (answered: yes).
+
+**Goal:** `ScreenModel` already stores `iconName: String?` from OSC 1. Currently hidden. Expose on `ScreenSnapshot` parallel to `windowTitle`. `decodeIfPresent ?? nil` preserves wire compat.
+
+**Files:**
+- Modify: `TermCore/ScreenSnapshot.swift` (add field + TerminalState + Codable)
+- Modify: `TermCore/ScreenModel.swift` (pass into `makeSnapshot`)
+- Modify: `rTerm/ContentView.swift` (optional: bind to dock icon name if desired)
+
+### Steps
+
+- [ ] **Step 1: Add `iconName` to `ScreenSnapshot.TerminalState`**
+
+```swift
+public var iconName: String? = nil
+```
+
+Extend the convenience init to forward it. In the flat `ScreenSnapshot.init`, add:
+
+```swift
+public let iconName: String?
+
+public init(...,
+            iconName: String? = nil,
+            ...) {
+    self.iconName = iconName
+    ...
+}
+```
+
+Update Codable:
+
+```swift
+self.iconName = try container.decodeIfPresent(String.self, forKey: .iconName)
+```
+
+Add to `CodingKeys`.
+
+- [ ] **Step 2: Pass in `makeSnapshot(from:)`**
+
+```swift
+let terminalState = ScreenSnapshot.TerminalState(
+    ...,
+    iconName: iconName,
+    cursorShape: cursorShape)
+```
+
+- [ ] **Step 3: Test**
+
+Append to `TermCoreTests/ScreenModelTests.swift` (or `CodableTests.swift`):
+
+```swift
+@Test("OSC 1 sets iconName visible on snapshot")
+func test_osc1_icon_name_on_snapshot() async {
+    let model = ScreenModel(cols: 80, rows: 24)
+    await model.apply([.osc(.setIconName("my-icon"))])
+    let snap = model.latestSnapshot()
+    #expect(snap.iconName == "my-icon")
+}
+
+@Test("ScreenSnapshot decoded without iconName key has nil iconName")
+func test_iconName_back_compat_nil() throws {
+    // Minimal snapshot JSON without an iconName key.
+    let cells = ContiguousArray<Cell>(repeating: Cell(character: "x"), count: 1)
+    let snap = ScreenSnapshot(
+        activeCells: cells, cols: 1, rows: 1,
+        cursor: Cursor.zero,
+        terminalState: ScreenSnapshot.TerminalState(),
+        version: 0)
+    let data = try JSONEncoder().encode(snap)
+    let decoded = try JSONDecoder().decode(ScreenSnapshot.self, from: data)
+    #expect(decoded.iconName == nil)
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add TermCore/ScreenSnapshot.swift \
+        TermCore/ScreenModel.swift \
+        TermCoreTests/
+git commit -m "feat(TermCore): expose iconName on ScreenSnapshot
+
+Phase 1 stored OSC 1's iconName internally with no consumer. Expose
+on ScreenSnapshot parallel to windowTitle, via decodeIfPresent ?? nil
+so Phase 1/2 wire payloads still decode unchanged. No behavior wired
+on the app side yet — that's a Phase 4 concern (dock icon swap)."
+```
+
+---
+
+## Task 12: Palette chooser UI
+
+**Spec reference:** §8 Phase 3 Track A — Palette chooser UI.
+
+**Goal:** SwiftUI settings pane lets the user pick from the built-in `TerminalPalette` presets (xterm, solarized-dark, solarized-light; check the actual preset list in `TermCore/TerminalPalette.swift`). Persists via `@AppStorage`. `ContentView` reads the current selection and passes it to `RenderCoordinator`.
+
+**Files:**
+- Create: `rTerm/SettingsView.swift`
+- Modify: `rTerm/rTermApp.swift` (add `Settings` scene)
+- Modify: `rTerm/AppSettings.swift` or wherever user settings live (add `paletteName: String`)
+- Modify: `rTerm/ContentView.swift` (observe + propagate)
+- Modify: `rTerm/RenderCoordinator.swift` (accept a palette override; default still wired through `AppSettings`)
+
+### Steps
+
+- [ ] **Step 1: Inspect current palette infrastructure**
+
+```bash
+rg -n "TerminalPalette|AppStorage|palette" TermCore/ rTerm/ | head -30
+```
+
+Identify:
+- Available preset names (enumerate `TerminalPalette.preset(named:)` or a similar API).
+- Existing `AppSettings` or equivalent observable container.
+- Where `RenderCoordinator` currently resolves the palette.
+
+- [ ] **Step 2: Add `paletteName` to settings**
+
+In `rTerm/AppSettings.swift` (or the nearest equivalent):
+
+```swift
+@Observable
+@MainActor
+final class AppSettings {
+    @ObservationIgnored
+    @AppStorage("paletteName") private var storedPaletteName: String = "xterm"
+
+    var paletteName: String {
+        get { storedPaletteName }
+        set { storedPaletteName = newValue }
+    }
+
+    var palette: TerminalPalette {
+        TerminalPalette.preset(named: paletteName) ?? .xterm
+    }
+}
+```
+
+If `TerminalPalette.preset(named:)` does not exist, add it:
+
+```swift
+public extension TerminalPalette {
+    /// Resolve a preset by its stable identifier. Returns nil for
+    /// unknown names; callers should fall back to `.xterm`.
+    static func preset(named name: String) -> TerminalPalette? {
+        switch name {
+        case "xterm":            return .xterm
+        case "solarized-dark":   return .solarizedDark
+        case "solarized-light":  return .solarizedLight
+        default:                 return nil
+        }
+    }
+
+    static let allPresetNames: [String] = ["xterm", "solarized-dark", "solarized-light"]
+}
+```
+
+Adjust preset identifier spelling to whatever the current palette statics expose.
+
+- [ ] **Step 3: Build settings view**
+
+Create `rTerm/SettingsView.swift`:
+
+```swift
+import SwiftUI
+import TermCore
+
+struct SettingsView: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Form {
+            Picker("Color palette", selection: $settings.paletteName) {
+                ForEach(TerminalPalette.allPresetNames, id: \.self) { name in
+                    Text(name.replacingOccurrences(of: "-", with: " ").capitalized).tag(name)
+                }
+            }
+            .pickerStyle(.inline)
+        }
+        .padding()
+        .frame(minWidth: 320, minHeight: 180)
+    }
+}
+```
+
+- [ ] **Step 4: Register the Settings scene**
+
+In `rTerm/rTermApp.swift`:
+
+```swift
+@main
+struct rTermApp: App {
+    @State private var settings = AppSettings()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environment(settings)
+        }
+        Settings {
+            SettingsView(settings: settings)
+        }
+    }
+}
+```
+
+If `ContentView` constructs its own `AppSettings`, migrate the construction to `rTermApp` so both scenes share the instance.
+
+- [ ] **Step 5: Propagate to renderer**
+
+In `rTerm/ContentView.swift`:
+
+```swift
+@Environment(AppSettings.self) private var settings
+
+var body: some View {
+    TermView(
+        screenModel: session.screenModel,
+        settings: settings,                     // pass settings, not a palette copy
+        onInput: { session.sendInput($0) },
+        onPaste: { session.paste($0) }
+    )
+    .navigationTitle(session.windowTitle ?? "rTerm")
+    ...
+}
+```
+
+In `TermView.updateNSView`, push the current palette into the coordinator:
+
+```swift
+coordinator.palette = settings.palette
+view.needsDisplay = true
+```
+
+`RenderCoordinator.palette` becomes an observed property so draw picks it up per-frame.
+
+- [ ] **Step 6: Manual visual test + commit**
+
+Open the app, go to Settings, switch between palettes, confirm the live terminal view updates immediately.
+
+```bash
+git add rTerm/SettingsView.swift \
+        rTerm/rTermApp.swift \
+        rTerm/AppSettings.swift \
+        rTerm/ContentView.swift \
+        rTerm/RenderCoordinator.swift \
+        TermCore/TerminalPalette.swift
+git commit -m "feat(rTerm): palette chooser Settings scene
+
+Settings scene lets the user pick among built-in TerminalPalette
+presets (xterm, solarized-dark, solarized-light). Persisted via
+@AppStorage('paletteName'). TerminalPalette.preset(named:) +
+allPresetNames added to TermCore for stable-id lookup. The renderer
+picks up changes on the next draw frame — no session restart required."
+```
+
+---
+
+## Track A completion checklist
+
+After Task 12 lands, verify:
+
+- [ ] `xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test` — all green (expect ≥ 240 tests, up from Track B's ~230).
+- [ ] `xcodebuild -project rTerm.xcodeproj -scheme rTermTests test` — all green (expect ≥ 62 tests).
+- [ ] Manual: shell integration test
+  - `printf '\033]0;hello\007'` updates window title (Phase 1 regression check).
+  - `printf '\033[5mHELLO\033[0m\n'` blinks "HELLO" (Task 5).
+  - `printf '\033]8;id=1;https://apple.com\033\\Apple\033]8;;\033\\\n'` renders "Apple" as a hyperlink; hover highlights; click opens Safari (Task 8+9).
+  - `printf '\033[4 q'` changes cursor to steady underline (Task 4).
+  - In vim, `:q` should work without stuck states (DA1/DA2/CPR responses work — Tasks 2+3).
+  - `tput setaf 4; echo foo` still colors correctly (Phase 1 regression check).
+- [ ] OSC 52 prompt fires once per session on `printf '\033]52;c;aGVsbG8=\007'`; "Allow" writes "hello" to the macOS clipboard; "Deny" is silently ignored.
+- [ ] Settings → palette switch applies live.
+- [ ] No new `xcodebuild` warnings (deprecation warnings from intentional Track B deprecations are expected; no others).
+- [ ] PR description enumerates Track A features and links to the spec §8 Track A section.
+
+**Self-review note:**
+- Every §8 Track A item has a task.
+- DECOM (Task 6) and DECCOLM (Task 7) both route through `handleSetMode` — confirm `DECPrivateMode.init(rawParam:)` has both `.originMode` and `.column132` entries after Task 7 lands.
+- OSC 52 query path is deliberately routed to `.unknown` per the Phase 3 scope answer; the Phase 4 plan will revisit.
+- Fixture corpus completion (spec §8 bullet "Integration fixture corpus completion") was delivered in Track B Task 2, not here — verify the bullet isn't duplicated.
+- `cursorShape` flows through `TerminalStateSnapshot` (from Track B Task 4 convenience init). Task 4 (DECSCUSR) in Track A depends on the Track B convenience init existing.
+
+If any gap surfaces during implementation, insert a sub-task rather than dropping the feature. No TODOs in production code.
