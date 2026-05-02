@@ -334,25 +334,50 @@ end-to-end."
 
 **Spec reference:** §8 Track B item 5.
 
-**Goal:** `TermCore/ScreenModel.swift` is 941 lines with 10 logical sections. Split into three files linked by Swift extensions:
+**Goal:** `TermCore/ScreenModel.swift` is 941 lines with 10 logical sections. Split into three files linked by Swift extensions. Only **methods** move to the extension files; stored properties and types stay on the main declaration. Access levels do NOT change — this is a pure physical split.
 
-- `TermCore/ScreenModel.swift` — actor declaration, stored properties, `init`, `apply(_:)`, `publishSnapshot`, `makeSnapshot(from:)`, event dispatch helpers (`handlePrintable`, `handleC0`, `handleCSI`, `applySGR`, `handleOSC`), `eraseInDisplay`, `eraseInLine`, `handleSetMode`, `handleSetScrollRegion`, `handleAltScreen`, `snapshotCursor`, `restoreActiveCursor`, `latestSnapshot()`.
-- `TermCore/ScreenModel+Buffer.swift` — `ScrollRegion`, `Buffer`, `mutateActive<R>`, `active`, `scrollAndMaybeEvict`, `clearGrid`.
-- `TermCore/ScreenModel+History.swift` — `publishHistoryTail`, `restore(from snapshot:)`, `restore(from payload:)`, `buildAttachPayload`, `latestHistoryTail`, `_latestHistoryTail` storage, `pendingHistoryPublish`, `HistoryBox`.
+**Access-control rules (single prescription — no mid-plan revisions):**
 
-Access promotion required: `Buffer` and `ScrollRegion` currently `private`; promote to `fileprivate` (new files must access them) — use `internal` only if a test file needs direct visibility (none does). `HistoryBox` and `SnapshotBox` stay `private` to their respective extension files.
+1. **Stored properties stay in `ScreenModel.swift`** on the actor's main declaration. Swift forbids stored properties on extensions, so `_latestHistoryTail`, `pendingHistoryPublish`, `main`, `alt`, `activeKind`, `pen`, `modes`, `bellCount`, `history`, `_latestSnapshot`, etc. all remain where they are.
+
+2. **Types stay in `ScreenModel.swift`.** `ScrollRegion` (file-scope `private struct`, line 29), `Buffer` (actor-nested `private struct`, line 154), `SnapshotBox` (actor-nested `private final class`, line 99), `HistoryBox` (actor-nested `private final class`, line 119) all remain where they are. Keeping them in the main file means they stay nested-private inside the actor and there is NO access-level change to reason about.
+
+3. **Only methods move.** Extensions in Swift can reference the enclosing type's private stored properties and private nested types, as long as the extension is **in the same module** (TermCore is one module; `fileprivate` would fail, but `private`-to-module visibility works transparently from same-module extensions). Moving a method to `ScreenModel+Buffer.swift` does not require any visibility change on `Buffer` or `ScrollRegion`.
+
+4. **Caveat — `private` vs `fileprivate`:** Swift does NOT allow an extension in File B to access a symbol declared `private` in File A. Because `ScrollRegion` is `private` (file-scope in `ScreenModel.swift`), any method that references `ScrollRegion` as a type name **cannot** move to `ScreenModel+Buffer.swift`. Methods that only touch `ScrollRegion` via `buf.scrollRegion` (where `buf: Buffer` already carries the field) DO work — they don't name `ScrollRegion` directly. Check each candidate method for direct `ScrollRegion` type references before moving.
+
+5. **If a method must move that names `ScrollRegion` directly:** the minimal fix is to promote `ScrollRegion` from `private` to `internal` (leave it file-scoped). `internal` is module-wide; tests and the TermCore umbrella header don't re-export it (that is a separate concern — TermCore.h controls Objective-C re-export, which Swift-only types don't participate in). Narrate this choice at the top of the moved method with a one-line comment.
+
+**File layout:**
+- `TermCore/ScreenModel.swift` — actor declaration, stored properties, nested types (`Buffer`, `ScrollRegion`, `SnapshotBox`, `HistoryBox`), `init`, `apply(_:)`, `publishSnapshot`, `makeSnapshot(from:)`, event dispatchers (`handlePrintable`, `handleC0`, `handleCSI`, `applySGR`, `handleOSC`), `eraseInDisplay`, `eraseInLine`, `handleSetMode`, `handleSetScrollRegion`, `handleAltScreen`, `snapshotCursor`, `restoreActiveCursor`, `latestSnapshot()`, `snapshot()`, `applyAndCurrentTitle()`, `currentWindowTitle()`, `currentIconName()`.
+- `TermCore/ScreenModel+Buffer.swift` — methods only: `mutateActive<R>`, the `active` computed property, `scrollAndMaybeEvict` (static), `clearGrid` (static). `Buffer` and `ScrollRegion` stay in `ScreenModel.swift`.
+- `TermCore/ScreenModel+History.swift` — methods only: `publishHistoryTail()`, `buildAttachPayload()` (nonisolated), `latestHistoryTail()` (nonisolated), `restore(from snapshot:)`, `restore(from payload:)`.
 
 **Files:**
-- Modify: `TermCore/ScreenModel.swift`
+- Modify: `TermCore/ScreenModel.swift` (trim moved methods)
 - Create: `TermCore/ScreenModel+Buffer.swift`
 - Create: `TermCore/ScreenModel+History.swift`
-- Modify: `rTerm.xcodeproj/project.pbxproj` (add new files to TermCore target)
+- Modify: `rTerm.xcodeproj/project.pbxproj` (add new files to TermCore target — use Xcode GUI; do not hand-edit pbxproj)
 
 ### Steps
 
-- [ ] **Step 1: Plan the cut points**
+- [ ] **Step 1: Audit method references to file-private types**
 
-Read `TermCore/ScreenModel.swift` in full. Identify the exact line ranges that belong to each extension file. Write these to a scratch file (discard after commit) so the cut is mechanical, not guesswork. Buffer-extension ranges: `ScrollRegion` struct, `Buffer` nested struct, `mutateActive`, `active`, `scrollAndMaybeEvict`, `clearGrid`. History-extension ranges: `_latestHistoryTail` property, `HistoryBox` class, `pendingHistoryPublish` flag, `publishHistoryTail()`, `buildAttachPayload()`, `latestHistoryTail()`, both `restore(from:)` methods.
+Before moving any method, grep each candidate for direct references to `ScrollRegion` (the file-private type):
+
+```bash
+rg -n "\\bScrollRegion\\b" TermCore/ScreenModel.swift
+```
+
+Methods that name `ScrollRegion` directly (e.g., in a parameter type) cannot move without first promoting the type. Methods that only touch `buf.scrollRegion` (field access via a `Buffer`-typed value) move cleanly.
+
+Expected state based on the current ScreenModel.swift:
+- `scrollAndMaybeEvict` reads `buf.scrollRegion` but does not name `ScrollRegion` — moves cleanly.
+- `clearGrid` does not touch `scrollRegion` — moves cleanly.
+- `mutateActive<R>` and the `active` computed property do not name `ScrollRegion` — move cleanly.
+- `handleSetScrollRegion(top:bottom:)` constructs a `ScrollRegion(top:bottom:)` literal — it STAYS in `ScreenModel.swift` (it does not belong to the Buffer extension anyway; it's an event dispatcher).
+
+No type promotion is needed. Access levels do not change in this task.
 
 - [ ] **Step 2: Create `ScreenModel+Buffer.swift`**
 
@@ -365,29 +390,23 @@ Read `TermCore/ScreenModel.swift` in full. Identify the exact line ranges that b
 //  Licensed under GPLv3 — see project LICENSE.
 //
 //  Split from ScreenModel.swift in Phase 3 Track B (item 5): buffer /
-//  scroll-region / grid mutation concerns.
+//  grid-mutation helpers. Types (Buffer, ScrollRegion) and stored
+//  properties remain in ScreenModel.swift; only methods move here.
+//  Same-module extensions see the actor's private storage and nested
+//  types transparently — access levels are unchanged.
 //
 
 import Foundation
 
 extension ScreenModel {
-    // ScrollRegion, Buffer, mutateActive<R>, active, scrollAndMaybeEvict,
-    // clearGrid — moved from ScreenModel.swift without code changes.
-    //
-    // NOTE: Buffer and ScrollRegion were `private` inside the actor body.
-    // They are now fileprivate here, but because this file and the main
-    // ScreenModel.swift share a module, they remain unreachable from
-    // outside TermCore.
+    // Paste the exact original definitions of:
+    //   private func mutateActive<R>(_ body: (inout Buffer) -> R) -> R
+    //   private var active: Buffer
+    //   private static func scrollAndMaybeEvict(in buf: inout Buffer, cols: Int, rows: Int, isMain: Bool) -> ScrollbackHistory.Row?
+    //   private static func clearGrid(in buf: inout Buffer, cols: Int, rows: Int)
+    // here, without any code or access-level change.
 }
 ```
-
-Paste the exact original code for `ScrollRegion`, `Buffer`, `mutateActive`, `active`, `scrollAndMaybeEvict`, `clearGrid` inside the extension body. Change their access levels as needed to be reachable across extension boundaries in the same module (typically: leave unchanged if they were already module-internal or if they're nested inside the extension body).
-
-For `Buffer` and `ScrollRegion` that were `private` nested types: keep them nested inside the extension and change `private` to `fileprivate`. The main `ScreenModel.swift` will then also be able to reference them via the same module.
-
-Actually — the cleanest approach: define `Buffer` and `ScrollRegion` at `fileprivate` inside the Buffer extension file using the `extension ScreenModel { fileprivate struct Buffer ... }` syntax. But Swift disallows `fileprivate` types nested inside `extension X where` blocks from being visible to the main `ScreenModel.swift` at file scope.
-
-Use `internal` visibility for `Buffer` and `ScrollRegion` in the new files. Mark them internal-only by keeping them inside an `extension ScreenModel { ... }` block — this keeps them module-private to TermCore. They will not be re-exported because the extension wraps them.
 
 - [ ] **Step 3: Create `ScreenModel+History.swift`**
 
@@ -400,34 +419,33 @@ Use `internal` visibility for `Buffer` and `ScrollRegion` in the new files. Mark
 //  Licensed under GPLv3 — see project LICENSE.
 //
 //  Split from ScreenModel.swift in Phase 3 Track B (item 5): scrollback
-//  history publication and restore-from-payload concerns.
+//  history publication and restore-from-payload concerns. Stored
+//  properties (_latestHistoryTail, pendingHistoryPublish) and types
+//  (HistoryBox) remain on the actor's main declaration — Swift forbids
+//  stored properties on extensions. Only methods move.
 //
 
 import Foundation
 import Synchronization
 
 extension ScreenModel {
-    // _latestHistoryTail, HistoryBox, pendingHistoryPublish,
-    // publishHistoryTail, buildAttachPayload, latestHistoryTail,
-    // restore(from snapshot:), restore(from payload:).
+    // Paste the exact original definitions of:
+    //   private func publishHistoryTail()
+    //   nonisolated public func latestHistoryTail() -> ContiguousArray<ScrollbackHistory.Row>
+    //   nonisolated public func buildAttachPayload() -> AttachPayload
+    //   public func restore(from snapshot: ScreenSnapshot)
+    //   public func restore(from payload: AttachPayload)
+    // here, without any code or access-level change.
 }
 ```
 
-Move the exact original implementations inside the extension body. `HistoryBox` stays `private final class`.
-
-**Blocker note:** Swift forbids stored properties on extensions. `_latestHistoryTail` and `pendingHistoryPublish` **must remain on the actor's main declaration** in `ScreenModel.swift`. The extension contains only the methods that read/write them.
-
-Revise Step 3 accordingly: `_latestHistoryTail`, `pendingHistoryPublish`, and `HistoryBox` stay in `ScreenModel.swift`. Only the methods move to the extension file. Update the header comment in `ScreenModel+History.swift` to reflect this.
-
 - [ ] **Step 4: Trim `ScreenModel.swift`**
 
-Delete the moved code from the original file. What remains: stored properties, `init`, `apply(_:)`, `publishSnapshot`, `makeSnapshot(from:)`, all event dispatchers (`handlePrintable` / `handleC0` / `handleCSI` / `applySGR` / `handleOSC`), `eraseInDisplay`, `eraseInLine`, `handleSetMode`, `handleSetScrollRegion`, `handleAltScreen`, `snapshotCursor`, `restoreActiveCursor`, `latestSnapshot()`, `currentWindowTitle()`, `currentIconName()`, `SnapshotBox`.
+Delete the moved method bodies from the original file. What remains: stored properties, nested types (`Buffer`, `ScrollRegion`, `SnapshotBox`, `HistoryBox`), `init`, `apply(_:)`, `publishSnapshot`, `makeSnapshot(from:)`, all event dispatchers (`handlePrintable`, `handleC0`, `handleCSI`, `applySGR`, `handleOSC`), `eraseInDisplay`, `eraseInLine`, `handleSetMode`, `handleSetScrollRegion`, `handleAltScreen`, `snapshotCursor`, `restoreActiveCursor`, `latestSnapshot()`, `snapshot()`, `applyAndCurrentTitle()`, `currentWindowTitle()`, `currentIconName()`, `clampCursor(in:)`.
 
 - [ ] **Step 5: Add the two new files to the TermCore target in Xcode**
 
-Edit `rTerm.xcodeproj/project.pbxproj` — add `PBXFileReference` entries for `ScreenModel+Buffer.swift` and `ScreenModel+History.swift`, add corresponding `PBXBuildFile` entries, and include them in the TermCore target's sources-phase file list.
-
-Simplest approach: open the project in Xcode, drag the two new files into the TermCore group, confirm target membership = TermCore only. Xcode writes the pbxproj changes. If the implementer can't use Xcode GUI, dispatch a "pbxproj surgery" subagent with the two new file names and the TermCore target UUID (grep for `TermCore` in pbxproj to find the target).
+Open the project in Xcode, drag the two new files into the TermCore group, confirm target membership = TermCore only. Xcode writes the pbxproj changes. Do NOT hand-edit pbxproj — it is error-prone and the "subagent" workflow is not available in this harness. If the implementer has no Xcode access, stop and request one.
 
 - [ ] **Step 6: Build the full project**
 
@@ -435,7 +453,7 @@ Simplest approach: open the project in Xcode, drag the two new files into the Te
 xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
 ```
 
-Expected: clean build. If an access-level error surfaces for `Buffer` / `ScrollRegion` / `HistoryBox`, tighten their visibility (`internal` → nested inside extension is typical) or adjust the split boundary.
+Expected: clean build. If a visibility error surfaces, it means a method referenced a file-private type directly — Step 1's audit missed it. Move that method back to `ScreenModel.swift` or (last resort) promote the type from `private` to `internal` with an explicit rationale comment.
 
 - [ ] **Step 7: Run the full test suite**
 
@@ -451,7 +469,7 @@ Expected: all 222 existing TermCore tests pass. No behavior changed — this is 
 wc -l TermCore/ScreenModel.swift TermCore/ScreenModel+Buffer.swift TermCore/ScreenModel+History.swift
 ```
 
-Expected: `ScreenModel.swift` around 650–700 lines; `+Buffer` around 100–150; `+History` around 100–150. If any file is unexpectedly large, revisit the split boundary.
+Expected: `ScreenModel.swift` ~650–700 lines; `+Buffer` ~80–130; `+History` ~100–150. If any file is unexpectedly large, revisit the split boundary.
 
 - [ ] **Step 9: Commit**
 
@@ -466,13 +484,18 @@ ScreenModel.swift at 941 lines with 10 logical sections. Split into:
 
 - ScreenModel.swift: event dispatch, apply(_:), publishSnapshot,
   makeSnapshot, handleCSI/C0/SGR/OSC, mode/scroll-region/alt-screen
-  handlers, SnapshotBox, stored properties, init.
-- ScreenModel+Buffer.swift: ScrollRegion, Buffer, mutateActive<R>,
-  active, scrollAndMaybeEvict, clearGrid.
+  handlers, stored properties, init, nested types (Buffer, ScrollRegion,
+  SnapshotBox, HistoryBox).
+- ScreenModel+Buffer.swift: mutateActive<R>, active computed, static
+  scrollAndMaybeEvict, static clearGrid.
 - ScreenModel+History.swift: publishHistoryTail, buildAttachPayload,
-  latestHistoryTail, restore(from:) x2. Stored properties
-  (_latestHistoryTail, pendingHistoryPublish, HistoryBox) stay on
-  the main declaration — Swift forbids stored props on extensions.
+  latestHistoryTail, restore(from:) x2.
+
+Pure physical split — no access-level changes. Swift forbids stored
+properties on extensions, so all stored state stays on the actor's
+main declaration. Types stay in ScreenModel.swift so 'private'
+visibility never needs to change; same-module extensions see the
+actor's private storage and nested types transparently.
 
 No behavior change. Payoff: future Phase 3 handlers and history
 operations land in the file that already owns their concern."
@@ -1002,6 +1025,33 @@ If the original code had `var regularVerts = [Float]()` as a local, the local sh
 
 - [ ] **Step 5: Add allocation-count test**
 
+**Test design note:** rather than faking the full Metal pipeline, we factor the bookkeeping preamble of `draw(in:)` into a standalone helper that can run without a drawable. The test exercises the preamble only — the Metal render passes stay untested by unit tests, but the vertex-array capacity invariant (the thing this task is protecting) is exercised end-to-end.
+
+In `rTerm/RenderCoordinator.swift`, factor the capacity-reserve + clear preamble out of `draw(in:)` into an internal method the tests can call:
+
+```swift
+/// Reset vertex buffers for a new frame. `removeAll(keepingCapacity:
+/// true)` keeps the backing allocation; the capacity-grow check
+/// ensures we re-reserve if the grid has grown beyond what we
+/// reserved previously.
+///
+/// Internal (not private) so the allocation-regression test can call
+/// it without going through `draw(in:)`'s full Metal pipeline.
+internal func beginFrameCleanup(cols: Int, rows: Int) {
+    regularVerts.removeAll(keepingCapacity: true)
+    boldVerts.removeAll(keepingCapacity: true)
+    italicVerts.removeAll(keepingCapacity: true)
+    boldItalicVerts.removeAll(keepingCapacity: true)
+    underlineVerts.removeAll(keepingCapacity: true)
+    strikethroughVerts.removeAll(keepingCapacity: true)
+    if regularVerts.capacity < rows * cols * Self.verticesPerCell * Self.floatsPerCellVertex {
+        reserveVertexCapacity(cols: cols, rows: rows)
+    }
+}
+```
+
+Call it from `draw(in:)`'s preamble (replacing the inline block added in Step 3).
+
 Create `rTermTests/RenderCoordinatorAllocationTests.swift`:
 
 ```swift
@@ -1014,65 +1064,50 @@ Create `rTermTests/RenderCoordinatorAllocationTests.swift`:
 //
 
 import Foundation
+import Metal
 import XCTest
 @testable import rTerm
+@testable import TermCore
 
-/// Guard the invariant that `draw(in:)` does not re-allocate the six
-/// vertex arrays every frame. We can't count heap allocations directly
-/// without an allocator hook, so we measure the mutation pattern: a
-/// vertex array's `capacity` after one draw frame must be the same as
-/// after two consecutive frames (no ephemeral grow).
+/// Guard the invariant that the draw-frame preamble does not re-allocate
+/// the six vertex arrays every frame. We call `beginFrameCleanup` directly
+/// (bypasses the Metal render path) so the test needs neither a window
+/// nor a live drawable — only an `MTLDevice`, which every Mac CI agent
+/// has.
 final class RenderCoordinatorAllocationTests: XCTestCase {
 
     @MainActor
     func test_vertex_arrays_preserve_capacity_across_frames() throws {
-        // Use a reasonable grid size; this is a unit test, not a
-        // full Metal pipeline exercise.
+        // Skip gracefully if the host has no Metal device (rare on macOS
+        // CI; present on GitHub Actions default mac runners).
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("no Metal device; unit test requires one")
+        }
         let model = ScreenModel(cols: 80, rows: 24)
-        let coord = try XCTUnwrap(try? RenderCoordinator.forTesting(screenModel: model))
+        let settings = AppSettings()
+        let coord = RenderCoordinator(screenModel: model, settings: settings)
 
-        coord.drawTestFrame()
+        // First "frame" — should reserve capacity.
+        coord.beginFrameCleanup(cols: 80, rows: 24)
         let capAfterOne = coord.vertexCapacitiesForTesting()
 
-        coord.drawTestFrame()
+        // Second "frame" — capacities must be unchanged.
+        coord.beginFrameCleanup(cols: 80, rows: 24)
         let capAfterTwo = coord.vertexCapacitiesForTesting()
 
-        // No regression — capacities must not shrink to zero between
-        // frames, which would be the signature of `[Float]()` reallocating.
         XCTAssertEqual(capAfterOne, capAfterTwo,
                        "vertex array capacities must be stable across frames")
         XCTAssertTrue(capAfterOne.allSatisfy { $0 > 0 },
-                      "capacities should have been reserved on first frame; got \(capAfterOne)")
+                      "capacities should have been reserved; got \(capAfterOne)")
     }
 }
 ```
 
-In `rTerm/RenderCoordinator.swift`, add testing hooks (keep them `internal` so only the `@testable` import sees them):
+In `rTerm/RenderCoordinator.swift`, add the testing accessor:
 
 ```swift
 #if DEBUG
 extension RenderCoordinator {
-    /// Test-only factory — bypasses `MTKView` creation and the Metal
-    /// pipeline to let the allocation-regression test exercise `draw(in:)`
-    /// bookkeeping paths without a live drawable.
-    static func forTesting(screenModel: ScreenModel) throws -> RenderCoordinator {
-        // Implement a minimal no-render init that reserves capacity and
-        // returns a coordinator whose `drawTestFrame()` runs the
-        // `removeAll(keepingCapacity:) + reserve-if-grown` preamble
-        // without submitting a Metal command buffer. Implementation
-        // sketch: factor out the preamble into a separate `private func
-        // beginFrameCleanup(cols:rows:)` and call it from both `draw(in:)`
-        // and `drawTestFrame()`.
-        throw NSError(domain: "RenderCoordinator.forTesting", code: 1)
-    }
-
-    /// Test-only: runs the draw preamble (capacity reservation + clearing)
-    /// without submitting a frame.
-    func drawTestFrame() {
-        // Calls the extracted beginFrameCleanup helper. Cols/rows come
-        // from the coordinator's current cached grid dimensions.
-    }
-
     /// Test-only: exposes the current capacity of each vertex buffer.
     func vertexCapacitiesForTesting() -> [Int] {
         [regularVerts.capacity, boldVerts.capacity, italicVerts.capacity,
@@ -1082,7 +1117,7 @@ extension RenderCoordinator {
 #endif
 ```
 
-The implementer may choose to skip the `forTesting` factory if wiring Metal in a unit test is prohibitively complex. In that case, add the test but mark it `throw XCTSkip("requires Metal device; run manually")` and document the manual-run command in the commit message.
+No `forTesting` factory — `RenderCoordinator.init(screenModel:settings:)` already constructs a usable coordinator. The only environmental requirement is an `MTLDevice`, which is available on every macOS host; the test uses `XCTSkip` to degrade gracefully if that fails (it won't, in practice).
 
 - [ ] **Step 6: Build + test**
 
@@ -1352,22 +1387,35 @@ Remove the `#if DEBUG makeBufferCountForTesting += 1` from these sites (since th
 
 - [ ] **Step 6: Add steady-state counter test**
 
-Append to `rTermTests/RenderCoordinatorAllocationTests.swift`:
+Append to `rTermTests/RenderCoordinatorAllocationTests.swift`. The test exercises the `ensureRings` path directly (not `draw(in:)`) using the same factory-free pattern from Task 7 Step 5:
 
 ```swift
 @MainActor
 func test_steady_state_makeBuffer_count_is_zero() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+        throw XCTSkip("no Metal device; unit test requires one")
+    }
     let model = ScreenModel(cols: 80, rows: 24)
-    let coord = try XCTUnwrap(try? RenderCoordinator.forTesting(screenModel: model))
-    // Prime the rings with one warmup frame.
-    coord.drawTestFrame()
+    let settings = AppSettings()
+    let coord = RenderCoordinator(screenModel: model, settings: settings)
+
+    // Prime the rings with an ensureRings call (the warmup that would
+    // happen on the first draw frame).
+    coord.ensureRingsForTesting(cols: 80, rows: 24)
     RenderCoordinator.makeBufferCountForTesting = 0
-    // Run several frames at steady-state grid size.
-    for _ in 0..<10 { coord.drawTestFrame() }
+
+    // Simulate several steady-state frames. ensureRings at a stable size
+    // is a no-op after the priming call, so makeBufferCountForTesting
+    // must stay at 0.
+    for _ in 0..<10 {
+        coord.ensureRingsForTesting(cols: 80, rows: 24)
+    }
     XCTAssertEqual(RenderCoordinator.makeBufferCountForTesting, 0,
                    "steady-state draw should allocate no MTLBuffers")
 }
 ```
+
+Add the `ensureRingsForTesting(cols:rows:)` DEBUG-only accessor on `RenderCoordinator` that forwards to the private `ensureRings(cols:rows:)` implementation — same pattern as `vertexCapacitiesForTesting`.
 
 - [ ] **Step 7: Build + test**
 
@@ -1566,30 +1614,29 @@ xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
 
 Expected: `allocs == 1000`. This is the baseline regression number.
 
-- [ ] **Step 4: Decision point — implement or defer**
+- [ ] **Step 4: Measurement — unconditional**
 
-The spec §8 Track B item 3 gating criterion: "if measurements show no regression at 60 MB/s sustained throughput, document 'deferred with measurement' and move on."
+Collect the baseline numbers. This step ALWAYS runs; it is not a branching decision.
 
-**Quick throughput calculation:**
-- 80 cols × ~40 bytes/Cell = 3.2 KB per Row
-- 3.2 KB × 1,000 LF/s = 3.2 MB/s at "fast cat" rate
-- Sustained 60 MB/s requires 60,000,000 / 3,200 ≈ 18,750 LF/s
-
-**Decision rule:** if the test demonstrates 18,750 LFs complete in under 1 second on the implementer's hardware without exhausting memory, defer. Otherwise implement.
-
-Run a 20,000-LF variant:
+Add a throughput test alongside the allocation-count test:
 
 ```swift
-@Test("Large-burst throughput is sustainable without allocator stall")
-func test_large_burst_does_not_stall() async {
+@Test("Throughput gate: 37,500 scrolling LFs in under 2.0 s (60 MB/s target)")
+func test_throughput_gate() async {
+    // 80 cols × 40 B/cell = 3.2 KB per Row.
+    // 3.2 KB × 37,500 / 2.0 s = 60 MB/s — exactly the spec §8 Track B
+    // item 3 threshold. Passing in under 2 s means we meet the gate;
+    // failing means we're below it and the ring-buffer implementation
+    // is warranted.
     let model = ScreenModel(cols: 80, rows: 24, historyCapacity: 10_000)
     for _ in 0..<24 { await model.apply([.c0(.lineFeed)]) }
     let start = Date()
-    for _ in 0..<20_000 {
+    for _ in 0..<37_500 {
         await model.apply([.c0(.lineFeed)])
     }
     let elapsed = Date().timeIntervalSince(start)
-    #expect(elapsed < 2.0, "20K scrolling LFs took \(elapsed)s — allocator pressure?")
+    #expect(elapsed < 2.0,
+            "37,500 scrolling LFs took \(elapsed)s (target: 60 MB/s = under 2.0 s)")
 }
 ```
 
@@ -1597,55 +1644,63 @@ Run it:
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests \
-    -only-testing TermCoreTests/ScrollbackHistoryAllocationTests/test_large_burst_does_not_stall test -quiet
+    -only-testing TermCoreTests/ScrollbackHistoryAllocationTests/test_throughput_gate test -quiet
 ```
 
-- If pass (< 2 s): no visible regression. **Defer the ring-buffer implementation.** Add a doc comment in `ScreenModel+Buffer.swift` (the `scrollAndMaybeEvict` site):
+Record the elapsed time in a scratch note. This measurement drives Step 5's conditional.
+
+- [ ] **Step 5: Conditional implementation — gated on Step 4 measurement**
+
+The spec §8 Track B item 3 gating criterion is "no regression at 60 MB/s sustained throughput." Step 4's test passes iff we meet that rate. Branch:
+
+- **If Step 4 passed (elapsed < 2.0 s):** meet the spec gate. DEFER the ring-buffer implementation. Add a doc comment in `ScreenModel+Buffer.swift` (at the `scrollAndMaybeEvict` site):
 
 ```swift
-/// Phase 3 Track B item 3: considered allocating a fixed-size Row ring
-/// here to eliminate the per-LF ContiguousArray allocation. Benchmark
-/// showed 20,000 scrolling LFs complete in well under 2 s on Apple
-/// Silicon, so the allocation is not a hotspot at any realistic
-/// workload. Deferred indefinitely pending a real-world trigger.
+/// Phase 3 Track B item 3: considered allocating a fixed-size Row
+/// ring here to eliminate the per-LF ContiguousArray allocation.
+/// Benchmark (ScrollbackHistoryAllocationTests.test_throughput_gate)
+/// passed at 60 MB/s (37,500 scrolling LFs in under 2.0 s on Apple
+/// Silicon), meeting the spec §8 Track B item 3 criterion. Deferred
+/// indefinitely pending a real-world trigger.
 ```
 
-- If fail (>= 2 s): implement the ring. Outline:
-  - Add `ScrollbackHistory` private storage `_rowPool: ContiguousArray<Row>` sized at `capacity` with each element pre-allocated to `cols * stride`.
-  - `push(_:)` takes a new Row from the pool, copies into it, stores it, and the evicted Row goes back to the pool's free list.
-  - Update the counter expectation in the test to `~capacity + grow-count`.
-
-- [ ] **Step 5: Commit (measurement-gated path chosen)**
-
-**If deferred:**
+Commit the measurement + deferral:
 
 ```bash
 git add TermCore/ScrollbackHistory.swift TermCore/ScreenModel+Buffer.swift \
         TermCoreTests/ScrollbackHistoryAllocationTests.swift
-git commit -m "measure(TermCore): Row per-LF allocation quantified; defer ring
+git commit -m "measure(TermCore): Row per-LF allocation gated at 60 MB/s; defer
 
 Phase 2 efficiency research flagged ScrollbackHistory.Row per-LF
 allocation (~3.1 KB per scrolling LF) as a potential hotspot.
-Measurement: 1,000 scrolling LFs produce exactly 1,000 Row allocations
-(as expected), and 20,000 LFs complete in under 2 s on Apple Silicon.
-No visible allocator pressure at any realistic terminal workload.
+Measurement: 1,000 scrolling LFs produce exactly 1,000 Row allocations.
+Throughput gate: 37,500 LFs in under 2.0 s = 60 MB/s sustained, which
+is the spec §8 Track B item 3 threshold — passing pins that we are
+NOT regressing the gate.
 
-Ring-buffer optimization deferred indefinitely per Phase 3 Track B
-item 3's measurement-gating criterion. Counter + test remain as
-living documentation so a future regression is caught immediately."
+Ring-buffer optimization deferred indefinitely. Counter + throughput
+test remain as living documentation so a future regression trips
+the gate immediately."
 ```
 
-**If implemented:**
+- **If Step 4 failed (elapsed >= 2.0 s):** do NOT meet the spec gate. IMPLEMENT the ring. Outline:
+  - Add `ScrollbackHistory` private storage `_rowPool: ContiguousArray<Row>` sized at `capacity` with each element pre-allocated to `cols * stride`.
+  - `push(_:)` takes a new Row from the pool, copies into it, stores it, and the evicted Row goes back to the pool's free list.
+  - Update the counter expectation in the baseline test to `~capacity + grow-count`.
+  - Rerun the throughput test — it must now pass.
+
+Commit the implementation:
 
 ```bash
 git add TermCore/ScrollbackHistory.swift TermCoreTests/ScrollbackHistoryAllocationTests.swift
 git commit -m "perf(TermCore): pre-allocated Row pool in ScrollbackHistory
 
-Measurement showed per-LF Row allocation causing allocator stalls at
-sustained 20K LF/s. Implement a fixed-size pool of pre-allocated
-ContiguousArray<Cell> slots reused across scrolls. Row allocation
-count drops from O(LF) to O(capacity). No behavior change visible
-to readers — tail(), all(), count are unchanged."
+Measurement showed per-LF Row allocation failed the 60 MB/s throughput
+gate (spec §8 Track B item 3). Implement a fixed-size pool of
+pre-allocated ContiguousArray<Cell> slots reused across scrolls.
+Row allocation count drops from O(LF) to O(capacity). Throughput
+test now passes: 37,500 scrolling LFs in under 2.0 s. No behavior
+change visible to readers — tail(), all(), count are unchanged."
 ```
 
 ---
