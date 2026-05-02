@@ -650,3 +650,246 @@ struct ScreenModelModeTests {
         #expect(restoredSnap.bellCount == 2)
     }
 }
+
+// MARK: - Alt-screen modes (Phase 2 T4)
+
+struct ScreenModelAltScreenTests {
+
+    @Test("Mode 1049 enter saves main cursor, switches to alt (cleared), pen persists")
+    func test_alt_screen_1049_enter() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        // Write some main-buffer content; move cursor to (1, 2).
+        let main: [TerminalEvent] = [
+            .printable("a"), .printable("b"), .printable("c"),
+            .c0(.lineFeed),
+            .printable("d"), .printable("e"),
+        ]
+        await model.apply(main)
+        // Set a non-default pen so we can verify it persists across swap.
+        await model.apply([.csi(.sgr([.bold]))])
+        // Enter alt screen.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        let snap = model.latestSnapshot()
+        #expect(snap.activeBuffer == .alt)
+        #expect(snap.cursor == Cursor(row: 0, col: 0))
+        // Alt grid is cleared.
+        for r in 0..<3 {
+            for c in 0..<5 {
+                #expect(snap[r, c].character == " ")
+            }
+        }
+        // Pen persistence — write a char and verify it has bold.
+        await model.apply([.printable("x")])
+        let after = model.latestSnapshot()
+        #expect(after[0, 0].character == "x")
+        #expect(after[0, 0].style.attributes.contains(.bold))
+    }
+
+    @Test("Mode 1049 exit returns to main with cursor restored, alt cleared")
+    func test_alt_screen_1049_exit_restores_main() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        await model.apply([
+            .printable("a"), .printable("b"),
+            .c0(.lineFeed),
+        ])
+        // Cursor is now at (1, 0). Enter alt.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        // Write to alt.
+        await model.apply([.printable("z")])
+        // Exit alt.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        let snap = model.latestSnapshot()
+        #expect(snap.activeBuffer == .main)
+        // Main content is intact.
+        #expect(snap[0, 0].character == "a")
+        #expect(snap[0, 1].character == "b")
+        // Cursor restored to where main was when 1049-enter happened.
+        #expect(snap.cursor == Cursor(row: 1, col: 0))
+        // Re-enter alt and verify it's cleared (1049 enter clears every time).
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        let after = model.latestSnapshot()
+        for r in 0..<3 {
+            for c in 0..<5 {
+                #expect(after[r, c].character == " ")
+            }
+        }
+    }
+
+    @Test("Mode 1047 enter switches + clears alt; exit clears alt + switches back; alt cursor persists across re-entry")
+    func test_alt_screen_1047_cursor_persists_across_re_entry() async {
+        let model = ScreenModel(cols: 4, rows: 2)
+        await model.apply([
+            .printable("a"), .printable("b"),
+            .c0(.lineFeed),
+            .printable("c"),
+        ])
+        // Cursor at (1, 1) on main.
+        await model.apply([.csi(.setMode(.alternateScreen1047, enabled: true))])
+        let snap = model.latestSnapshot()
+        #expect(snap.activeBuffer == .alt)
+        // Move alt cursor away from origin so we can verify it persists.
+        // Land at col 2 + write 'Z' so the post-write cursor is (1, 3) — still
+        // in-bounds (cols=4) so snapshotCursor doesn't deferred-wrap.
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 2)),
+            .printable("Z"),
+        ])
+        // Cursor on alt is now (1, 3) just past 'Z' (in-bounds).
+        await model.apply([.csi(.setMode(.alternateScreen1047, enabled: false))])
+        let exited = model.latestSnapshot()
+        #expect(exited.activeBuffer == .main)
+        // Main cursor was wherever it was when we entered alt — 1047 doesn't save/restore.
+        // Re-enter alt: grid is cleared, but cursor persisted from last visit.
+        await model.apply([.csi(.setMode(.alternateScreen1047, enabled: true))])
+        let reentered = model.latestSnapshot()
+        #expect(reentered.activeBuffer == .alt)
+        // Grid is cleared (xterm 1047 clears on enter).
+        for r in 0..<2 {
+            for c in 0..<4 {
+                #expect(reentered[r, c].character == " ", "Alt grid is cleared on re-entry")
+            }
+        }
+        // Cursor persisted from last alt visit — distinguishes "1047 leaves alt
+        // cursor alone" from "alt was freshly allocated at origin". The previous
+        // alt visit left cursor at (1, 3) just past 'Z'.
+        #expect(reentered.cursor.row == 1)
+        #expect(reentered.cursor.col == 3)
+    }
+
+    @Test("Mode 47 toggles buffer without clear or cursor save (legacy)")
+    func test_alt_screen_47_legacy() async {
+        let model = ScreenModel(cols: 3, rows: 2)
+        await model.apply([.printable("x")])
+        await model.apply([.csi(.setMode(.alternateScreen47, enabled: true))])
+        let snap = model.latestSnapshot()
+        #expect(snap.activeBuffer == .alt)
+        // Mode 47 does NOT clear alt — but our alt was empty anyway.
+        // Write to alt, swap out, verify alt persists across swap.
+        await model.apply([.printable("y")])
+        await model.apply([.csi(.setMode(.alternateScreen47, enabled: false))])
+        #expect(model.latestSnapshot().activeBuffer == .main)
+        // Re-enter alt — y should still be there.
+        await model.apply([.csi(.setMode(.alternateScreen47, enabled: true))])
+        #expect(model.latestSnapshot()[0, 0].character == "y")
+    }
+
+    @Test("Mode 1048 saves cursor without buffer switch")
+    func test_save_cursor_1048() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        await model.apply([
+            .printable("a"), .printable("b"), .printable("c"),
+        ])
+        // Cursor at (0, 3). Save it via 1048.
+        await model.apply([.csi(.setMode(.saveCursor1048, enabled: true))])
+        // Move cursor; verify still on main.
+        await model.apply([.csi(.cursorPosition(row: 2, col: 4))])
+        let preRestore = model.latestSnapshot()
+        #expect(preRestore.activeBuffer == .main)
+        #expect(preRestore.cursor == Cursor(row: 2, col: 4))
+        // Restore via 1048 disable.
+        await model.apply([.csi(.setMode(.saveCursor1048, enabled: false))])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 0, col: 3))
+    }
+
+    @Test("Mode 1048 save/restore is per-buffer (alt and main keep independent slots)")
+    func test_save_cursor_1048_per_buffer() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        // On main: move to (0, 2) and 1048-save.
+        await model.apply([
+            .csi(.cursorPosition(row: 0, col: 2)),
+            .csi(.setMode(.saveCursor1048, enabled: true)),
+        ])
+        // Switch to alt (mode 1049 takes us to alt at origin).
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        // On alt: move to (2, 4) and 1048-save.
+        await model.apply([
+            .csi(.cursorPosition(row: 2, col: 4)),
+            .csi(.setMode(.saveCursor1048, enabled: true)),
+        ])
+        // Move cursor on alt elsewhere, then 1048-restore — must land at (2, 4),
+        // alt's saved slot, NOT main's (0, 2).
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 0)),
+            .csi(.setMode(.saveCursor1048, enabled: false)),
+        ])
+        let altRestored = model.latestSnapshot()
+        #expect(altRestored.activeBuffer == .alt)
+        #expect(altRestored.cursor == Cursor(row: 2, col: 4),
+                "1048 restore on alt uses alt.savedCursor, not main's")
+        // Exit alt back to main; main's 1048 save is still in main.savedCursor.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        // Move main cursor elsewhere, then 1048-restore — must land at (0, 2),
+        // main's saved slot.
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 4)),
+            .csi(.setMode(.saveCursor1048, enabled: false)),
+        ])
+        let mainRestored = model.latestSnapshot()
+        #expect(mainRestored.activeBuffer == .main)
+        #expect(mainRestored.cursor == Cursor(row: 0, col: 2),
+                "1048 restore on main uses main.savedCursor, not alt's")
+    }
+
+    @Test("CSI s + writes + CSI u restores cursor (per active buffer)")
+    func test_save_restore_cursor_csi_s_u() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        await model.apply([.printable("a"), .printable("b")])
+        // Cursor (0, 2). Save.
+        await model.apply([.csi(.saveCursor)])
+        await model.apply([
+            .csi(.cursorPosition(row: 2, col: 4)),
+            .printable("z"),                           // grid mutation → version bump
+            .csi(.restoreCursor),
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor == Cursor(row: 0, col: 2))
+    }
+
+    @Test("ESC 7 / ESC 8 (DECSC / DECRC) behave the same as CSI s / CSI u")
+    func test_esc_7_8_save_restore() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        var parser = TerminalParser()
+        // Write 'a', save via ESC 7, move, write, restore via ESC 8.
+        let bytes: [UInt8] = [
+            0x61,                               // 'a'
+            0x1B, 0x37,                          // ESC 7 — save
+            0x1B, 0x5B, 0x33, 0x3B, 0x35, 0x48,  // CSI 3;5 H — move (1-indexed)
+            0x7A,                                // 'z'
+            0x1B, 0x38                           // ESC 8 — restore
+        ]
+        await model.apply(parser.parse(Data(bytes)))
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor == Cursor(row: 0, col: 1))   // back to (0, col-after-'a')
+    }
+
+    @Test("Save/restore is per-buffer: alt and main keep separate saved cursors")
+    func test_save_restore_per_buffer() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        // Save main cursor at (0, 0) (origin).
+        await model.apply([.csi(.saveCursor)])
+        // Move main cursor.
+        await model.apply([.csi(.cursorPosition(row: 1, col: 2))])
+        // Enter alt — writes go to alt. Save alt cursor (origin).
+        await model.apply([
+            .csi(.setMode(.alternateScreen1049, enabled: true)),
+            .csi(.saveCursor),
+        ])
+        // Move alt cursor.
+        await model.apply([.csi(.cursorPosition(row: 2, col: 3))])
+        // Restore alt cursor → back to (0, 0) on alt.
+        await model.apply([.csi(.restoreCursor)])
+        let altRestored = model.latestSnapshot()
+        #expect(altRestored.cursor == Cursor(row: 0, col: 0))
+        #expect(altRestored.activeBuffer == .alt)
+        // Exit alt back to main — main cursor restored from the 1049 save
+        // (which was (1, 2) at the moment of 1049 enter; this overwrote the
+        // earlier CSI s save at origin since both share main.savedCursor).
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 1, col: 2))
+        // CSI u restores from the same single main.savedCursor slot — still (1,2)
+        // because 1049 enter clobbered the original origin save (xterm semantics:
+        // DECSC and 1049 share one slot per buffer).
+        await model.apply([.csi(.restoreCursor)])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 1, col: 2))
+    }
+}

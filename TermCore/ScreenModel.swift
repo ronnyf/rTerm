@@ -372,12 +372,7 @@ public actor ScreenModel {
                 return false   // pure cursor state — no visible change.
             }
         case .restoreCursor:
-            return mutateActive { buf in
-                guard let saved = buf.savedCursor else { return false }
-                buf.cursor = saved
-                clampCursor(in: &buf)
-                return true
-            }
+            return restoreActiveCursor()
         case .eraseInDisplay(let region):
             eraseInDisplay(region)
             return true
@@ -603,6 +598,27 @@ public actor ScreenModel {
         buf.cursor.row = rows - 1
     }
 
+    /// Clear `buf`'s grid in place. Cursor is left untouched — callers that
+    /// need a cursor reset do it explicitly. Static so it can be invoked on
+    /// any named buffer (`main`/`alt`) directly without going through
+    /// `mutateActive`, which is what 1049/1047 enter/exit paths need.
+    private static func clearGrid(in buf: inout Buffer, cols: Int, rows: Int) {
+        let total = rows * cols
+        for i in 0..<total { buf.grid[i] = .empty }
+    }
+
+    /// Restore the active buffer's `savedCursor` (set via DECSC/`CSI s` or 1048
+    /// enable). Returns `true` when a saved cursor existed and the cursor moved;
+    /// `false` when nothing was saved (idempotent — no version bump).
+    private func restoreActiveCursor() -> Bool {
+        mutateActive { buf in
+            guard let saved = buf.savedCursor else { return false }
+            buf.cursor = saved
+            clampCursor(in: &buf)
+            return true
+        }
+    }
+
     /// Apply a `CSI ? Pm h/l` mode change. Returns `true` when the change
     /// produces a state mutation that should be reflected in a new snapshot
     /// (all four wired user modes — DECAWM, DECTCEM, DECCKM, bracketed paste —
@@ -628,10 +644,77 @@ public actor ScreenModel {
             return true
         case .alternateScreen47, .alternateScreen1047,
              .alternateScreen1049, .saveCursor1048:
-            // T4 wires these.
-            return false
+            return handleAltScreen(mode, enabled: enabled)
         case .unknown:
             return false
+        }
+    }
+
+    /// Handle the alt-screen-related DEC private modes (47 / 1047 / 1048 / 1049).
+    /// Returns `true` when the operation changes visible state (grid, cursor
+    /// position, or active buffer). Returns `false` for pure cursor saves
+    /// (1048 enabled), idempotent toggles, and unhandled modes.
+    private func handleAltScreen(_ mode: DECPrivateMode, enabled: Bool) -> Bool {
+        switch mode {
+        case .saveCursor1048:
+            // Save / restore cursor on the active buffer's `savedCursor` slot —
+            // when alt is active, 1048 still works against alt; matches xterm.
+            if enabled {
+                mutateActive { buf in buf.savedCursor = buf.cursor }
+                return false   // pure state, no grid or cursor change
+            } else {
+                return restoreActiveCursor()
+            }
+
+        case .alternateScreen47:
+            // Legacy: switch buffers without save/restore and without clearing.
+            let target: BufferKind = enabled ? .alt : .main
+            guard activeKind != target else { return false }
+            activeKind = target
+            return true
+
+        case .alternateScreen1047:
+            // Switch + clear-on-leave (per xterm). No cursor save/restore wrap;
+            // alt's cursor persists across re-entry within a session.
+            if enabled {
+                guard activeKind != .alt else { return false }
+                activeKind = .alt
+                Self.clearGrid(in: &alt, cols: cols, rows: rows)
+                return true
+            } else {
+                guard activeKind == .alt else { return false }
+                // Clear alt before switching so it's blank on next entry.
+                // Do NOT touch alt.cursor — xterm leaves it where it is so
+                // re-entry keeps the prior position even though grid was cleared.
+                Self.clearGrid(in: &alt, cols: cols, rows: rows)
+                activeKind = .main
+                return true
+            }
+
+        case .alternateScreen1049:
+            // Save main cursor on enter; restore on exit. Always clears alt on enter.
+            if enabled {
+                guard activeKind != .alt else { return false }
+                main.savedCursor = main.cursor
+                activeKind = .alt
+                Self.clearGrid(in: &alt, cols: cols, rows: rows)
+                alt.cursor = Cursor(row: 0, col: 0)
+                return true
+            } else {
+                guard activeKind == .alt else { return false }
+                // Clear alt grid; alt.cursor will be reset on the next 1049 enter
+                // so we don't bother resetting it here.
+                Self.clearGrid(in: &alt, cols: cols, rows: rows)
+                activeKind = .main
+                if let saved = main.savedCursor {
+                    main.cursor = saved
+                    clampCursor(in: &main)
+                }
+                return true
+            }
+
+        default:
+            return false   // unreachable: handleSetMode filters to alt-screen modes
         }
     }
 }
