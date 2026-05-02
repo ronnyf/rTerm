@@ -55,6 +55,29 @@ private func makeKeyEvent(
     )
 }
 
+/// Creates a key-down event for Phase 2 T7 tests (arrow/navigation keys that
+/// have no `characters` payload by default). Matches the helper name used in
+/// the Phase 2 plan.
+@MainActor
+private func mockKeyDown(
+    keyCode: UInt16,
+    characters: String = "",
+    modifierFlags: NSEvent.ModifierFlags = []
+) -> NSEvent {
+    NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: modifierFlags,
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: characters,
+        charactersIgnoringModifiers: characters,
+        isARepeat: false,
+        keyCode: keyCode
+    )!
+}
+
 // MARK: - Tests
 
 @MainActor
@@ -160,5 +183,99 @@ struct KeyEncoderTests {
         ))
         let result = encoder.encode(event)
         #expect(result == nil)
+    }
+
+    // MARK: - Arrow keys (Phase 2 T7)
+
+    // The two single-keyCode tests below are kept alongside the table tests
+    // (`test_all_arrows_*`) on purpose: they fire first, name the full VT
+    // sequence in their titles, and isolate a DECCKM regression to one keyCode
+    // so debugging is a single bisect — not a discovery of which row in the
+    // table failed.
+    @Test("Up arrow normal-mode → ESC [ A")
+    func test_arrow_up_normal_mode() {
+        // keyCode 126 = up arrow
+        let event = mockKeyDown(keyCode: 126)
+        let encoded = KeyEncoder().encode(event, cursorKeyMode: .normal)
+        #expect(encoded == Data([0x1B, 0x5B, 0x41]))
+    }
+
+    @Test("Up arrow application-mode → ESC O A")
+    func test_arrow_up_application_mode() {
+        let event = mockKeyDown(keyCode: 126)
+        let encoded = KeyEncoder().encode(event, cursorKeyMode: .application)
+        #expect(encoded == Data([0x1B, 0x4F, 0x41]))
+    }
+
+    @Test("All four arrows match VT/xterm: A=up B=down C=right D=left")
+    func test_all_arrows_normal_mode() {
+        let cases: [(keyCode: UInt16, suffix: UInt8)] = [
+            (126, 0x41),  // up    → A
+            (125, 0x42),  // down  → B
+            (124, 0x43),  // right → C
+            (123, 0x44),  // left  → D
+        ]
+        for (keyCode, suffix) in cases {
+            let event = mockKeyDown(keyCode: keyCode)
+            let encoded = KeyEncoder().encode(event, cursorKeyMode: .normal)
+            #expect(encoded == Data([0x1B, 0x5B, suffix]),
+                    "keyCode \(keyCode) normal-mode")
+        }
+    }
+
+    @Test("All four arrows in application mode use ESC O")
+    func test_all_arrows_application_mode() {
+        let cases: [(keyCode: UInt16, suffix: UInt8)] = [
+            (126, 0x41), (125, 0x42), (124, 0x43), (123, 0x44),
+        ]
+        for (keyCode, suffix) in cases {
+            let event = mockKeyDown(keyCode: keyCode)
+            let encoded = KeyEncoder().encode(event, cursorKeyMode: .application)
+            #expect(encoded == Data([0x1B, 0x4F, suffix]),
+                    "keyCode \(keyCode) application-mode")
+        }
+    }
+
+    // MARK: - Home / End (Phase 2 T7)
+
+    @Test("Home key → ESC [ H")
+    func test_home_key() {
+        // keyCode 115 = Home (fn + left arrow on Mac compact keyboards)
+        let event = mockKeyDown(keyCode: 115)
+        let encoded = KeyEncoder().encode(event, cursorKeyMode: .normal)
+        #expect(encoded == Data([0x1B, 0x5B, 0x48]))
+    }
+
+    @Test("End key → ESC [ F")
+    func test_end_key() {
+        let event = mockKeyDown(keyCode: 119)
+        let encoded = KeyEncoder().encode(event, cursorKeyMode: .normal)
+        #expect(encoded == Data([0x1B, 0x5B, 0x46]))
+    }
+
+    // MARK: - PgUp / PgDn (Phase 2 T7)
+
+    @Test("Page Up → ESC [ 5 ~")
+    func test_page_up() {
+        let event = mockKeyDown(keyCode: 116)
+        let encoded = KeyEncoder().encode(event, cursorKeyMode: .normal)
+        #expect(encoded == Data([0x1B, 0x5B, 0x35, 0x7E]))
+    }
+
+    @Test("Page Down → ESC [ 6 ~")
+    func test_page_down() {
+        let event = mockKeyDown(keyCode: 121)
+        let encoded = KeyEncoder().encode(event, cursorKeyMode: .normal)
+        #expect(encoded == Data([0x1B, 0x5B, 0x36, 0x7E]))
+    }
+
+    // MARK: - Forward Delete (Phase 2 T7)
+
+    @Test("Forward Delete (fn-Delete) → ESC [ 3 ~")
+    func test_forward_delete() {
+        // keyCode 117 = forward delete on Mac compact keyboards (fn + delete)
+        let event = mockKeyDown(keyCode: 117)
+        let encoded = KeyEncoder().encode(event, cursorKeyMode: .normal)
+        #expect(encoded == Data([0x1B, 0x5B, 0x33, 0x7E]))
     }
 }

@@ -39,7 +39,7 @@ public struct Cursor: Sendable, Equatable, Codable {
 
 // MARK: - BufferKind
 
-@frozen public enum BufferKind: Sendable, Equatable, Codable {
+@frozen public enum BufferKind: String, Sendable, Equatable, Codable {
     case main
     case alt
 }
@@ -59,6 +59,10 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
     public let cursorVisible: Bool
     public let activeBuffer: BufferKind
     public let windowTitle: String?
+    public let cursorKeyApplication: Bool
+    public let bracketedPaste: Bool
+    public let bellCount: UInt64
+    public let autoWrap: Bool
     public let version: UInt64
 
     public init(activeCells: ContiguousArray<Cell>,
@@ -68,6 +72,10 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
                 cursorVisible: Bool = true,
                 activeBuffer: BufferKind = .main,
                 windowTitle: String? = nil,
+                cursorKeyApplication: Bool = false,
+                bracketedPaste: Bool = false,
+                bellCount: UInt64 = 0,
+                autoWrap: Bool = true,
                 version: UInt64) {
         self.activeCells = activeCells
         self.cols = cols
@@ -76,6 +84,10 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
         self.cursorVisible = cursorVisible
         self.activeBuffer = activeBuffer
         self.windowTitle = windowTitle
+        self.cursorKeyApplication = cursorKeyApplication
+        self.bracketedPaste = bracketedPaste
+        self.bellCount = bellCount
+        self.autoWrap = autoWrap
         self.version = version
     }
 
@@ -85,7 +97,9 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case activeCells, cols, rows, cursor, cursorVisible, activeBuffer, windowTitle, version
+        case activeCells, cols, rows, cursor, cursorVisible, activeBuffer,
+             windowTitle, cursorKeyApplication, bracketedPaste, bellCount,
+             autoWrap, version
     }
 
     public init(from decoder: Decoder) throws {
@@ -110,6 +124,10 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
         self.cursorVisible = try container.decode(Bool.self, forKey: .cursorVisible)
         self.activeBuffer = try container.decode(BufferKind.self, forKey: .activeBuffer)
         self.windowTitle = try container.decodeIfPresent(String.self, forKey: .windowTitle)
+        self.cursorKeyApplication = try container.decodeIfPresent(Bool.self, forKey: .cursorKeyApplication) ?? false
+        self.bracketedPaste = try container.decodeIfPresent(Bool.self, forKey: .bracketedPaste) ?? false
+        self.bellCount = try container.decodeIfPresent(UInt64.self, forKey: .bellCount) ?? 0
+        self.autoWrap = try container.decodeIfPresent(Bool.self, forKey: .autoWrap) ?? true
         self.version = try container.decode(UInt64.self, forKey: .version)
     }
 }

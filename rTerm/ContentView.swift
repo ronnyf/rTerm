@@ -29,9 +29,9 @@ import TermCore
 class TerminalSession {
     let screenModel: ScreenModel
 
-    /// Mirror of `ScreenModel.currentWindowTitle()` kept in sync from the
-    /// response handler. Drives SwiftUI `.navigationTitle`; `nil` until the
-    /// shell issues OSC 0 / OSC 2.
+    /// Mirror of the snapshot's `windowTitle` kept in sync from the response
+    /// handler. Drives SwiftUI `.navigationTitle`; `nil` until the shell
+    /// issues OSC 0 / OSC 2.
     var windowTitle: String? = nil
 
     @ObservationIgnored
@@ -85,7 +85,7 @@ class TerminalSession {
                 // produced between session creation and attach.
                 let attachReply = try client.sendSync(.attach(sessionID: info.id))
                 if case .attachPayload(_, let payload) = attachReply {
-                    await screenModel.restore(from: payload.snapshot)
+                    await screenModel.restore(from: payload)
                 }
             }
         } catch {
@@ -105,6 +105,40 @@ class TerminalSession {
         } catch {
             log.error("sendInput error: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Bracketed paste (Phase 2 T8)
+
+    /// Wrap pasted text with the bracketed-paste envelope when enabled.
+    ///
+    /// Shells that have set DEC private mode 2004 expect the envelope so they
+    /// can distinguish pasted bytes from typed bytes (vim, fish, zsh-with-syntax-
+    /// highlighting all use this to suppress autoindent and key-binding triggers
+    /// during paste). When 2004 is off, the raw UTF-8 bytes are sent verbatim.
+    nonisolated public static func bracketedPasteWrap(_ text: String, enabled: Bool) -> Data {
+        let payload = Data(text.utf8)
+        guard enabled else { return payload }
+        var data = Data()
+        data.reserveCapacity(payload.count + 12)
+        data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E])  // ESC [ 2 0 0 ~
+        data.append(payload)
+        data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E])  // ESC [ 2 0 1 ~
+        return data
+    }
+
+    /// Compose the bytes a paste should send by reading `bracketedPaste` from
+    /// the snapshot and applying `bracketedPasteWrap`. Pure (no actor state,
+    /// no I/O) so tests can verify the snapshot-read + wrap composition end
+    /// to end with a real `ScreenSnapshot`.
+    nonisolated public static func pastePayload(text: String, snapshot: ScreenSnapshot) -> Data {
+        bracketedPasteWrap(text, enabled: snapshot.bracketedPaste)
+    }
+
+    /// Send pasted text to the active session, wrapping if the shell has
+    /// enabled bracketed paste (mode 2004).
+    func paste(_ text: String) {
+        let data = Self.pastePayload(text: text, snapshot: screenModel.latestSnapshot())
+        sendInput(data)
     }
 
     /// Notify the daemon that the terminal size has changed.
@@ -133,23 +167,24 @@ class TerminalSession {
         // the closure captures `self` and reaches `self.parser` through it.
         client.setResponseHandler { [self] response in
             switch response {
-            // .output uses ScreenModel.applyAndCurrentTitle to collapse the apply
-            // and title read into one actor hop — this narrows the race where
-            // two rapid chunks' MainActor continuations could reorder the title
-            // reads. Task 7's snapshot reshape eliminates the MainActor race
-            // entirely by publishing windowTitle through the nonisolated snapshot.
+            // .output applies the parsed events on the actor, then reads the
+            // resulting windowTitle from the published nonisolated snapshot —
+            // no second actor hop. The snapshot's windowTitle reflects the
+            // state immediately after this batch's apply, so two rapid
+            // chunks' MainActor continuations cannot reorder the title reads.
             case .output(_, let data):
                 log.debug("Received output: \(data.count) bytes")
                 let events = self.parser.withLock { $0.parse(data) }
                 Task { @MainActor in
-                    self.windowTitle = await screenModel.applyAndCurrentTitle(events)
+                    await screenModel.apply(events)
+                    self.windowTitle = screenModel.latestSnapshot().windowTitle
                 }
 
             case .attachPayload(_, let payload):
                 log.info("Received attach payload")
                 Task { @MainActor in
-                    await screenModel.restore(from: payload.snapshot)
-                    self.windowTitle = await screenModel.currentWindowTitle()
+                    await screenModel.restore(from: payload)
+                    self.windowTitle = screenModel.latestSnapshot().windowTitle
                 }
 
             case .sessionEnded(let sid, let exitCode):
@@ -170,11 +205,12 @@ struct ContentView: View {
     @State private var settings = AppSettings()
 
     var body: some View {
-        TermView(screenModel: session.screenModel,
-                 settings: settings,
-                 onInput: { data in
-            session.sendInput(data)
-        })
+        TermView(
+            screenModel: session.screenModel,
+            settings: settings,
+            onInput: { data in session.sendInput(data) },
+            onPaste: { text in session.paste(text) }
+        )
         .navigationTitle(session.windowTitle ?? "rTerm")
         .task {
             do {

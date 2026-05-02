@@ -35,3 +35,22 @@ public enum DECPrivateMode: Sendable, Equatable {
     case bracketedPaste          // 2004
     case unknown(Int)            // preserves param for logging
 }
+
+extension DECPrivateMode {
+    /// Map a raw VT private mode parameter to its enum case. Unknown numbers
+    /// round-trip through `.unknown(_)` so logging and Phase 3 introspection
+    /// keep the original value.
+    public init(rawParam: Int) {
+        switch rawParam {
+        case 1:    self = .cursorKeyApplication
+        case 7:    self = .autoWrap
+        case 25:   self = .cursorVisible
+        case 47:   self = .alternateScreen47
+        case 1047: self = .alternateScreen1047
+        case 1048: self = .saveCursor1048
+        case 1049: self = .alternateScreen1049
+        case 2004: self = .bracketedPaste
+        default:   self = .unknown(rawParam)
+        }
+    }
+}

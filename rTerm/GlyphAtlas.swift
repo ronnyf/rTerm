@@ -35,13 +35,13 @@ struct GlyphAtlas {
     /// renderer materializes one atlas per variant at startup and switches
     /// between them per cell based on `CellAttributes`.
     ///
-    /// Italic / boldItalic are reserved for Phase 2.
-    enum Variant: Sendable, Equatable {
+    /// `nonisolated` so non-MainActor callers (e.g. unit tests) can compare
+    /// variants — the enum has no behavior or state that depends on isolation.
+    nonisolated enum Variant: Sendable, Equatable {
         case regular
         case bold
-        // Phase 2:
-        // case italic
-        // case boldItalic
+        case italic
+        case boldItalic
     }
 
     // MARK: - Constants
@@ -66,7 +66,7 @@ struct GlyphAtlas {
     let cellWidth: CGFloat
     /// Height of a single character cell in points (not pixels).
     let cellHeight: CGFloat
-    /// Variant captured by this atlas (regular vs bold).
+    /// Variant captured by this atlas (regular / bold / italic / boldItalic).
     let variant: Variant
 
     // MARK: - Private properties
@@ -84,15 +84,39 @@ struct GlyphAtlas {
     /// - Parameters:
     ///   - device: The Metal device used to create the texture.
     ///   - fontSize: The font size in points. Defaults to ``defaultFontSize``.
-    ///   - variant: Font weight to use. `.bold` selects
-    ///     `NSFont.Weight.bold`; defaults to `.regular`.
+    ///   - variant: Font weight/style to use. `.bold` selects
+    ///     `NSFont.Weight.bold`; `.italic` / `.boldItalic` apply
+    ///     `NSFontDescriptor.SymbolicTraits.italic`; defaults to `.regular`.
     init(device: MTLDevice, fontSize: CGFloat = Self.defaultFontSize, variant: Variant = .regular) {
         let scale: CGFloat = 2.0
         self.variant = variant
 
         // -- 1. Font ----------------------------------------------------------
-        let weight: NSFont.Weight = (variant == .bold) ? .bold : .regular
-        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: weight)
+        let weight: NSFont.Weight
+        switch variant {
+        case .regular, .italic:         weight = .regular
+        case .bold, .boldItalic:        weight = .bold
+        }
+        let baseFont = NSFont.monospacedSystemFont(ofSize: fontSize, weight: weight)
+        let font: NSFont
+        switch variant {
+        case .regular, .bold:
+            font = baseFont
+        case .italic, .boldItalic:
+            // Apply italic trait. monospaced system font may not have a true italic
+            // glyph variant on all macOS versions; the Cocoa transform falls back
+            // to a synthesized oblique. When even the descriptor lookup fails (rare;
+            // very old SF Mono builds), we silently fall back to the regular font —
+            // log a one-time warning so this is debuggable.
+            let italicDescriptor = baseFont.fontDescriptor.withSymbolicTraits(.italic)
+            if let italicFont = NSFont(descriptor: italicDescriptor, size: fontSize) {
+                font = italicFont
+            } else {
+                Logger(subsystem: "rTerm", category: "GlyphAtlas")
+                    .warning("Italic font descriptor lookup failed for variant \(String(describing: variant)) — falling back to regular weight; italic-attributed cells will render as upright glyphs.")
+                font = baseFont
+            }
+        }
         let ctFont = font as CTFont
 
         // -- 2. Cell metrics --------------------------------------------------

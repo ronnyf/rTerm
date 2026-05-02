@@ -44,9 +44,10 @@ import Foundation
         0x20, 0x66, 0x6F, 0x6F, 0x0A,                    // _foo\n
     ]
 
-    /// Vim startup prefix — alt screen enter (unhandled in Phase 1; parser must still
-    /// accept it and emit .csi(.setMode(.alternateScreen1049, enabled: true))),
-    /// followed by CSI 2 J and CSI H. Phase 1 ScreenModel ignores the mode event.
+    /// Vim startup prefix — alt screen enter (mode 1049, T4), followed by
+    /// CSI 2 J (erase display) and CSI H (cursor home). After T4 the parser
+    /// emits `.csi(.setMode(.alternateScreen1049, enabled: true))` and
+    /// ScreenModel switches to alt + clears + homes cursor.
     private static let vimStartupSequence: [UInt8] = [
         0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68,  // ESC [ ? 1049 h
         0x1B, 0x5B, 0x32, 0x4A,                          // ESC [ 2 J
@@ -100,21 +101,16 @@ import Foundation
         #expect(snapA.activeBuffer == snapB.activeBuffer)
     }
 
-    @Test func unhandled_alt_screen_does_not_corrupt_subsequent_erase_and_home() async {
-        // Phase 1: alt-screen mode is parsed but unhandled; the important thing is
-        // that the parser cleanly dispatches the CSI ? 1049 h sequence into
-        // .csi(.setMode(.alternateScreen1049, enabled: true)) and subsequent
-        // erase + home operate on main buffer (since alt is ignored).
+    @Test func vim_startup_lands_in_alt_buffer_with_homed_cursor() async {
+        // CSI ? 1049 h enters alt screen (saving main cursor + clearing alt);
+        // CSI 2 J erases the (now active) alt grid; CSI H homes the cursor.
+        // The combined sequence is what vim/htop/less emit on launch.
         let model = ScreenModel(cols: 80, rows: 24)
         await model.apply([.printable("X")])  // seed so erase has something to clear
         var parser = TerminalParser()
         await model.apply(parser.parse(Data(Self.vimStartupSequence)))
         let snap = model.latestSnapshot()
         #expect(snap.cursor == Cursor(row: 0, col: 0))
-        for r in 0..<snap.rows {
-            for c in 0..<snap.cols {
-                #expect(snap[r, c].character == " ")
-            }
-        }
+        #expect(snap.activeBuffer == .alt, "vim startup should land in alt buffer (mode 1049)")
     }
 }

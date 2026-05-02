@@ -24,6 +24,13 @@ import Dispatch
 import os
 import Synchronization
 
+/// Inclusive 0-indexed row range that limits where natural scrolls move data.
+/// `nil` `scrollRegion` on a `Buffer` means full-screen (default).
+private struct ScrollRegion: Sendable, Equatable {
+    var top: Int       // 0-indexed inclusive
+    var bottom: Int    // 0-indexed inclusive
+}
+
 /// The terminal screen model: owns a grid of cells, processes terminal events,
 /// and publishes snapshots for the renderer.
 ///
@@ -48,14 +55,13 @@ public actor ScreenModel {
     /// is provided, a private serial queue is created automatically.
     private let executorQueue: DispatchSerialQueue
 
-    /// Flat row-major grid storage: `grid[row * cols + col]`.
-    private var grid: ContiguousArray<Cell>
-
-    /// Current write position.
-    private var cursor: Cursor
-
-    /// CSI s / u save/restore state.
-    private var savedCursor: Cursor?
+    /// Per-buffer mutable grid + cursor state. The active buffer (selected by
+    /// ``activeKind``) is the one mutated by event handlers; the inactive one
+    /// is preserved in place so alt-screen swap (Phase 2 T4) only flips the
+    /// selector.
+    private var main: Buffer
+    private var alt: Buffer
+    private var activeKind: BufferKind = .main
 
     /// Current SGR pen — stamped onto every cell written via `handlePrintable`.
     /// Mutated by `applySGR`; reset to `.default` on SGR `0`.
@@ -68,6 +74,14 @@ public actor ScreenModel {
     /// semantics — OSC 0 updates both, OSC 1 updates only `iconName`, OSC 2
     /// updates only `windowTitle`.
     private var iconName: String? = nil
+
+    /// DEC private modes (DECAWM / DECTCEM / DECCKM / bracketed paste).
+    /// Persists across buffer swap (T4); set via `handleCSI(.setMode(...))`.
+    private var modes: TerminalModes = .default
+
+    /// Monotonic count of `BEL` (0x07) events received. Renderer side (T9)
+    /// observes deltas and triggers `NSSound.beep()` on the MainActor.
+    private var bellCount: UInt64 = 0
 
     /// Number of columns.
     public let cols: Int
@@ -90,12 +104,92 @@ public actor ScreenModel {
     /// Lock-protected snapshot cache for synchronous renderer access.
     private let _latestSnapshot: Mutex<SnapshotBox>
 
+    // MARK: - Scrollback history (Phase 2 T6)
+
+    /// Bounded scrollback history (main buffer only). Mutated in place when the
+    /// main buffer scrolls naturally; alt activity never touches this.
+    private var history: ScrollbackHistory
+
+    /// Capacity (also seeds the history container at init).
+    public let historyCapacity: Int
+
+    /// Heap-boxed nonisolated mirror of the most-recent `publishedHistoryTailSize`
+    /// rows. Updated whenever `history` grows. Renderer reads via
+    /// `latestHistoryTail()` without an actor hop.
+    private final class HistoryBox: Sendable {
+        let rows: ContiguousArray<ScrollbackHistory.Row>
+        init(_ rows: ContiguousArray<ScrollbackHistory.Row>) { self.rows = rows }
+    }
+    private let _latestHistoryTail: Mutex<HistoryBox>
+
+    /// Number of most-recent history rows kept in the published nonisolated tail.
+    /// 1000 rows × 80 cols × ~32 B ≈ 2.5 MB. Phase 3's fetchHistory RPC can
+    /// expand this to deep backscroll without growing the published tail.
+    private static let publishedHistoryTailSize = 1000
+
+    /// Number of history rows transferred via `AttachPayload.recentHistory` on
+    /// cold attach. Smaller than `publishedHistoryTailSize` to keep the XPC
+    /// payload bounded; the full published tail stays available locally on
+    /// the daemon side.
+    private static let attachPayloadRowCap = 500
+
+    /// Set by handlers when a row is pushed to `history`; consumed at end of
+    /// `apply(_:)` to publish a fresh history tail to `_latestHistoryTail`
+    /// **before** the snapshot is published. Coupling the two publishes in
+    /// strict order keeps render-thread reads coherent without a combined lock.
+    private var pendingHistoryPublish: Bool = false
+
     private let log = Logger.TermCore.screenModel
 
     // MARK: - Custom executor
 
     nonisolated public var unownedExecutor: UnownedSerialExecutor {
         executorQueue.asUnownedSerialExecutor()
+    }
+
+    // MARK: - Buffer
+
+    /// Per-buffer mutable state. Both `main` and `alt` are full instances;
+    /// `activeKind` selects which one event handlers mutate.
+    private struct Buffer: Sendable {
+        var grid: ContiguousArray<Cell>
+        var cursor: Cursor
+        var savedCursor: Cursor?
+        var scrollRegion: ScrollRegion?
+
+        init(rows: Int, cols: Int) {
+            self.grid = ContiguousArray(repeating: .empty, count: rows * cols)
+            self.cursor = Cursor(row: 0, col: 0)
+            self.savedCursor = nil
+            self.scrollRegion = nil
+        }
+
+        /// True when the cursor has stepped past either the screen's last row
+        /// or the active scroll region's bottom. Both `handlePrintable`'s wrap
+        /// path and `handleC0`'s LF/VT/FF path use this to decide when to call
+        /// the scroll dispatcher. The region-bottom-overflow case is what makes
+        /// DECSTBM scroll only the region instead of the full screen.
+        func shouldScroll(rows: Int) -> Bool {
+            if cursor.row >= rows { return true }
+            if let region = scrollRegion { return cursor.row > region.bottom }
+            return false
+        }
+    }
+
+    // MARK: - Active-buffer access
+
+    /// Yields an inout reference to whichever buffer is currently active.
+    /// All event handlers that mutate per-buffer state route through here.
+    private func mutateActive<R>(_ body: (inout Buffer) -> R) -> R {
+        switch activeKind {
+        case .main: return body(&main)
+        case .alt:  return body(&alt)
+        }
+    }
+
+    /// Read-only view of the currently active buffer.
+    private var active: Buffer {
+        activeKind == .main ? main : alt
     }
 
     // MARK: - Initialization
@@ -105,31 +199,45 @@ public actor ScreenModel {
     /// - Parameters:
     ///   - cols: Number of columns (default 80).
     ///   - rows: Number of rows (default 24).
+    ///   - historyCapacity: Maximum number of scrollback rows retained on the
+    ///     main buffer (default 10_000). Alt-buffer activity never feeds
+    ///     history. Used as the seed capacity for ``ScrollbackHistory``; carried
+    ///     in `AttachPayload` so the client mirror sizes its own ring buffer
+    ///     to match the daemon's.
     ///   - queue: Optional serial dispatch queue to use as the actor's
     ///     executor. When `nil`, a private serial queue is created. Pass the
     ///     daemon queue here to enable synchronous `assumeIsolated` access
     ///     from the daemon's dispatch context.
-    public init(cols: Int = 80, rows: Int = 24, queue: DispatchQueue? = nil) {
+    public init(cols: Int = 80, rows: Int = 24,
+                historyCapacity: Int = 10_000,
+                queue: DispatchQueue? = nil) {
         let q = queue ?? DispatchQueue(label: "com.ronnyf.TermCore.ScreenModel")
         // swiftlint:disable:next force_cast
         self.executorQueue = q as! DispatchSerialQueue
         self.cols = cols
         self.rows = rows
-        let cursor = Cursor(row: 0, col: 0)
-        self.cursor = cursor
-        let grid = ContiguousArray(repeating: Cell.empty, count: rows * cols)
-        self.grid = grid
+        self.historyCapacity = historyCapacity
+        self.history = ScrollbackHistory(capacity: historyCapacity)
+        let main = Buffer(rows: rows, cols: cols)
+        let alt = Buffer(rows: rows, cols: cols)
+        self.main = main
+        self.alt = alt
         let initial = ScreenSnapshot(
-            activeCells: grid,
+            activeCells: main.grid,
             cols: cols,
             rows: rows,
-            cursor: cursor,
+            cursor: main.cursor,
             cursorVisible: true,
             activeBuffer: .main,
             windowTitle: nil,
+            cursorKeyApplication: false,
+            bracketedPaste: false,
+            bellCount: 0,
+            autoWrap: true,
             version: 0
         )
         self._latestSnapshot = Mutex(SnapshotBox(initial))
+        self._latestHistoryTail = Mutex(HistoryBox([]))
     }
 
     // MARK: - Event processing
@@ -166,6 +274,14 @@ public actor ScreenModel {
         }
         if changed {
             version &+= 1
+            // Publish history FIRST so a renderer reading both nonisolated
+            // mutexes between these two calls sees history newer than snapshot
+            // (briefly-duplicate row at scrollOffset > 0 is the lesser evil
+            // versus a briefly-missing row).
+            if pendingHistoryPublish {
+                publishHistoryTail()
+                pendingHistoryPublish = false
+            }
             publishSnapshot()
         }
     }
@@ -173,104 +289,191 @@ public actor ScreenModel {
     /// Build a fresh snapshot from the current state and swap it into the
     /// lock-protected cache. Called only when `apply(_:)` reports a real change.
     private func publishSnapshot() {
-        let snap = ScreenSnapshot(
-            activeCells: grid,
+        let snap = makeSnapshot(from: active)
+        _latestSnapshot.withLock { $0 = SnapshotBox(snap) }
+    }
+
+    /// Publish the most recent N history rows to the nonisolated mutex so the
+    /// renderer can read them without `await`. Called whenever a row is pushed
+    /// to history.
+    private func publishHistoryTail() {
+        let tail = history.tail(Self.publishedHistoryTailSize)
+        _latestHistoryTail.withLock { $0 = HistoryBox(tail) }
+    }
+
+    /// Construct a `ScreenSnapshot` from the given buffer plus the current
+    /// terminal-wide state (modes, bell count, title, version). Shared between
+    /// `publishSnapshot` (the cache update path) and the actor-isolated
+    /// `snapshot()` accessor so adding a snapshot field needs only one edit.
+    private func makeSnapshot(from buf: Buffer) -> ScreenSnapshot {
+        ScreenSnapshot(
+            activeCells: buf.grid,
             cols: cols,
             rows: rows,
-            cursor: snapshotCursor(),
-            cursorVisible: true,   // Phase 2 will use modes.cursorVisible
-            activeBuffer: .main,   // Phase 2 tracks alt
+            cursor: snapshotCursor(from: buf),
+            cursorVisible: modes.cursorVisible,
+            activeBuffer: activeKind,
             windowTitle: windowTitle,
+            cursorKeyApplication: modes.cursorKeyApplication,
+            bracketedPaste: modes.bracketedPaste,
+            bellCount: bellCount,
+            autoWrap: modes.autoWrap,
             version: version
         )
-        _latestSnapshot.withLock { $0 = SnapshotBox(snap) }
     }
 
     // MARK: - Event handlers (all return Bool; true = state mutated = version bump)
 
     private func handlePrintable(_ char: Character) -> Bool {
-        if cursor.col >= cols {
-            cursor.col = 0
-            cursor.row += 1
-            if cursor.row >= rows { scrollUp() }
+        let pen = self.pen
+        let autoWrap = modes.autoWrap
+        let isMain = (activeKind == .main)
+        var evictedRow: ScrollbackHistory.Row? = nil
+        let result = mutateActive { buf in
+            if buf.cursor.col >= cols {
+                if autoWrap {
+                    buf.cursor.col = 0
+                    buf.cursor.row += 1
+                    if buf.shouldScroll(rows: rows) {
+                        evictedRow = Self.scrollAndMaybeEvict(in: &buf, cols: cols, rows: rows, isMain: isMain)
+                    }
+                } else {
+                    // DECAWM off: writes overwrite the last column without wrapping.
+                    buf.cursor.col = cols - 1
+                }
+            }
+            buf.grid[buf.cursor.row * cols + buf.cursor.col] = Cell(character: char, style: pen)
+            // With autoWrap on, advance unconditionally (the deferred-wrap guard
+            // at the top of the next call will resolve col == cols).
+            // With autoWrap off (DECAWM-off), stop at cols-1 so the cursor never
+            // exceeds the grid boundary and subsequent writes keep overwriting that
+            // last column — xterm DECAWM-off semantics.
+            if autoWrap || buf.cursor.col < cols - 1 {
+                buf.cursor.col += 1
+            }
+            return true
         }
-        grid[cursor.row * cols + cursor.col] = Cell(character: char, style: pen)
-        cursor.col += 1
-        return true
+        if let evictedRow {
+            history.push(evictedRow)
+            pendingHistoryPublish = true
+        }
+        return result
     }
 
     private func handleC0(_ control: C0Control) -> Bool {
         switch control {
-        case .nul, .bell, .shiftOut, .shiftIn, .delete:
+        case .nul, .shiftOut, .shiftIn, .delete:
             return false
+        case .bell:
+            bellCount &+= 1
+            return true   // snapshot includes bellCount; renderer observes delta.
         case .backspace:
-            guard cursor.col > 0 else { return false }
-            cursor.col -= 1
-            return true
+            return mutateActive { buf in
+                guard buf.cursor.col > 0 else { return false }
+                buf.cursor.col -= 1
+                return true
+            }
         case .horizontalTab:
-            let next = min(cols - 1, ((cursor.col / 8) + 1) * 8)
-            guard next != cursor.col else { return false }
-            cursor.col = next
-            return true
+            return mutateActive { buf in
+                let next = min(cols - 1, ((buf.cursor.col / 8) + 1) * 8)
+                guard next != buf.cursor.col else { return false }
+                buf.cursor.col = next
+                return true
+            }
         case .lineFeed, .verticalTab, .formFeed:
-            cursor.col = 0
-            cursor.row += 1
-            if cursor.row >= rows { scrollUp() }
-            return true
+            let isMain = (activeKind == .main)
+            var evictedRow: ScrollbackHistory.Row? = nil
+            let result = mutateActive { buf in
+                buf.cursor.col = 0
+                buf.cursor.row += 1
+                if buf.shouldScroll(rows: rows) {
+                    evictedRow = Self.scrollAndMaybeEvict(in: &buf, cols: cols, rows: rows, isMain: isMain)
+                }
+                return true
+            }
+            if let evictedRow {
+                history.push(evictedRow)
+                pendingHistoryPublish = true
+            }
+            return result
         case .carriageReturn:
-            guard cursor.col != 0 else { return false }
-            cursor.col = 0
-            return true
+            return mutateActive { buf in
+                guard buf.cursor.col != 0 else { return false }
+                buf.cursor.col = 0
+                return true
+            }
         }
     }
 
-    private func clampCursor() {
-        cursor.row = max(0, min(rows - 1, cursor.row))
-        cursor.col = max(0, min(cols - 1, cursor.col))
+    private func clampCursor(in buf: inout Buffer) {
+        buf.cursor.row = max(0, min(rows - 1, buf.cursor.row))
+        buf.cursor.col = max(0, min(cols - 1, buf.cursor.col))
     }
 
     private func handleCSI(_ cmd: CSICommand) -> Bool {
         switch cmd {
         case .cursorUp(let n):
-            cursor.row -= max(1, n)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.row -= max(1, n)
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorDown(let n):
-            cursor.row += max(1, n)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.row += max(1, n)
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorForward(let n):
-            cursor.col += max(1, n)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.col += max(1, n)
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorBack(let n):
-            cursor.col -= max(1, n)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.col -= max(1, n)
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorPosition(let r, let c):
-            cursor.row = r
-            cursor.col = c
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.row = r
+                buf.cursor.col = c
+                clampCursor(in: &buf)
+                return true
+            }
         case .cursorHorizontalAbsolute(let n):
             // Parser emits VT 1-indexed value; shift to 0-indexed on consume.
-            cursor.col = max(0, n - 1)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.col = max(0, n - 1)
+                clampCursor(in: &buf)
+                return true
+            }
         case .verticalPositionAbsolute(let n):
-            cursor.row = max(0, n - 1)
-            clampCursor()
-            return true
+            return mutateActive { buf in
+                buf.cursor.row = max(0, n - 1)
+                clampCursor(in: &buf)
+                return true
+            }
         case .saveCursor:
-            savedCursor = cursor
-            return false    // Pure cursor state — snapshot unchanged.
+            return mutateActive { buf in
+                buf.savedCursor = buf.cursor
+                return false   // pure cursor state — no visible change.
+            }
         case .restoreCursor:
-            guard let saved = savedCursor else { return false }
-            cursor = saved
-            clampCursor()
-            return true
+            return restoreActiveCursor()
         case .eraseInDisplay(let region):
+            // ED 3 (.scrollback) clears history on top of clearing the grid.
+            // The history mutation must happen OUTSIDE the eraseInDisplay
+            // closure since `mutateActive` already holds inout to a Buffer
+            // and `self.history` is actor-isolated state we can't alias.
+            let clearsScrollback = (region == .scrollback)
             eraseInDisplay(region)
+            if clearsScrollback && activeKind == .main {
+                history = ScrollbackHistory(capacity: historyCapacity)
+                pendingHistoryPublish = true
+            }
             return true
         case .eraseInLine(let region):
             eraseInLine(region)
@@ -278,8 +481,12 @@ public actor ScreenModel {
         case .sgr(let attrs):
             applySGR(attrs)
             return false    // Pen change alone — grid unchanged.
-        case .setMode, .setScrollRegion, .unknown:
-            return false    // Handled in later tasks / phases.
+        case .setMode(let mode, let enabled):
+            return handleSetMode(mode, enabled: enabled)
+        case .setScrollRegion(let top, let bottom):
+            return handleSetScrollRegion(top: top, bottom: bottom)
+        case .unknown:
+            return false
         }
     }
 
@@ -323,27 +530,33 @@ public actor ScreenModel {
     }
 
     private func eraseInDisplay(_ region: EraseRegion) {
-        let idx = cursor.row * cols + cursor.col
-        switch region {
-        case .toEnd:
-            for i in idx..<(rows * cols) { grid[i] = Cell(character: " ") }
-        case .toBegin:
-            for i in 0...idx where i < rows * cols { grid[i] = Cell(character: " ") }
-        case .all, .scrollback:
-            // .scrollback is Phase 2; treat as .all for Phase 1.
-            for i in 0..<(rows * cols) { grid[i] = Cell(character: " ") }
+        mutateActive { buf in
+            let idx = buf.cursor.row * cols + buf.cursor.col
+            switch region {
+            case .toEnd:
+                for i in idx..<(rows * cols) { buf.grid[i] = .empty }
+            case .toBegin:
+                for i in 0...idx where i < rows * cols { buf.grid[i] = .empty }
+            case .all, .scrollback:
+                // Both clear the visible grid. .scrollback (ED 3) additionally
+                // clears self.history; that side-effect happens at the call
+                // site in handleCSI since mutateActive holds the buffer inout.
+                for i in 0..<(rows * cols) { buf.grid[i] = .empty }
+            }
         }
     }
 
     private func eraseInLine(_ region: EraseRegion) {
-        let rowStart = cursor.row * cols
-        switch region {
-        case .toEnd:
-            for c in cursor.col..<cols { grid[rowStart + c] = Cell(character: " ") }
-        case .toBegin:
-            for c in 0...cursor.col where c < cols { grid[rowStart + c] = Cell(character: " ") }
-        case .all, .scrollback:
-            for c in 0..<cols { grid[rowStart + c] = Cell(character: " ") }
+        mutateActive { buf in
+            let rowStart = buf.cursor.row * cols
+            switch region {
+            case .toEnd:
+                for c in buf.cursor.col..<cols { buf.grid[rowStart + c] = .empty }
+            case .toBegin:
+                for c in 0...buf.cursor.col where c < cols { buf.grid[rowStart + c] = .empty }
+            case .all, .scrollback:
+                for c in 0..<cols { buf.grid[rowStart + c] = .empty }
+            }
         }
     }
 
@@ -373,11 +586,58 @@ public actor ScreenModel {
             snapshot.activeCells.count == snapshot.rows * snapshot.cols,
             "Snapshot has \(snapshot.activeCells.count) cells; expected \(snapshot.rows * snapshot.cols)"
         )
-        self.grid = snapshot.activeCells
-        self.cursor = snapshot.cursor
+        // Restore into the buffer indicated by the snapshot. The other buffer is
+        // reset to a fresh empty state — when the daemon hasn't recorded alt
+        // contents (Phase 2 doesn't carry alt grids over the wire), starting alt
+        // from blank is the only safe default.
+        var seeded = Buffer(rows: rows, cols: cols)
+        seeded.grid = snapshot.activeCells
+        seeded.cursor = snapshot.cursor
+        switch snapshot.activeBuffer {
+        case .main:
+            self.main = seeded
+            self.alt = Buffer(rows: rows, cols: cols)
+        case .alt:
+            self.alt = seeded
+            self.main = Buffer(rows: rows, cols: cols)
+        }
+        self.activeKind = snapshot.activeBuffer
         self.windowTitle = snapshot.windowTitle
+        self.modes = TerminalModes(
+            autoWrap: snapshot.autoWrap,
+            cursorVisible: snapshot.cursorVisible,
+            cursorKeyApplication: snapshot.cursorKeyApplication,
+            bracketedPaste: snapshot.bracketedPaste
+        )
+        self.bellCount = snapshot.bellCount
         self.version = snapshot.version
         publishSnapshot()
+    }
+
+    /// Restore from a full attach payload. Live state comes from `payload.snapshot`
+    /// (same shape as `restore(from snapshot:)`); the local history is seeded with
+    /// `payload.recentHistory` so the user's scrollback survives detach/reattach.
+    ///
+    /// The published history tail is cleared **before** the live restore so the
+    /// renderer cannot briefly composite an alien (pre-restore) history tail
+    /// above a freshly-restored live grid. With this ordering the renderer
+    /// either sees an empty tail (drawn live-only) or the new tail (drawn
+    /// correctly) — never a stale-mixed frame.
+    ///
+    /// Note: the tail stays empty from the clear at the top of this function
+    /// through the `publishHistoryTail()` call at the end. A renderer reading
+    /// both mutexes during that window draws live-only (scrollOffset > 0
+    /// shows nothing above the grid), which is the intended "lesser evil"
+    /// versus a stale-mixed frame.
+    public func restore(from payload: AttachPayload) {
+        _latestHistoryTail.withLock { $0 = HistoryBox([]) }
+        restore(from: payload.snapshot)
+        let cap = payload.historyCapacity > 0 ? payload.historyCapacity : historyCapacity
+        self.history = ScrollbackHistory(capacity: cap)
+        for row in payload.recentHistory {
+            history.push(row)
+        }
+        publishHistoryTail()
     }
 
     // MARK: - Snapshot access
@@ -388,16 +648,7 @@ public actor ScreenModel {
     /// pending (`col >= cols`), the snapshot cursor reports the position the
     /// next printable character would land at.
     public func snapshot() -> ScreenSnapshot {
-        ScreenSnapshot(
-            activeCells: grid,
-            cols: cols,
-            rows: rows,
-            cursor: snapshotCursor(),
-            cursorVisible: true,
-            activeBuffer: .main,
-            windowTitle: windowTitle,
-            version: version
-        )
+        makeSnapshot(from: active)
     }
 
     /// Returns the current window title set via OSC 0 / OSC 2, or `nil` if the
@@ -431,15 +682,40 @@ public actor ScreenModel {
         _latestSnapshot.withLock { $0.snapshot }
     }
 
+    /// Returns the published history tail (most recent rows, chronological order).
+    ///
+    /// `nonisolated`, lock-protected pointer load — safe from any thread including
+    /// the render thread. Returns at most `publishedHistoryTailSize` rows. The
+    /// renderer composites these above the live grid when `scrollOffset > 0`
+    /// (T10 wires the scrollback UI on top of this accessor).
+    nonisolated public func latestHistoryTail() -> ContiguousArray<ScrollbackHistory.Row> {
+        _latestHistoryTail.withLock { $0.rows }
+    }
+
     /// Build an `AttachPayload` from the currently-published snapshot.
     ///
     /// `nonisolated` so the daemon's attach path (running on the same daemon
     /// queue that backs the actor executor) can call this without an async
-    /// hop. In Phase 1 `recentHistory` is always empty — the payload shape
-    /// exists so Phase 2 can add history without a protocol break.
+    /// hop. Populates `recentHistory` with the last 500 rows of the published
+    /// history tail when the main buffer is active; returns an empty
+    /// `recentHistory` when alt is active (alt-screen apps like vim/htop don't
+    /// need scrollback to be transferred — the user's main-buffer history is
+    /// preserved on detach but only surfaced after they exit alt).
     nonisolated public func buildAttachPayload() -> AttachPayload {
         let snap = _latestSnapshot.withLock { $0.snapshot }
-        return AttachPayload(snapshot: snap, recentHistory: [], historyCapacity: 0)
+        let rows: ContiguousArray<ScrollbackHistory.Row>
+        if snap.activeBuffer == .main {
+            let tail = _latestHistoryTail.withLock { $0.rows }
+            let cap = Self.attachPayloadRowCap
+            rows = tail.count > cap ? ContiguousArray(tail.suffix(cap)) : tail
+        } else {
+            rows = []
+        }
+        return AttachPayload(
+            snapshot: snap,
+            recentHistory: rows,
+            historyCapacity: historyCapacity
+        )
     }
 
     // MARK: - Private helpers
@@ -447,32 +723,219 @@ public actor ScreenModel {
     /// Compute the cursor position for a snapshot. When a deferred wrap is
     /// pending (`col >= cols`), the returned cursor is at the start of the
     /// next row (or the last row if a scroll would occur).
-    private func snapshotCursor() -> Cursor {
-        guard cursor.col >= cols else { return cursor }
-        let nextRow = cursor.row + 1
-        if nextRow >= rows {
-            return Cursor(row: rows - 1, col: 0)
-        }
+    private func snapshotCursor(from buf: Buffer) -> Cursor {
+        let c = buf.cursor
+        guard c.col >= cols else { return c }
+        let nextRow = c.row + 1
+        if nextRow >= rows { return Cursor(row: rows - 1, col: 0) }
         return Cursor(row: nextRow, col: 0)
     }
 
-    /// Shift all rows up by one, discarding row 0 and filling the last row
-    /// with empty cells. Cursor row is clamped to `rows - 1`.
-    private func scrollUp() {
-        // Move rows 1..<rows into 0..<rows-1 in the flat array.
+    /// Scroll the active buffer and return the evicted top row when applicable
+    /// for history feed (main buffer + scroll covered the full screen).
+    /// Returns nil when:
+    /// - alt buffer (history feed disabled)
+    /// - region-internal scroll (region scrolls don't feed history)
+    ///
+    /// Static so it cannot accidentally read `self.history` / `self.activeKind`
+    /// / `self.main` / `self.alt` from inside the `mutateActive` closure
+    /// (which already holds an inout reference to one of `self.main`/`self.alt`).
+    /// Helpers that operate purely on the inout `Buffer` are safe inside
+    /// `mutateActive`; Swift's exclusivity rule is only violated when a helper
+    /// would alias the same actor storage already mutably-borrowed.
+    private static func scrollAndMaybeEvict(in buf: inout Buffer, cols: Int, rows: Int, isMain: Bool) -> ScrollbackHistory.Row? {
         let stride = cols
+        if let region = buf.scrollRegion {
+            // Cursor is at row == region.bottom + 1 when the LF/wrap that took
+            // us here originated INSIDE the region (cursor was at region.bottom
+            // and the row++ stepped one past).
+            if buf.cursor.row - 1 == region.bottom {
+                // Region scroll up — discard top-of-region row (region scrolls
+                // never feed history per spec §4).
+                for dstRow in region.top ..< region.bottom {
+                    let srcStart = (dstRow + 1) * stride
+                    let dstStart = dstRow * stride
+                    for col in 0 ..< stride {
+                        buf.grid[dstStart + col] = buf.grid[srcStart + col]
+                    }
+                }
+                let bottomStart = region.bottom * stride
+                for col in 0 ..< stride {
+                    buf.grid[bottomStart + col] = .empty
+                }
+                buf.cursor.row = region.bottom
+                return nil
+            }
+            // Cursor was below the region (region.bottom < rows - 1) and stepped
+            // past the last screen row — per xterm, this still triggers a
+            // full-screen scroll. Pre-region rows ride along and the top row of
+            // the screen evicts. When main, that evicted row feeds history.
+            // Fall through to the full-screen branch below.
+        }
+        // Full-screen scroll.
+        var evicted: ScrollbackHistory.Row? = nil
+        if isMain {
+            var top = ScrollbackHistory.Row()
+            top.reserveCapacity(stride)
+            for col in 0 ..< stride {
+                top.append(buf.grid[col])
+            }
+            evicted = top
+        }
         for dstRow in 0 ..< (rows - 1) {
             let srcStart = (dstRow + 1) * stride
             let dstStart = dstRow * stride
             for col in 0 ..< stride {
-                grid[dstStart + col] = grid[srcStart + col]
+                buf.grid[dstStart + col] = buf.grid[srcStart + col]
             }
         }
-        // Clear the last row.
         let lastRowStart = (rows - 1) * stride
         for col in 0 ..< stride {
-            grid[lastRowStart + col] = Cell.empty
+            buf.grid[lastRowStart + col] = .empty
         }
-        cursor.row = rows - 1
+        buf.cursor.row = rows - 1
+        return evicted
+    }
+
+    /// Clear `buf`'s grid in place. Cursor is left untouched — callers that
+    /// need a cursor reset do it explicitly. Static so it can be invoked on
+    /// any named buffer (`main`/`alt`) directly without going through
+    /// `mutateActive`, which is what 1049/1047 enter/exit paths need.
+    private static func clearGrid(in buf: inout Buffer, cols: Int, rows: Int) {
+        let total = rows * cols
+        for i in 0..<total { buf.grid[i] = .empty }
+    }
+
+    /// Restore the active buffer's `savedCursor` (set via DECSC/`CSI s` or 1048
+    /// enable). Returns `true` when a saved cursor existed and the cursor moved;
+    /// `false` when nothing was saved (idempotent — no version bump).
+    private func restoreActiveCursor() -> Bool {
+        mutateActive { buf in
+            guard let saved = buf.savedCursor else { return false }
+            buf.cursor = saved
+            clampCursor(in: &buf)
+            return true
+        }
+    }
+
+    /// Apply a `CSI ? Pm h/l` mode change. Returns `true` when the change
+    /// produces a state mutation that should be reflected in a new snapshot
+    /// (all four wired user modes — DECAWM, DECTCEM, DECCKM, bracketed paste —
+    /// each surface as a snapshot field). Returns `false` for idempotent
+    /// no-ops, alt-screen modes (T4), and unknown modes.
+    private func handleSetMode(_ mode: DECPrivateMode, enabled: Bool) -> Bool {
+        switch mode {
+        case .autoWrap:
+            guard modes.autoWrap != enabled else { return false }
+            modes.autoWrap = enabled
+            return true
+        case .cursorVisible:
+            guard modes.cursorVisible != enabled else { return false }
+            modes.cursorVisible = enabled
+            return true
+        case .cursorKeyApplication:
+            guard modes.cursorKeyApplication != enabled else { return false }
+            modes.cursorKeyApplication = enabled
+            return true
+        case .bracketedPaste:
+            guard modes.bracketedPaste != enabled else { return false }
+            modes.bracketedPaste = enabled
+            return true
+        case .alternateScreen47, .alternateScreen1047,
+             .alternateScreen1049, .saveCursor1048:
+            return handleAltScreen(mode, enabled: enabled)
+        case .unknown:
+            return false
+        }
+    }
+
+    /// Apply DECSTBM. `top` and `bottom` are 1-indexed VT values straight from
+    /// the parser (or nil for "use screen edge"). After validation, store on the
+    /// active buffer's `scrollRegion` as 0-indexed inclusive bounds. Invalid ranges
+    /// (top >= bottom, out of [0..<rows]) are rejected silently — the existing
+    /// region stays in place. Returns `false` because the change is not visible
+    /// in the current snapshot (it only affects future scroll behavior).
+    private func handleSetScrollRegion(top: Int?, bottom: Int?) -> Bool {
+        // nil/nil = reset to full screen.
+        if top == nil && bottom == nil {
+            mutateActive { $0.scrollRegion = nil }
+            return false
+        }
+        let topZero = (top ?? 1) - 1          // VT 1-indexed → 0-indexed
+        let botZero = (bottom ?? rows) - 1
+        // Validate.
+        guard topZero >= 0, botZero < rows, topZero < botZero else {
+            return false
+        }
+        mutateActive { $0.scrollRegion = ScrollRegion(top: topZero, bottom: botZero) }
+        return false
+    }
+
+    /// Handle the alt-screen-related DEC private modes (47 / 1047 / 1048 / 1049).
+    /// Returns `true` when the operation changes visible state (grid, cursor
+    /// position, or active buffer). Returns `false` for pure cursor saves
+    /// (1048 enabled), idempotent toggles, and unhandled modes.
+    private func handleAltScreen(_ mode: DECPrivateMode, enabled: Bool) -> Bool {
+        switch mode {
+        case .saveCursor1048:
+            // Save / restore cursor on the active buffer's `savedCursor` slot —
+            // when alt is active, 1048 still works against alt; matches xterm.
+            if enabled {
+                mutateActive { buf in buf.savedCursor = buf.cursor }
+                return false   // pure state, no grid or cursor change
+            } else {
+                return restoreActiveCursor()
+            }
+
+        case .alternateScreen47:
+            // Legacy: switch buffers without save/restore and without clearing.
+            let target: BufferKind = enabled ? .alt : .main
+            guard activeKind != target else { return false }
+            activeKind = target
+            return true
+
+        case .alternateScreen1047:
+            // Switch + clear-on-leave (per xterm). No cursor save/restore wrap;
+            // alt's cursor persists across re-entry within a session.
+            if enabled {
+                guard activeKind != .alt else { return false }
+                activeKind = .alt
+                Self.clearGrid(in: &alt, cols: cols, rows: rows)
+                return true
+            } else {
+                guard activeKind == .alt else { return false }
+                // Clear alt before switching so it's blank on next entry.
+                // Do NOT touch alt.cursor — xterm leaves it where it is so
+                // re-entry keeps the prior position even though grid was cleared.
+                Self.clearGrid(in: &alt, cols: cols, rows: rows)
+                activeKind = .main
+                return true
+            }
+
+        case .alternateScreen1049:
+            // Save main cursor on enter; restore on exit. Always clears alt on enter.
+            if enabled {
+                guard activeKind != .alt else { return false }
+                main.savedCursor = main.cursor
+                activeKind = .alt
+                Self.clearGrid(in: &alt, cols: cols, rows: rows)
+                alt.cursor = Cursor(row: 0, col: 0)
+                return true
+            } else {
+                guard activeKind == .alt else { return false }
+                // Clear alt grid; alt.cursor will be reset on the next 1049 enter
+                // so we don't bother resetting it here.
+                Self.clearGrid(in: &alt, cols: cols, rows: rows)
+                activeKind = .main
+                if let saved = main.savedCursor {
+                    main.cursor = saved
+                    clampCursor(in: &main)
+                }
+                return true
+            }
+
+        default:
+            return false   // unreachable: handleSetMode filters to alt-screen modes
+        }
     }
 }

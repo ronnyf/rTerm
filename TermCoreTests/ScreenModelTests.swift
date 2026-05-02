@@ -162,9 +162,9 @@ struct ScreenModelTests {
         #expect(snap.cursor == Cursor(row: 0, col: 2))
     }
 
-    // MARK: - Bell is no-op
+    // MARK: - Bell does not affect cursor or grid
 
-    @Test func bellIsNoOp() async {
+    @Test func bell_does_not_move_cursor_or_affect_grid() async {
         let model = ScreenModel(cols: 4, rows: 3)
         await model.apply([.printable("A"), .c0(.bell), .printable("B")])
         let snap = await model.snapshot()
@@ -537,5 +537,670 @@ struct ScreenModelVersionTests {
         let v0 = model.latestSnapshot().version
         await model.apply([.csi(.cursorPosition(row: 5, col: 5))])
         #expect(model.latestSnapshot().version == v0 + 1)
+    }
+}
+
+// MARK: - DEC private modes (Phase 2 T3)
+
+struct ScreenModelModeTests {
+
+    @Test("DECAWM disable: writing past last column overwrites the last cell")
+    func test_decawm_off_overwrites_last_column() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        // Disable autoWrap.
+        await model.apply([.csi(.setMode(.autoWrap, enabled: false))])
+        // Fill the row past its end.
+        let chars: [TerminalEvent] = "abcdefg".map { .printable($0) }
+        await model.apply(chars)
+        let snap = model.latestSnapshot()
+        // Row 0: "abcdg" — the first 4 cells hold abcd; the last cell holds the
+        // most-recently-written byte (g) because each subsequent write overwrites.
+        let row0: String = (0..<5).map { String(snap[0, $0].character) }.joined()
+        #expect(row0 == "abcdg")
+        // Cursor stayed on row 0; no wrap occurred.
+        #expect(snap.cursor.row == 0)
+    }
+
+    @Test("DECAWM re-enable: wrapping resumes after being turned back on")
+    func test_decawm_reenable_wraps() async {
+        let model = ScreenModel(cols: 3, rows: 2)
+        await model.apply([.csi(.setMode(.autoWrap, enabled: false))])
+        // Fill past the end with autoWrap off — cursor stays on row 0.
+        await model.apply("abcde".map { .printable($0) })
+        #expect(model.latestSnapshot().cursor.row == 0)
+        // Re-enable DECAWM, then write one more — should wrap to row 1.
+        await model.apply([
+            .csi(.setMode(.autoWrap, enabled: true)),
+            .printable("f"),
+        ])
+        #expect(model.latestSnapshot().cursor.row == 1)
+    }
+
+    @Test("DECTCEM disable: snapshot.cursorVisible reflects the change")
+    func test_dectcem_off() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.cursorVisible, enabled: false))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursorVisible == false)
+    }
+
+    @Test("DECCKM enable: snapshot.cursorKeyApplication = true")
+    func test_decckm_on() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.cursorKeyApplication, enabled: true))])
+        #expect(model.latestSnapshot().cursorKeyApplication == true)
+    }
+
+    @Test("Bracketed paste enable: snapshot.bracketedPaste = true")
+    func test_bracketed_paste_on() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.bracketedPaste, enabled: true))])
+        #expect(model.latestSnapshot().bracketedPaste == true)
+    }
+
+    @Test("Mode toggle to same value does not bump version")
+    func test_mode_toggle_idempotent() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.cursorKeyApplication, enabled: true))])
+        let v1 = model.latestSnapshot().version
+        await model.apply([.csi(.setMode(.cursorKeyApplication, enabled: true))])
+        let v2 = model.latestSnapshot().version
+        #expect(v1 == v2, "Idempotent mode set should not bump version")
+    }
+
+    // MARK: - Bell (Phase 2 T3)
+
+    @Test("BEL increments bellCount and bumps version")
+    func test_bell_increments_count() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let v0 = model.latestSnapshot().version
+        let b0 = model.latestSnapshot().bellCount
+        await model.apply([.c0(.bell)])
+        let snap = model.latestSnapshot()
+        #expect(snap.bellCount == b0 + 1)
+        #expect(snap.version == v0 + 1)
+    }
+
+    @Test("Three BELs in one batch increment bellCount by 3")
+    func test_bell_batch_count() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.c0(.bell), .c0(.bell), .c0(.bell)])
+        #expect(model.latestSnapshot().bellCount == 3)
+    }
+
+    // MARK: - Restore preserves modes + bellCount
+
+    @Test("restore(from:) re-seeds autoWrap, cursorKeyApplication, bracketedPaste, bellCount")
+    func test_restore_preserves_modes_and_bell() async {
+        let original = ScreenModel(cols: 80, rows: 24)
+        await original.apply([
+            .csi(.setMode(.autoWrap, enabled: false)),
+            .csi(.setMode(.cursorKeyApplication, enabled: true)),
+            .csi(.setMode(.bracketedPaste, enabled: true)),
+            .c0(.bell), .c0(.bell)
+        ])
+        let snap = original.latestSnapshot()
+        let restored = ScreenModel(cols: 80, rows: 24)
+        await restored.restore(from: snap)
+        let restoredSnap = restored.latestSnapshot()
+        #expect(restoredSnap.autoWrap == false,
+                "autoWrap=false must survive restore — otherwise client/daemon diverge on writes-past-margin")
+        #expect(restoredSnap.cursorKeyApplication == true)
+        #expect(restoredSnap.bracketedPaste == true)
+        #expect(restoredSnap.bellCount == 2)
+    }
+}
+
+// MARK: - Alt-screen modes (Phase 2 T4)
+
+struct ScreenModelAltScreenTests {
+
+    @Test("Mode 1049 enter saves main cursor, switches to alt (cleared), pen persists")
+    func test_alt_screen_1049_enter() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        // Write some main-buffer content; move cursor to (1, 2).
+        let main: [TerminalEvent] = [
+            .printable("a"), .printable("b"), .printable("c"),
+            .c0(.lineFeed),
+            .printable("d"), .printable("e"),
+        ]
+        await model.apply(main)
+        // Set a non-default pen so we can verify it persists across swap.
+        await model.apply([.csi(.sgr([.bold]))])
+        // Enter alt screen.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        let snap = model.latestSnapshot()
+        #expect(snap.activeBuffer == .alt)
+        #expect(snap.cursor == Cursor(row: 0, col: 0))
+        // Alt grid is cleared.
+        for r in 0..<3 {
+            for c in 0..<5 {
+                #expect(snap[r, c].character == " ")
+            }
+        }
+        // Pen persistence — write a char and verify it has bold.
+        await model.apply([.printable("x")])
+        let after = model.latestSnapshot()
+        #expect(after[0, 0].character == "x")
+        #expect(after[0, 0].style.attributes.contains(.bold))
+    }
+
+    @Test("Mode 1049 exit returns to main with cursor restored, alt cleared")
+    func test_alt_screen_1049_exit_restores_main() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        await model.apply([
+            .printable("a"), .printable("b"),
+            .c0(.lineFeed),
+        ])
+        // Cursor is now at (1, 0). Enter alt.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        // Write to alt.
+        await model.apply([.printable("z")])
+        // Exit alt.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        let snap = model.latestSnapshot()
+        #expect(snap.activeBuffer == .main)
+        // Main content is intact.
+        #expect(snap[0, 0].character == "a")
+        #expect(snap[0, 1].character == "b")
+        // Cursor restored to where main was when 1049-enter happened.
+        #expect(snap.cursor == Cursor(row: 1, col: 0))
+        // Re-enter alt and verify it's cleared (1049 enter clears every time).
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        let after = model.latestSnapshot()
+        for r in 0..<3 {
+            for c in 0..<5 {
+                #expect(after[r, c].character == " ")
+            }
+        }
+    }
+
+    @Test("Mode 1047 enter switches + clears alt; exit clears alt + switches back; alt cursor persists across re-entry")
+    func test_alt_screen_1047_cursor_persists_across_re_entry() async {
+        let model = ScreenModel(cols: 4, rows: 2)
+        await model.apply([
+            .printable("a"), .printable("b"),
+            .c0(.lineFeed),
+            .printable("c"),
+        ])
+        // Cursor at (1, 1) on main.
+        await model.apply([.csi(.setMode(.alternateScreen1047, enabled: true))])
+        let snap = model.latestSnapshot()
+        #expect(snap.activeBuffer == .alt)
+        // Move alt cursor away from origin so we can verify it persists.
+        // Land at col 2 + write 'Z' so the post-write cursor is (1, 3) — still
+        // in-bounds (cols=4) so snapshotCursor doesn't deferred-wrap.
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 2)),
+            .printable("Z"),
+        ])
+        // Cursor on alt is now (1, 3) just past 'Z' (in-bounds).
+        await model.apply([.csi(.setMode(.alternateScreen1047, enabled: false))])
+        let exited = model.latestSnapshot()
+        #expect(exited.activeBuffer == .main)
+        // Main cursor was wherever it was when we entered alt — 1047 doesn't save/restore.
+        // Re-enter alt: grid is cleared, but cursor persisted from last visit.
+        await model.apply([.csi(.setMode(.alternateScreen1047, enabled: true))])
+        let reentered = model.latestSnapshot()
+        #expect(reentered.activeBuffer == .alt)
+        // Grid is cleared (xterm 1047 clears on enter).
+        for r in 0..<2 {
+            for c in 0..<4 {
+                #expect(reentered[r, c].character == " ", "Alt grid is cleared on re-entry")
+            }
+        }
+        // Cursor persisted from last alt visit — distinguishes "1047 leaves alt
+        // cursor alone" from "alt was freshly allocated at origin". The previous
+        // alt visit left cursor at (1, 3) just past 'Z'.
+        #expect(reentered.cursor.row == 1)
+        #expect(reentered.cursor.col == 3)
+    }
+
+    @Test("Mode 47 toggles buffer without clear or cursor save (legacy)")
+    func test_alt_screen_47_legacy() async {
+        let model = ScreenModel(cols: 3, rows: 2)
+        await model.apply([.printable("x")])
+        await model.apply([.csi(.setMode(.alternateScreen47, enabled: true))])
+        let snap = model.latestSnapshot()
+        #expect(snap.activeBuffer == .alt)
+        // Mode 47 does NOT clear alt — but our alt was empty anyway.
+        // Write to alt, swap out, verify alt persists across swap.
+        await model.apply([.printable("y")])
+        await model.apply([.csi(.setMode(.alternateScreen47, enabled: false))])
+        #expect(model.latestSnapshot().activeBuffer == .main)
+        // Re-enter alt — y should still be there.
+        await model.apply([.csi(.setMode(.alternateScreen47, enabled: true))])
+        #expect(model.latestSnapshot()[0, 0].character == "y")
+    }
+
+    @Test("Mode 1048 saves cursor without buffer switch")
+    func test_save_cursor_1048() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        await model.apply([
+            .printable("a"), .printable("b"), .printable("c"),
+        ])
+        // Cursor at (0, 3). Save it via 1048.
+        await model.apply([.csi(.setMode(.saveCursor1048, enabled: true))])
+        // Move cursor; verify still on main.
+        await model.apply([.csi(.cursorPosition(row: 2, col: 4))])
+        let preRestore = model.latestSnapshot()
+        #expect(preRestore.activeBuffer == .main)
+        #expect(preRestore.cursor == Cursor(row: 2, col: 4))
+        // Restore via 1048 disable.
+        await model.apply([.csi(.setMode(.saveCursor1048, enabled: false))])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 0, col: 3))
+    }
+
+    @Test("Mode 1048 save/restore is per-buffer (alt and main keep independent slots)")
+    func test_save_cursor_1048_per_buffer() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        // On main: move to (0, 2) and 1048-save.
+        await model.apply([
+            .csi(.cursorPosition(row: 0, col: 2)),
+            .csi(.setMode(.saveCursor1048, enabled: true)),
+        ])
+        // Switch to alt (mode 1049 takes us to alt at origin).
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        // On alt: move to (2, 4) and 1048-save.
+        await model.apply([
+            .csi(.cursorPosition(row: 2, col: 4)),
+            .csi(.setMode(.saveCursor1048, enabled: true)),
+        ])
+        // Move cursor on alt elsewhere, then 1048-restore — must land at (2, 4),
+        // alt's saved slot, NOT main's (0, 2).
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 0)),
+            .csi(.setMode(.saveCursor1048, enabled: false)),
+        ])
+        let altRestored = model.latestSnapshot()
+        #expect(altRestored.activeBuffer == .alt)
+        #expect(altRestored.cursor == Cursor(row: 2, col: 4),
+                "1048 restore on alt uses alt.savedCursor, not main's")
+        // Exit alt back to main; main's 1048 save is still in main.savedCursor.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        // Move main cursor elsewhere, then 1048-restore — must land at (0, 2),
+        // main's saved slot.
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 4)),
+            .csi(.setMode(.saveCursor1048, enabled: false)),
+        ])
+        let mainRestored = model.latestSnapshot()
+        #expect(mainRestored.activeBuffer == .main)
+        #expect(mainRestored.cursor == Cursor(row: 0, col: 2),
+                "1048 restore on main uses main.savedCursor, not alt's")
+    }
+
+    @Test("CSI s + writes + CSI u restores cursor (per active buffer)")
+    func test_save_restore_cursor_csi_s_u() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        await model.apply([.printable("a"), .printable("b")])
+        // Cursor (0, 2). Save.
+        await model.apply([.csi(.saveCursor)])
+        await model.apply([
+            .csi(.cursorPosition(row: 2, col: 4)),
+            .printable("z"),                           // grid mutation → version bump
+            .csi(.restoreCursor),
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor == Cursor(row: 0, col: 2))
+    }
+
+    @Test("ESC 7 / ESC 8 (DECSC / DECRC) behave the same as CSI s / CSI u")
+    func test_esc_7_8_save_restore() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        var parser = TerminalParser()
+        // Write 'a', save via ESC 7, move, write, restore via ESC 8.
+        let bytes: [UInt8] = [
+            0x61,                               // 'a'
+            0x1B, 0x37,                          // ESC 7 — save
+            0x1B, 0x5B, 0x33, 0x3B, 0x35, 0x48,  // CSI 3;5 H — move (1-indexed)
+            0x7A,                                // 'z'
+            0x1B, 0x38                           // ESC 8 — restore
+        ]
+        await model.apply(parser.parse(Data(bytes)))
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor == Cursor(row: 0, col: 1))   // back to (0, col-after-'a')
+    }
+
+    @Test("Save/restore is per-buffer: alt and main keep separate saved cursors")
+    func test_save_restore_per_buffer() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        // Save main cursor at (0, 0) (origin).
+        await model.apply([.csi(.saveCursor)])
+        // Move main cursor.
+        await model.apply([.csi(.cursorPosition(row: 1, col: 2))])
+        // Enter alt — writes go to alt. Save alt cursor (origin).
+        await model.apply([
+            .csi(.setMode(.alternateScreen1049, enabled: true)),
+            .csi(.saveCursor),
+        ])
+        // Move alt cursor.
+        await model.apply([.csi(.cursorPosition(row: 2, col: 3))])
+        // Restore alt cursor → back to (0, 0) on alt.
+        await model.apply([.csi(.restoreCursor)])
+        let altRestored = model.latestSnapshot()
+        #expect(altRestored.cursor == Cursor(row: 0, col: 0))
+        #expect(altRestored.activeBuffer == .alt)
+        // Exit alt back to main — main cursor restored from the 1049 save
+        // (which was (1, 2) at the moment of 1049 enter; this overwrote the
+        // earlier CSI s save at origin since both share main.savedCursor).
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 1, col: 2))
+        // CSI u restores from the same single main.savedCursor slot — still (1,2)
+        // because 1049 enter clobbered the original origin save (xterm semantics:
+        // DECSC and 1049 share one slot per buffer).
+        await model.apply([.csi(.restoreCursor)])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 1, col: 2))
+    }
+}
+
+// MARK: - DECSTBM scroll region (Phase 2 T5)
+
+struct ScreenModelScrollRegionTests {
+
+    @Test("CSI 2;4 r sets scroll region rows 1..3 (0-indexed inclusive)")
+    func test_decstbm_set_region() async {
+        let model = ScreenModel(cols: 4, rows: 6)
+        // Fill rows with row numbers (0..5).
+        for r in 0..<6 {
+            await model.apply([
+                .csi(.cursorPosition(row: r, col: 0)),
+                .printable(Character(String(r)))
+            ])
+        }
+        // CSI 2;4 r → top=1 bottom=3 after 1→0 shift.
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 4))])
+        // Move cursor to last row of region (row 3) and emit LF — region scrolls.
+        await model.apply([
+            .csi(.cursorPosition(row: 3, col: 0)),
+            .c0(.lineFeed),
+        ])
+        let snap = model.latestSnapshot()
+        // Rows outside the region must be untouched.
+        #expect(snap[0, 0].character == "0")
+        #expect(snap[5, 0].character == "5")
+        // Inside the region: row 1 was "1", scrolled out; rows 1/2 now hold what
+        // was previously rows 2/3; row 3 is blank (newly cleared bottom).
+        #expect(snap[1, 0].character == "2")
+        #expect(snap[2, 0].character == "3")
+        #expect(snap[3, 0].character == " ")
+    }
+
+    @Test("CSI r (no params) resets scroll region to full screen")
+    func test_decstbm_reset() async {
+        let model = ScreenModel(cols: 3, rows: 4)
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 3))])
+        await model.apply([.csi(.setScrollRegion(top: nil, bottom: nil))])
+        // Fill row 0 then trigger full-screen scroll from the bottom.
+        await model.apply([
+            .printable("a"), .printable("b"), .printable("c"),
+            .csi(.cursorPosition(row: 3, col: 0)),
+            .c0(.lineFeed),
+        ])
+        // With region reset, the full screen scrolled — row 0 ("abc") evicted.
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].character != "a", "Region reset should allow full-screen scroll")
+    }
+
+    @Test("Cursor positioning ignores scroll region (CSI H is free movement)")
+    func test_decstbm_cursor_position_unbounded() async {
+        let model = ScreenModel(cols: 3, rows: 5)
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 4))])  // rows 1..3
+        // CUP to (4, 2) — row 4 is OUTSIDE the region but still a valid screen row.
+        await model.apply([.csi(.cursorPosition(row: 4, col: 2))])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 4, col: 2))
+        // Equally valid above the region.
+        await model.apply([.csi(.cursorPosition(row: 0, col: 0))])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 0, col: 0))
+    }
+
+    @Test("LF below the scroll region triggers full-screen scroll (xterm behavior)")
+    func test_decstbm_lf_below_region_does_full_screen_scroll() async {
+        let model = ScreenModel(cols: 2, rows: 5)
+        // Fill row 1 (will be inside region) so we can observe scroll motion.
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 0)),
+            .printable("X"),
+        ])
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 4))])  // rows 1..3 (0-indexed)
+        // Cursor at row 4 (BELOW region), then LF. Per xterm: full-screen
+        // scroll happens; region-internal content rides along; top row evicts.
+        await model.apply([
+            .csi(.cursorPosition(row: 4, col: 0)),
+            .c0(.lineFeed),
+        ])
+        let snap = model.latestSnapshot()
+        // 'X' was at row 1 → after one full-screen scroll, it's at row 0.
+        #expect(snap[0, 0].character == "X",
+                "Row containing 'X' shifted up by one full-screen scroll")
+        // Cursor stays clamped at last row.
+        #expect(snap.cursor.row == 4)
+    }
+
+    @Test("Setting region with bottom < top is rejected (region stays unchanged)")
+    func test_decstbm_invalid_range() async {
+        let model = ScreenModel(cols: 2, rows: 5)
+        await model.apply([.csi(.setScrollRegion(top: 4, bottom: 2))])
+        // Subsequent LF at the last row scrolls the full screen (region was rejected).
+        await model.apply([
+            .csi(.cursorPosition(row: 0, col: 0)),
+            .printable("a"),
+            .csi(.cursorPosition(row: 4, col: 0)),
+            .c0(.lineFeed),
+        ])
+        // Row 0 'a' must have evicted (full-screen scroll happened).
+        #expect(model.latestSnapshot()[0, 0].character != "a")
+    }
+
+    @Test("CSI 3;3 r (top == bottom) is rejected — single-row region is invalid")
+    func test_decstbm_single_row_region_rejected() async {
+        let model = ScreenModel(cols: 2, rows: 5)
+        await model.apply([.csi(.setScrollRegion(top: 3, bottom: 3))])
+        // Subsequent LF at the last row scrolls the full screen (region was rejected;
+        // the validation `topZero < botZero` is strict, so single-row regions fail).
+        await model.apply([
+            .csi(.cursorPosition(row: 0, col: 0)),
+            .printable("a"),
+            .csi(.cursorPosition(row: 4, col: 0)),
+            .c0(.lineFeed),
+        ])
+        #expect(model.latestSnapshot()[0, 0].character != "a",
+                "Single-row region must be rejected → full-screen scroll evicts row 0")
+    }
+}
+
+// MARK: - Scrollback history (Phase 2 T6)
+
+struct ScreenModelHistoryTests {
+
+    @Test("Main-buffer LF at last row pushes evicted top row to history")
+    func test_history_feed_main_buffer() async {
+        let model = ScreenModel(cols: 4, rows: 3, historyCapacity: 100)
+        // Fill row 0 with 'aaaa', then move cursor to last row + LF to scroll.
+        await model.apply([
+            .printable("a"), .printable("a"), .printable("a"), .printable("a"),
+            .csi(.cursorPosition(row: 2, col: 0)),
+            .c0(.lineFeed),
+        ])
+        let tail = model.latestHistoryTail()
+        #expect(tail.count == 1)
+        #expect(tail[0].count == 4)
+        #expect(tail[0].allSatisfy { $0.character == "a" })
+    }
+
+    @Test("Alt-buffer LF at last row does NOT push to history")
+    func test_history_feed_alt_buffer_suppressed() async {
+        let model = ScreenModel(cols: 4, rows: 3, historyCapacity: 100)
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        await model.apply([
+            .printable("z"), .printable("z"), .printable("z"), .printable("z"),
+            .csi(.cursorPosition(row: 2, col: 0)),
+            .c0(.lineFeed),
+        ])
+        #expect(model.latestHistoryTail().count == 0)
+    }
+
+    @Test("DECSTBM region scroll does NOT push to history")
+    func test_history_feed_region_scroll_suppressed() async {
+        let model = ScreenModel(cols: 4, rows: 5, historyCapacity: 100)
+        // Set region 1..3 (0-indexed inclusive), write inside the region, LF at
+        // region.bottom triggers a region-internal scroll — must not feed history.
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 4))])  // rows 1..3
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 0)),
+            .printable("X"),
+            .csi(.cursorPosition(row: 3, col: 0)),
+            .c0(.lineFeed),
+        ])
+        #expect(model.latestHistoryTail().count == 0)
+    }
+
+    @Test("History grows to capacity then evicts oldest")
+    func test_history_capacity_evicts_oldest() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 3)
+        // Each iter places the current letter into row 0 explicitly (post-scroll
+        // the cursor sits at row 1, so without an explicit reposition the
+        // printable would land in row 1 and the eviction would lag by one frame).
+        for letter in "abcdef" {
+            await model.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(letter))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        let tail = model.latestHistoryTail()
+        #expect(tail.count == 3, "Capacity-bound history")
+        // Last 3 evicted rows are 'd', 'e', 'f' (in chronological order).
+        let chars = tail.map { $0.first?.character ?? " " }
+        #expect(chars == ["d", "e", "f"])
+    }
+
+    @Test("buildAttachPayload populates recentHistory with last 500 rows when main active")
+    func test_attach_payload_populates_history() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 1000)
+        for _ in 0..<10 {
+            await model.apply([.printable("x"), .csi(.cursorPosition(row: 1, col: 0)), .c0(.lineFeed)])
+        }
+        let payload = model.buildAttachPayload()
+        #expect(payload.recentHistory.count == 10)
+        #expect(payload.historyCapacity == 1000)
+    }
+
+    @Test("buildAttachPayload returns empty recentHistory when alt active")
+    func test_attach_payload_empty_history_in_alt() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 1000)
+        // Build up some history in main first.
+        for _ in 0..<5 {
+            await model.apply([.printable("x"), .csi(.cursorPosition(row: 1, col: 0)), .c0(.lineFeed)])
+        }
+        // Switch to alt.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        let payload = model.buildAttachPayload()
+        #expect(payload.recentHistory.isEmpty)
+        #expect(payload.snapshot.activeBuffer == .alt)
+    }
+
+    @Test("restore(from payload:) seeds local history from payload.recentHistory")
+    func test_restore_payload_seeds_history() async {
+        // Build source model with some history. Each iter explicitly resets to
+        // row 0 so the printable lands there; the LF then captures row 0 to
+        // history (without the reset the captured letter lags by one iter).
+        let source = ScreenModel(cols: 1, rows: 2, historyCapacity: 1000)
+        for c in "abc" {
+            await source.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(c))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        let payload = source.buildAttachPayload()
+        // Restore into a fresh client mirror.
+        let mirror = ScreenModel(cols: 1, rows: 2, historyCapacity: 1000)
+        await mirror.restore(from: payload)
+        let tail = mirror.latestHistoryTail()
+        #expect(tail.count == 3)
+        let chars = tail.map { $0.first?.character ?? " " }
+        #expect(chars == ["a", "b", "c"])
+    }
+
+    @Test("latestHistoryTail caps at publishedHistoryTailSize (1000)")
+    func test_history_tail_publication_cap() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 5000)
+        for _ in 0..<1500 {
+            await model.apply([.printable("x"), .csi(.cursorPosition(row: 1, col: 0)), .c0(.lineFeed)])
+        }
+        // Internal history holds all 1500; published tail caps at 1000.
+        #expect(model.latestHistoryTail().count == 1000)
+    }
+
+    @Test("Alt-buffer scrolls do not corrupt main-buffer history")
+    func test_history_preserved_across_alt_enter_exit() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 100)
+        // Establish 3 rows of main-buffer history.
+        for c in "abc" {
+            await model.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(c))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        let mainTail = model.latestHistoryTail()
+        #expect(mainTail.count == 3)
+        // Enter alt and force several scrolls there.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        for _ in 0..<5 {
+            await model.apply([.printable("z"), .csi(.cursorPosition(row: 1, col: 0)), .c0(.lineFeed)])
+        }
+        // Exit alt back to main.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        // Main history must be unchanged — alt activity never touches it.
+        let after = model.latestHistoryTail()
+        #expect(after.count == 3)
+        let chars = after.map { $0.first?.character ?? " " }
+        #expect(chars == ["a", "b", "c"])
+    }
+
+    @Test("ED 3 (.scrollback) clears history alongside the grid (main buffer)")
+    func test_ed3_clears_scrollback() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 100)
+        // Build 3 rows of history.
+        for c in "abc" {
+            await model.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(c))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        #expect(model.latestHistoryTail().count == 3)
+        // ED 3 — erase the scrollback.
+        await model.apply([.csi(.eraseInDisplay(.scrollback))])
+        #expect(model.latestHistoryTail().isEmpty,
+                "ED 3 must clear scrollback so PgUp shows nothing after clear")
+    }
+
+    @Test("ED 3 issued while alt is active does not clear main history")
+    func test_ed3_in_alt_preserves_main_history() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 100)
+        // Build 2 rows of main history.
+        for c in "ab" {
+            await model.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(c))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        // Enter alt and ED 3 — the .scrollback semantics belong to main; alt has no history.
+        await model.apply([
+            .csi(.setMode(.alternateScreen1049, enabled: true)),
+            .csi(.eraseInDisplay(.scrollback)),
+        ])
+        // Exit alt — main history must still be intact.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        #expect(model.latestHistoryTail().count == 2)
     }
 }

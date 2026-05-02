@@ -326,10 +326,171 @@ struct TerminalParserStateMachineTests {
 
     @Test func private_marker_before_params_is_preserved() {
         var parser = TerminalParser()
-        // ESC [ ? 2 5 h — canonical DECSET 25 (cursor visible). Should emit
-        // .csi(.unknown(params: [25], intermediates: [0x3F], final: 0x68)).
+        // ESC [ ? 2 5 h — canonical DECSET 25 (cursor visible). Phase 2 T1 wires
+        // this to .csi(.setMode(.cursorVisible, enabled: true)).
         let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x32, 0x35, 0x68]))
-        #expect(events == [.csi(.unknown(params: [25], intermediates: [0x3F], final: 0x68))])
+        #expect(events == [.csi(.setMode(.cursorVisible, enabled: true))])
+    }
+}
+
+// MARK: - DEC private modes (Phase 2)
+
+extension TerminalParserStateMachineTests {
+
+    @Test("ESC[?1h emits setMode(cursorKeyApplication, enabled: true)")
+    func test_csi_decset_cursorKeyApplication_on() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x31, 0x68]))  // ESC [ ? 1 h
+        #expect(events == [.csi(.setMode(.cursorKeyApplication, enabled: true))])
+    }
+
+    @Test("ESC[?1l emits setMode(cursorKeyApplication, enabled: false)")
+    func test_csi_decreset_cursorKeyApplication_off() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x31, 0x6C]))  // ESC [ ? 1 l
+        #expect(events == [.csi(.setMode(.cursorKeyApplication, enabled: false))])
+    }
+
+    @Test("All known DEC private modes decode to the correct case")
+    func test_csi_decset_known_modes() {
+        let cases: [(payload: [UInt8], mode: DECPrivateMode)] = [
+            ([0x37],                     .autoWrap),                 // "7"  → DECAWM
+            ([0x32, 0x35],               .cursorVisible),            // 25
+            ([0x34, 0x37],               .alternateScreen47),        // 47
+            ([0x31, 0x30, 0x34, 0x37],   .alternateScreen1047),      // 1047
+            ([0x31, 0x30, 0x34, 0x38],   .saveCursor1048),           // 1048
+            ([0x31, 0x30, 0x34, 0x39],   .alternateScreen1049),      // 1049
+            ([0x32, 0x30, 0x30, 0x34],   .bracketedPaste),           // 2004
+        ]
+        for (payload, expected) in cases {
+            var parser = TerminalParser()
+            var bytes: [UInt8] = [0x1B, 0x5B, 0x3F]
+            bytes.append(contentsOf: payload)
+            bytes.append(0x68)  // 'h'
+            let events = parser.parse(Data(bytes))
+            #expect(events == [.csi(.setMode(expected, enabled: true))],
+                    "Failed for mode \(expected)")
+        }
+    }
+
+    @Test("Unknown DEC mode preserves the parameter")
+    func test_csi_decset_unknown_mode() {
+        var parser = TerminalParser()
+        // ESC [ ? 9999 h
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x39, 0x39, 0x39, 0x39, 0x68]))
+        #expect(events == [.csi(.setMode(.unknown(9999), enabled: true))])
+    }
+
+    @Test("Multi-param DEC mode emits one .setMode event per param")
+    func test_csi_decset_multi_param() {
+        var parser = TerminalParser()
+        // ESC [ ? 1 ; 7 h — DECSET grammar allows compound mode lists; tmux/vim
+        // startup pipelines compound DECSET, so the parser emits one .setMode
+        // per param (preserves the singular .setMode(_, enabled:) signature
+        // by looping at the dispatch site).
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x31, 0x3B, 0x37, 0x68]))
+        #expect(events == [
+            .csi(.setMode(.cursorKeyApplication, enabled: true)),
+            .csi(.setMode(.autoWrap, enabled: true)),
+        ])
+    }
+
+    @Test("Multi-param DEC mode reset (l) emits one .setMode event per param")
+    func test_csi_decreset_multi_param() {
+        var parser = TerminalParser()
+        // ESC [ ? 1 ; 7 ; 25 l — three modes, all reset
+        let bytes: [UInt8] = [0x1B, 0x5B, 0x3F, 0x31, 0x3B, 0x37, 0x3B, 0x32, 0x35, 0x6C]
+        let events = parser.parse(Data(bytes))
+        #expect(events == [
+            .csi(.setMode(.cursorKeyApplication, enabled: false)),
+            .csi(.setMode(.autoWrap, enabled: false)),
+            .csi(.setMode(.cursorVisible, enabled: false)),
+        ])
+    }
+
+    @Test("DEC mode set survives byte-boundary chunking (cross-chunk path)")
+    func test_csi_decset_cross_chunk() {
+        var parser = TerminalParser()
+        // ESC [ ? 1 0 4 9 h — fed one byte at a time; identical final result.
+        let bytes: [UInt8] = [0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68]
+        var events: [TerminalEvent] = []
+        for byte in bytes {
+            events.append(contentsOf: parser.parse(Data([byte])))
+        }
+        #expect(events == [.csi(.setMode(.alternateScreen1049, enabled: true))])
+    }
+
+    @Test("CSI?0h emits .setMode(.unknown(0), enabled: true)")
+    func test_csi_decset_zero_param_unknown() {
+        var parser = TerminalParser()
+        // Param "0" is not a defined DEC private mode — must round-trip via .unknown.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x30, 0x68]))
+        #expect(events == [.csi(.setMode(.unknown(0), enabled: true))])
+    }
+
+    @Test("CSI?h (no param digits) emits .setMode(.unknown(0), enabled: true)")
+    func test_csi_decset_bare_h_no_digit() {
+        var parser = TerminalParser()
+        // 1B 5B 3F 68 — '?' followed immediately by 'h', no param digits.
+        // Empty param list defaults to [0] at the dispatch site, so this lands
+        // on the same .unknown(0) event as CSI?0h but via the empty-params path.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3F, 0x68]))
+        #expect(events == [.csi(.setMode(.unknown(0), enabled: true))])
+    }
+}
+
+// MARK: - DECSTBM scroll region (Phase 2)
+
+extension TerminalParserStateMachineTests {
+
+    @Test("ESC[r resets scroll region (both nil)")
+    func test_csi_decstbm_reset() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x5B, 0x72]))  // ESC [ r
+        #expect(events == [.csi(.setScrollRegion(top: nil, bottom: nil))])
+    }
+
+    @Test("ESC[5;20r sets top=5 bottom=20 (parser stays VT 1-indexed; ScreenModel shifts)")
+    func test_csi_decstbm_set() {
+        var parser = TerminalParser()
+        // ESC [ 5 ; 2 0 r
+        let events = parser.parse(Data([0x1B, 0x5B, 0x35, 0x3B, 0x32, 0x30, 0x72]))
+        #expect(events == [.csi(.setScrollRegion(top: 5, bottom: 20))])
+    }
+
+    @Test("ESC[;15r sets only bottom (top nil = use top of screen)")
+    func test_csi_decstbm_only_bottom() {
+        var parser = TerminalParser()
+        // ESC [ ; 1 5 r
+        let events = parser.parse(Data([0x1B, 0x5B, 0x3B, 0x31, 0x35, 0x72]))
+        #expect(events == [.csi(.setScrollRegion(top: nil, bottom: 15))])
+    }
+
+    @Test("DECSTBM with top > bottom passes through unchanged (parser doesn't validate)")
+    func test_csi_decstbm_top_gt_bottom_passes_through() {
+        var parser = TerminalParser()
+        // ESC [ 6 ; 3 r — parser pass-through; ScreenModel rejects in T5.
+        let events = parser.parse(Data([0x1B, 0x5B, 0x36, 0x3B, 0x33, 0x72]))
+        #expect(events == [.csi(.setScrollRegion(top: 6, bottom: 3))])
+    }
+}
+
+// MARK: - ESC 7 / ESC 8 (DECSC / DECRC) — Phase 2
+
+extension TerminalParserStateMachineTests {
+
+    @Test("ESC 7 emits .csi(.saveCursor) (DECSC == CSI s)")
+    func test_esc_7_decsc() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x37]))  // ESC 7
+        #expect(events == [.csi(.saveCursor)])
+    }
+
+    @Test("ESC 8 emits .csi(.restoreCursor) (DECRC == CSI u)")
+    func test_esc_8_decrc() {
+        var parser = TerminalParser()
+        let events = parser.parse(Data([0x1B, 0x38]))  // ESC 8
+        #expect(events == [.csi(.restoreCursor)])
     }
 }
 
