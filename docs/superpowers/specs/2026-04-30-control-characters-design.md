@@ -1,12 +1,14 @@
 # Control Characters & Escape Sequence Handling — Design
 
-- **Date:** 2026-04-30
-- **Status:** Approved (brainstorming)
+- **Date:** 2026-04-30 (revised 2026-05-02 after Phase 2 landing)
+- **Status:** Phase 1 delivered (main). Phase 2 delivered (branch `phase-2-control-chars`, PR #5). Phase 3 scope revised and ready for planning.
 - **Exploration:** [`docs/explorations/2026-04-30-control-characters.md`](../../explorations/2026-04-30-control-characters.md)
+- **Phase 2 research:** `docs/research/2026-05-01-phase2-final-review-empirical-findings.md`, `…-branch-efficiency-…`, `…-branch-simplify-reuse-…`, `…-branch-simplify-quality-…`
+- **Phase 3 spec review:** `docs/research/2026-05-02-phase3-spec-review-empirical-findings.md`
 
 ## Summary
 
-rTerm's current parser recognizes a narrow subset of ASCII control characters and silently discards every escape sequence — including `ESC` (0x1B) itself. This spec lays out the architecture for full ANSI/VT positional and control-character handling: a Paul Williams VT state machine in the parser, a grouped-enum event vocabulary covering CSI / OSC / C0, dual-buffer `ScreenModel` with alt-screen support, truecolor SGR with render-time depth projection, OSC 0/2 window title, DEC private modes, DECSTBM scroll regions, and bounded scrollback. Implementation is staged across three phases; the architecture supports the end state from day one.
+rTerm's original parser recognized a narrow subset of ASCII control characters and silently discarded every escape sequence — including `ESC` (0x1B) itself. This spec laid out the architecture for full ANSI/VT positional and control-character handling: a Paul Williams VT state machine in the parser, a grouped-enum event vocabulary covering CSI / OSC / C0, dual-buffer `ScreenModel` with alt-screen support, truecolor SGR with render-time depth projection, OSC 0/2 window title, DEC private modes, DECSTBM scroll regions, and bounded scrollback. Implementation is staged across three phases; the architecture has supported the end state from day one. **Phase 1 (MVP) and Phase 2 (full TUI + scrollback + bell) are delivered.** Phase 3 is revised below: it covers OSC 8 hyperlinks, OSC 52 clipboard (set path), DECSCUSR cursor shape, blink, DA1/DA2/CPR device reports, DECOM/DECCOLM, palette chooser UI, plus a mandatory engineering-hygiene track paying down Phase 2 hot-path and API-surface debt.
 
 ## Decisions summary
 
@@ -19,7 +21,7 @@ rTerm's current parser recognizes a narrow subset of ASCII control characters an
 | 5 | Event enum structure | Grouped nested — `TerminalEvent.{printable, c0, csi, osc, unrecognized}` |
 | 6 | Alt-screen architecture | Dual-buffer `ScreenModel` — single actor owns both grids + shared pen/modes |
 | 7 | Scrollback | In scope; main-buffer only; `CircularCollection<Row>` in `ScreenModel`; bounded recent-history in snapshot |
-| 8 | OSC scope | OSC 0/2 (window title) now; OSC 8 / 52 deferred with `.osc(.unknown(...))` passthrough seam |
+| 8 | OSC scope | Phase 1: OSC 0/2 (window title). Phase 3: OSC 8 hyperlinks + OSC 52 clipboard (set path). Parser passthrough `osc(.unknown(...))` kept as stable seam. |
 
 ## §1 — Architecture overview
 
@@ -46,7 +48,7 @@ Daemon wire protocol stays structurally the same. `ScreenSnapshot` grows richer 
 
 Rendering: parser and model are color-depth-agnostic (always truecolor). A render-time `ColorDepth × TerminalPalette` projection turns stored colors into pixels. User setting, live-switchable, no data migration.
 
-Three implementation phases (§8): MVP parser + cursor/erase + SGR + colors, then modes + alt screen + scrollback, then OSC 8/52 + polish.
+Three implementation phases (§8): Phase 1 (MVP parser + cursor/erase + SGR + colors — **delivered on `main`**), Phase 2 (modes + alt screen + scrollback + bell — **delivered on branch `phase-2-control-chars`**), Phase 3 (OSC 8 + OSC 52 + DECSCUSR + blink + terminal-ID responses + hygiene track — in planning).
 
 ## §2 — Parser
 
@@ -232,13 +234,13 @@ public struct Cell: Sendable, Equatable, Codable {
 ### Notes
 
 - **SGR nested in CSI** — not top-level; consumers pattern-match `.csi(.sgr(_))` in two lines.
-- **`[SGRAttribute]` payload allocates on every SGR sequence.** A stream of `ls --color` output emits hundreds of SGR events per screen, each heap-allocating. Inconsistent with §5's `InlineArray<16, RGBA>` choice for similar reasons. **Phase 3 optimization target:** replace with a small-buffer `SGRRun` type holding inline storage for 1–3 attributes (the overwhelmingly common case) + `Array` fallback. Noted as an open seam; not in MVP.
+- **`[SGRAttribute]` payload allocates on every SGR sequence.** A stream of `ls --color` output emits hundreds of SGR events per screen, each heap-allocating. Inconsistent with §5's `InlineArray<16, RGBA>` choice for similar reasons. **Still open as a Phase 3+ optimization target:** replace with a small-buffer `SGRRun` type holding inline storage for 1–3 attributes (the overwhelmingly common case) + `Array` fallback. Not tackled in Phase 2; re-evaluate against profiling after the Phase 3 hot-path cleanup (vertex arrays, Row allocs) lands — may be deprioritized if parser allocations do not show up as a measured hotspot.
 - **VT 1-indexed → 0-indexed conversion** happens inside the parser when emitting `cursorPosition`. `ScreenModel` always sees 0-indexed. Bounds clamping happens in `ScreenModel` — see §2 "Parser normalization contracts."
 - **`ansi16(UInt8)` range is `0..<16`** by parser contract — §2 "Parser normalization contracts." Renderer and model use `palette.ansi[Int(i)]` without masking.
 - **Unknown sub-cases** (`CSICommand.unknown`, `OSCCommand.unknown`, `DECPrivateMode.unknown`) carry enough info for logging and future promotion to named cases.
-- **Cell memory:** ~24–32 bytes per cell once you account for `Character`'s 16-byte wrapping of `String`, `CellStyle`'s ~10 bytes, and struct alignment padding. For a 200×50 main + 200×50 alt + 10K scrollback = ~60 MB per session. Fine for macOS; post-MVP memory revisit tracked separately (see §8 Phase 3 style-flyweight — gets Cell down to ~8 bytes via `styleID: UInt16` into a shared table).
-- **`Cell.init(from:)` is hand-coded, not synthesized.** Decode is `character` required + `container.decodeIfPresent(CellStyle.self, forKey: .style) ?? .default`. Synthesized Codable would fail on any older or leaner payload lacking the style field. Same pattern is the default for every new field added to a `Codable` type crossing the XPC boundary.
-- **Breaking change:** existing call sites using `.newline`/`.carriageReturn`/`.backspace`/`.tab`/`.bell` become `.c0(.lineFeed)` etc. All in-tree — ~20-30 lines of mechanical change across parser / model / tests.
+- **Cell memory:** ~24–32 bytes per cell once you account for `Character`'s 16-byte wrapping of `String`, `CellStyle`'s ~10 bytes, and struct alignment padding. For a 200×50 main + 200×50 alt + 10K scrollback = ~60 MB per session. Fine for macOS; post-MVP memory revisit tracked separately (see Appendix A — flyweight `styleID: UInt16` seam gets Cell down to ~8 bytes via shared style table).
+- **`Cell.init(from:)` is hand-coded, not synthesized.** Decode is `character` required + `container.decodeIfPresent(CellStyle.self, forKey: .style) ?? .default`. Synthesized Codable would fail on any older or leaner payload lacking the style field. Same pattern is the default for every new field added to a `Codable` type crossing the XPC boundary. Phase 2 extended this pattern to all new `ScreenSnapshot` fields (`cursorKeyApplication`, `bracketedPaste`, `bellCount`, `autoWrap` — all `decodeIfPresent ?? default`).
+- **Breaking change (landed in Phase 1):** existing call sites using `.newline`/`.carriageReturn`/`.backspace`/`.tab`/`.bell` now use `.c0(.lineFeed)` etc.
 
 ## §4 — ScreenModel
 
@@ -317,7 +319,7 @@ Each handler is a focused file region. New writes go through `writeCell(_ char:)
 | Control | Behavior |
 |---------|----------|
 | `nul` (0x00) | Ignored |
-| `bell` (0x07) | No-op in MVP; visual/audible bell is a Phase 2 UX detail |
+| `bell` (0x07) | Phase 2 delivered: `bellCount` in snapshot drives audible `NSSound.beep()` with 200 ms rate limiter |
 | `backspace` (0x08) | Cursor left 1 (clamped at col 0) |
 | `horizontalTab` (0x09) | Advance cursor to next multiple of 8, clamped to last column |
 | `lineFeed` (0x0A) | Move cursor to next row; scroll if at bottom (feeds history on main) |
@@ -352,6 +354,11 @@ public struct ScreenSnapshot: Sendable, Equatable, Codable {
     public let activeBuffer: BufferKind
     public let windowTitle: String?
     public let version: UInt64                      // renderer short-circuit key
+    // Phase 2 additions (beyond spec §4 baseline, documented in Phase 2 plan):
+    public let cursorKeyApplication: Bool           // DECCKM (mode 1)
+    public let bracketedPaste: Bool                 // DECSET 2004
+    public let bellCount: UInt64                    // bell rate-limit counter
+    public let autoWrap: Bool                       // DECAWM (mode 7)
 }
 
 // XPC-facing — built only on .attach, includes scrollback
@@ -362,20 +369,23 @@ public struct AttachPayload: Sendable, Codable {
 }
 ```
 
+Post-Phase-2 the snapshot carries 12 stored fields. Its `init` has 12 parameters, of which 7 have defaults. **Phase 3 hygiene task:** extract a `TerminalStateSnapshot` sub-struct for the terminal-state cluster (`cursorVisible`, `activeBuffer`, `windowTitle`, `cursorKeyApplication`, `bracketedPaste`, `bellCount`, `autoWrap`) to keep `ScreenSnapshot` from growing past ~14 parameters as Phase 3 lands `iconName`, cursor-shape (DECSCUSR), and hyperlink state. Defer is acceptable but the trigger is any new field — see §8 "Phase 3 engineering hygiene."
+
 **Why split.** `recentHistory` at 500 rows × 80 cols × ~32 B ≈ 1.3 MB. Publishing that on every apply is wasteful (renderer never uses it) and thrashes COW. Keeping it out of the hot path means the per-apply snapshot update is a pointer swap on a few kilobytes of immutable state, while the XPC path pays the history cost only when a client actually attaches.
 
 **Construction.**
 
 - `publishSnapshot()` (actor-isolated) builds a fresh `ScreenSnapshot` from the current active buffer + `version`, wraps it in `SnapshotBox`, stores into `_latestSnapshot`.
 - `buildAttachPayload()` (actor-isolated, called only from the daemon's attach handler) reads `_latestSnapshot`, builds `recentHistory` by copying the last N rows from `history`, returns an `AttachPayload`. Renderer never calls this.
+- `publishHistoryTail()` (Phase 2, actor-isolated) republishes the bounded history tail into `Mutex<HistoryBox>`. Must be invoked before `publishSnapshot()` in the same `apply(_:)` batch — the history-before-snapshot ordering invariant is the "lesser evil" per ScreenModel comments (briefly-duplicate row at scrollOffset > 0 is preferable to briefly-missing row). **Phase 3 hygiene:** add this ordering note to the `publishHistoryTail()` doc comment itself so a future refactor doesn't reorder the calls.
 
-`recentHistory` on initial attach is bounded (default 500 rows) — keeps XPC message ~1.3 MB at 80 cols. Live push remains raw PTY bytes; client `ScreenModel` mirror grows its own history. A later `DaemonRequest.fetchHistory(rowRange:)` RPC is a clean extension — seam documented, Phase 3.
+`recentHistory` on initial attach is bounded (default 500 rows) — keeps XPC message ~1.3 MB at 80 cols. Live push remains raw PTY bytes; client `ScreenModel` mirror grows its own history. A later `DaemonRequest.fetchHistory(rowRange:)` RPC is a clean extension — seam documented, **deferred past Phase 3** (500-row attach payload is sufficient for all current use cases; promote to Phase 4 if profiling or UX warrants).
 
 ### Memory bake-ins
 
 - `ContiguousArray<Cell>` for grid storage — guarantees contiguous Swift-native layout for Metal upload.
 - `version: UInt64` counter on every snapshot update — renderer skips re-upload when unchanged.
-- `CellStyle` flyweight (`styleID: UInt16` + shared `StyleTable`) **deferred to Phase 3** — architectural seam noted.
+- `CellStyle` flyweight (`styleID: UInt16` + shared `StyleTable`) — **conditionally in Phase 3** (only if OSC 8 hyperlink addition crosses the measurement gate; see §8 Phase 3 open question 2); otherwise Phase 4.
 - `Span<Cell>` at internal API boundaries **deferred** until profiling shows the win.
 
 ## §5 — Renderer color projection
@@ -453,13 +463,13 @@ CPU side, once per frame, in `RenderCoordinator`. For each cell, compute resolve
 | strikethrough | Second draw pass — thin line quad across cell center |
 | reverse | Swap fg/bg at CPU projection time |
 | dim | Multiply fg alpha by ~0.5 at projection time |
-| blink | Phase 3 — global timer uniform; shader toggles visibility |
+| blink | Phase 3 — global timer uniform; shader toggles visibility (bundled with DECSCUSR blink cursor variants) |
 
 ### Glyph atlas
 
 Current `GlyphAtlas` is one 16×6 grid of ASCII 0x20–0x7E. Evolves to a **family of up-to-four atlases** (regular / bold / italic / bold-italic), identical layout, materialized lazily. Phase 1 ships regular + bold; italic + bold-italic materialize when Phase 2 activates the italic attribute.
 
-**Unicode beyond ASCII:** Phase 3. Non-ASCII cells render U+FFFD or "?" in MVP/Phase 2. Cell model is already Unicode-correct (`Character` handles grapheme clusters); only the renderer limits it.
+**Unicode beyond ASCII:** **Deferred to Phase 4** (revised 2026-05-02). Non-ASCII cells render U+FFFD or "?" through Phase 3. Cell model is already Unicode-correct (`Character` handles grapheme clusters); only the renderer limits it. Phase 4 will land dynamic glyph atlas with LRU cache + CoreText fallback.
 
 ### Live mode switching
 
@@ -467,24 +477,24 @@ Current `GlyphAtlas` is one 16×6 grid of ASCII 0x20–0x7E. Evolves to a **fami
 
 ## §6 — Daemon protocol changes
 
-### What changes
+### What landed in Phase 1 + Phase 2
 
-1. **`ScreenSnapshot` grows** (per §4): adds `cursorVisible`, `activeBuffer`, `windowTitle`, `version`. Existing fields retained.
+1. **`ScreenSnapshot` grew** (per §4): Phase 1 added `cursorVisible`, `activeBuffer`, `windowTitle`, `version`. Phase 2 added `cursorKeyApplication`, `bracketedPaste`, `bellCount`, `autoWrap`. All new fields use `decodeIfPresent ?? default` in the hand-coded `Codable` init. Existing Phase 1 fields retained.
 
-2. **New `AttachPayload` type** (per §4): wraps `ScreenSnapshot` + `recentHistory` + `historyCapacity`. Replaces `DaemonResponse.snapshot(sessionID:, snapshot:)` with `DaemonResponse.attachPayload(sessionID:, payload: AttachPayload)`. Rendering on the client side still consumes `ScreenSnapshot` (the nested field); `recentHistory` feeds the client's `ScreenModel` history directly.
+2. **`AttachPayload`** (per §4) — landed in Phase 2. Wraps `ScreenSnapshot` + `recentHistory` + `historyCapacity`. `DaemonResponse.attachPayload(sessionID:, payload: AttachPayload)` replaced `DaemonResponse.snapshot(…)`. Rendering still consumes `ScreenSnapshot` (nested field); `recentHistory` feeds the client's `ScreenModel` history on restore.
 
-3. **No new RPCs for MVP.** Attach-payload + raw fan-out stays sufficient because clients parse independently. Post-MVP RPC documented: `fetchHistory(sessionID:, rowRange:)`.
+3. **No new RPCs through Phase 2.** `fetchHistory(sessionID:, rowRange:)` remains deferred — 500-row attach is sufficient. Promote to Phase 4 if UX demands deep backscroll.
 
-4. **No explicit protocol version field.** rTerm hasn't shipped; daemon + client always ship together in the same bundle. If that ever changes (public release, separate cadence), add `protocolVersion: Int` at the envelope level — `Codable` with `decodeIfPresent` throughout keeps that path open.
+4. **No explicit protocol version field.** rTerm still ships daemon + client together. Keep the `Codable` + `decodeIfPresent` pattern for every new field — it gives a migration path if separate cadences ever appear. **Phase 3 constraint:** new fields on `ScreenSnapshot` / `AttachPayload` must remain backward-compatible by this same convention; do not break Phase 1/2 wire format.
 
-5. **`Cell` becomes `Codable` with the new style field.** Hand-coded `init(from:)` uses `container.decodeIfPresent(CellStyle.self, forKey: .style) ?? .default` — synthesized Codable would fail on any payload lacking the field. Same pattern for all fields added later.
+5. **`Cell` is `Codable` with the new style field** (Phase 1). Hand-coded `init(from:)` tolerates style-less payloads. Same pattern carried into all subsequent fields.
 
-6. **Session-wide palette is not in the payload.** Palette and `ColorDepth` are client-side user settings, not session state. Daemon stores everything at full fidelity. Different clients reattaching with different settings both render correctly.
+6. **Session-wide palette is not in the payload.** Palette and `ColorDepth` are client-side user settings. Daemon stores everything at full fidelity. Different clients reattaching with different settings both render correctly. No change planned for Phase 3.
 
 ### Wire size sanity check
 
-- **AttachPayload (cold attach):** 80 × 24 × ~32B = ~60 KB visible snapshot + 500 rows × 80 × ~32B ≈ ~1.3 MB history + a few KB cursor/title/modes → ~1.4 MB per attach. XPC handles this comfortably.
-- **Live fan-out:** unchanged — raw PTY bytes.
+- **AttachPayload (cold attach):** 80 × 24 × ~32B = ~60 KB visible snapshot + 500 rows × 80 × ~32B ≈ ~1.3 MB history + a few KB cursor/title/modes → ~1.4 MB per attach. XPC handles this comfortably. Verified in Phase 2.
+- **Live fan-out:** unchanged — raw PTY bytes. Verified in Phase 2.
 
 ## §7 — Testing strategy
 
@@ -547,9 +557,9 @@ Pure-function tests, no Metal device required:
 
 Three phases, each a complete, shippable, testable state. Architecture supports all three from day one.
 
-### Phase 1 — Colorful static terminal (MVP)
+### Phase 1 — Colorful static terminal (MVP) — **Delivered (merged on `main`)**
 
-**In scope:**
+**In scope (all delivered):**
 
 - `TerminalParser` Williams state machine
 - `TerminalEvent` grouped-enum restructure (breaking, in-tree)
@@ -562,9 +572,10 @@ Three phases, each a complete, shippable, testable state. Architecture supports 
 - Renderer: regular + bold glyph atlases, per-cell fg/bg, underline pass
 - OSC 0/2 window title → `NSWindow.title`
 - Snapshot `version` counter
+- Mutex<SnapshotBox> publication, split snapshot+attach payload
 - Test corpus: parser state transitions + cursor/erase/SGR on ScreenModel + color projection
 
-**Deferred:**
+**Deferred (all addressed in Phase 2):**
 
 - DEC private modes (autoWrap treated always-on, cursor always visible)
 - Alt screen (writes go to main)
@@ -574,75 +585,190 @@ Three phases, each a complete, shippable, testable state. Architecture supports 
 - Italic/dim/reverse/strikethrough visual rendering (parsed and stored, ignored by shader)
 - Blink
 
-**After Phase 1:** colored `ls`, colored `git diff`, correct prompts, working `clear`, correct cursor positioning. Vim/tmux/htop look acceptable but overwrite scrollback.
+**After Phase 1 (verified):** colored `ls`, colored `git diff`, correct prompts, working `clear`, correct cursor positioning. Vim/tmux/htop look acceptable but overwrite scrollback.
 
-### Phase 2 — Full TUI + scrollback
+### Phase 2 — Full TUI + scrollback — **Delivered (branch `phase-2-control-chars`, PR #5, tip `8aeea2d`)**
 
-**In scope:**
+**In scope (all delivered):**
 
 - DEC private modes: DECAWM (7), DECTCEM (25), DECCKM (1) with `KeyEncoder` hook, bracketed paste (2004)
-- Alt screen modes 47 / 1047 / 1049; dual-buffer `ScreenModel`
-- DECSTBM
+- Alt screen modes 47 / 1047 / 1049; dual-buffer `ScreenModel` (`Buffer` struct + `mutateActive<R>` closure pattern)
+- DECSTBM (including the T5 plan correction for the full-screen-scroll predicate)
 - ESC 7/8 + CSI s/u
 - `saveCursor1048` (1048)
 - Scrollback history (`CircularCollection<Row>` in `ScreenModel`, bounded, main-only)
-- Snapshot `recentHistory` on attach
-- Scrollback UI: scroll wheel, PgUp/PgDn, scroll-to-bottom-on-new-output
-- Renderer: italic + bold-italic glyph atlases materialized; dim alpha, reverse swap, strikethrough pass activated
+- `AttachPayload` with `recentHistory` + `historyCapacity`, and `restore(from payload:)` on reattach
+- Scrollback UI: scroll wheel, PgUp/PgDn, scroll-to-bottom-on-new-output (`ScrollViewState`)
+- Renderer: italic + bold-italic glyph atlases materialized; dim alpha, reverse swap, strikethrough pass (`AttributeProjection`)
+- Bell (audible `NSSound.beep()` with 200 ms rate limiter via `bellCount` in snapshot)
+- `windowTitle` via nonisolated `latestSnapshot()` read (follow-up commit `8aeea2d`)
+- `ScrollbackHistory.tail(0)` edge case pinned by test (follow-up `8aeea2d`)
+- `TerminalSession.paste(_:)` integration-tested via `pastePayload(text:snapshot:)` (follow-up `8aeea2d`)
 
-**Deferred:**
+**Known deferrals (carry into Phase 3, see engineering-hygiene section below):**
 
-- Per-row dirty tracking (version counter suffices)
-- `fetchHistory` RPC (500-row attach snapshot sufficient)
-- OSC 8 hyperlinks
+- Cold-attach when alt active: client receives empty `recentHistory` (documented limitation).
+- Integration fixture corpus shipped only `vimStartupSequence`; `top`/`htop` fixture deferred.
+- Per-row dirty tracking (still deferred — version counter remains sufficient).
+- `fetchHistory` RPC — still deferred past Phase 3 unless profiling or UX warrants.
 
-**After Phase 2:** vim, tmux, htop, less, mc — all native feel. Real detach/reattach with history.
+**Phase 2 plan deviations (documented):**
 
-### Phase 3 — Polish
+- `T5` scroll-dispatcher trigger condition corrected inline in the plan (`Buffer.shouldScroll(rows:)`).
+- `ScreenSnapshot` gained four fields beyond spec §4 baseline (`cursorKeyApplication`, `bracketedPaste`, `bellCount`, `autoWrap`) — all added via `decodeIfPresent` for wire compatibility. Reflected in §4 above.
+- `TerminalModes.Codable` conformance added for `restore(from snapshot:)` — internal only, not on the wire.
 
-Phase 3 groups **remaining control-character extensions** (OSC 8 hyperlinks, OSC 52 clipboard, blink) alongside **adjacent future work this spec has exposed seams for** (Unicode atlas, palette UI, flyweight, dirty tracking, `fetchHistory` RPC, `Span` at boundaries). Not all of these will share one implementation plan — they're listed together because the spec has already reasoned about them.
+**After Phase 2 (verified):** vim, tmux, htop, less, mc — all native feel. Real detach/reattach with history. 222/222 TermCoreTests pass; 53/53 rTermTests pass.
+
+### Phase 3 — Polish, hygiene, and the next-tier escape sequences
+
+Phase 3 has two load-bearing tracks that **must ship together** before any further feature phase:
+
+**Track A — feature scope (tightened from the original Phase 3 bullet list).** A smaller set than originally listed; items that require major surface (sixel, kitty images, Unicode atlas) are explicitly deferred to Phase 4+.
+
+**Track B — engineering hygiene (new).** Phase 2 left behind measurable hot-path regressions and latent API risks. These must be paid down before additional features accumulate on top of them.
+
+Each track gets its own implementation plan (or may be combined into a single plan if the planner prefers). Both tracks must hit green tests before Phase 3 closes.
+
+#### Phase 3 — Track A: feature scope
 
 **In scope:**
 
-- OSC 8 hyperlinks: `CellStyle.hyperlink: Hyperlink?`; renderer hit-testing
-- OSC 52 clipboard (with user-consent gate for sandbox)
-- Blink: global timer uniform; shader toggle
-- Unicode beyond ASCII: dynamic glyph atlas with LRU cache; CoreText fallback
-- Palette chooser UI: built-in presets + custom import
-- `CellStyle` flyweight (`styleID` + `StyleTable`) — scrollback memory ~50% drop
-- Per-row dirty tracking
-- `fetchHistory(sessionID:, rowRange:)` RPC
-- `Span<Cell>` at internal boundaries where profiling shows wins
+- **OSC 8 hyperlinks.** Parser already emits `.osc(.unknown(ps: 8, pt: …))`. Land:
+  - Promote the OSC 8 case out of `.unknown` into `OSCCommand.setHyperlink(id: String?, uri: String?)` (nil on terminator `OSC 8 ; ; ST`).
+  - Extend `CellStyle` with `hyperlink: Hyperlink?` (new value type with `id` and `uri`). Adds ~16 B to `CellStyle` — compare against flyweight motivation below.
+  - Renderer: underline on hover, click handler that opens the URI via `NSWorkspace.open(_:)` (sandboxed-safe — `openURL` works without entitlement additions).
+  - Model: stamp current hyperlink onto `Cell.style.hyperlink` via pen state, same as foreground/background.
+  - Wire compat: `CellStyle.init(from:)` uses `decodeIfPresent(Hyperlink?.self) ?? nil`. `Hyperlink` is `Codable`.
 
-**After Phase 3:** feature-parity with iTerm2 baseline for single-session, single-window use.
+- **OSC 52 clipboard.** Parser emits `.osc(.unknown(ps: 52, pt: "<target>;<payload>"))`.
+  - Promote to `OSCCommand.setClipboard(target: ClipboardTarget, payload: ClipboardPayload)` where `target` is `.clipboard | .primary | .selection` (xterm semantics) and `payload` is `.set(String)` (base64-decoded) or `.query`.
+  - Model stores nothing permanently — the request fans out through a new `DaemonResponse.clipboardWrite(sessionID:, target:, payload: Data)` push (or equivalent) so the client app can route to `NSPasteboard.general` under a user-consent gate (sandbox-safe).
+  - Outgoing paste is the mirror of bracketed paste (bracketed paste is incoming-only today). `OSC 52 query` response — the client reads `NSPasteboard` and writes back into the PTY as `ESC ] 52 ; <target> ; <base64> BEL`. Confirm query response is scoped in Phase 3 or explicitly deferred (see open questions).
+
+- **Cursor shape — DECSCUSR (`CSI Ps SP q`).** Extend `CSICommand` with `setCursorShape(CursorShape)` (block/underline/bar, steady/blink). Snapshot already owns cursor; add `cursorShape: CursorShape` field via `decodeIfPresent`. Renderer draws the variant.
+
+- **Blink attribute.** Already parsed in Phase 1. Land the global timer uniform + shader toggle. Scoped bundle with DECSCUSR blink variants to share the timing infrastructure.
+
+- **Terminal identification responses.** Shell-level query sequences vim/tmux/htop commonly issue:
+  - `CSI c` / `CSI 0 c` — Primary DA (DA1). Respond `ESC [ ? 6 c` (VT102) or `ESC [ ? 1 ; 2 c`.
+  - `CSI > c` / `CSI > 0 c` — Secondary DA (DA2). Respond with terminal-ID + firmware-version triple.
+  - `CSI 6 n` — Cursor Position Report (CPR). Respond `ESC [ <row> ; <col> R` (1-indexed). Reply is a byte stream back to the PTY primary, not a model mutation.
+  - Implement via a new `TerminalEvent.csi(.deviceStatusReport(Kind))` → routed in the daemon to write bytes back into the PTY, not into the `ScreenModel`.
+
+- **Origin mode — DECOM (mode 6).** Cursor-position commands become scroll-region-relative when set. Straightforward add to `DECPrivateMode` + `handleSetMode`.
+
+- **132-column mode — DECCOLM (mode 3).** Resizes the buffer to 132 cols when enabled, restores on disable. Requires `resize(cols:rows:)` to already exist (it does — pre-existing on `TerminalSession`). One caveat: DECCOLM also clears the screen by spec; model must coordinate.
+
+- **Palette chooser UI.** Built-in presets (xterm, solarized dark/light) already defined in `TerminalPalette`. Add a settings pane to pick. Not a parser/model concern.
+
+- **Integration fixture corpus completion.** Land `top`/`htop` fixture, widen cross-chunk variants.
+
+**Deferred explicitly to Phase 4+ (not in Phase 3, so the planner does not need to account for them):**
+
+- **Mouse tracking** (X10 `CSI ? 9`, UTF-8 `CSI ? 1005`, SGR `CSI ? 1006`, urxvt `CSI ? 1015`). Requires end-to-end work from `TerminalMTKView` mouse events → encoding → PTY bytes. Document seam but do not implement.
+- **Sixel graphics** (DCS `q`). Major surface: DCS state machine, image pixel buffer, Metal texture upload, scrolling semantics. Phase 4 at earliest.
+- **Kitty graphics protocol.** Same category as sixel; separate Phase 4+ spec.
+- **Unicode glyph atlas beyond ASCII.** Dynamic atlas with LRU cache + CoreText fallback. The Cell model already handles grapheme clusters; only the renderer limits it. Phase 4 — the Phase 3 hygiene track is the right time to *not* expand the atlas surface.
+- **`CellStyle` flyweight (`styleID: UInt16` + `StyleTable`).** Still deferred. Adding `Hyperlink?` to `CellStyle` in Phase 3 pushes `CellStyle` from ~10 B to ~26 B, which doubles scrollback memory pressure — this is the trigger to implement the flyweight in Phase 3 **only if** Phase 3's OSC 8 work makes cold-attach payloads exceed 3 MB or scrollback cost exceed 100 MB in measurement. Default posture: keep deferred, measure first. Open question for the planner; see below.
+- **Per-row dirty tracking.** Still deferred; version counter + full-frame re-upload remains the rendering contract.
+- **`fetchHistory` RPC.** Still deferred; 500-row attach remains sufficient.
+- **`Span<Cell>` at internal boundaries.** Still deferred; no profiling evidence of a regression that `Span` would fix.
+- **GPU-side color projection, LUT-based quantization.** Still deferred past Phase 3.
+- **DCS passthrough**, **character sets (G0/G1 SS2/SS3)**, **RIS hard reset**, **East Asian wide characters** — deferred per Appendix B.
+
+#### Phase 3 — Track B: engineering hygiene (mandatory)
+
+The Phase 2 final/efficiency/simplify/quality research docs enumerate the following cleanup items. **These are not optional** — they must land in Phase 3 before further features compound on the debt.
+
+1. **Renderer vertex array reuse.** `RenderCoordinator.draw(in:)` allocates 6 `[Float]` arrays per frame, each `reserveCapacity`-initialized → ~2,880 KB/frame reserved-then-freed. Phase 1 baseline was ~1,440 KB for 3 arrays. Fix: promote the 6 arrays to `var` instance properties on `RenderCoordinator`, call `removeAll(keepingCapacity: true)` at the top of `draw(in:)`. Eliminates the entire per-frame alloc/free cycle.
+
+2. **Metal buffer pre-allocation ring.** Up to 6 `device.makeBuffer(...)` calls per frame in the worst case (4 glyph passes + underline + strikethrough; cursor already uses `setVertexBytes`). Implement a pre-allocated ring of `MTLBuffer`s sized for the largest frame, rotated per-frame-in-flight. Target: zero `makeBuffer` calls in steady state. This was already noted as a Phase 3 target in the Phase 2 plan.
+
+3. **`ScrollbackHistory.Row` pre-allocated slots.** `scrollAndMaybeEvict` allocates a new `ContiguousArray<Cell>` (~3.1 KB) per scrolling LF on main. Negligible at interactive speeds; noticeable at ≥10,000 LF/s burst (binary output, `yes`). Fix: pre-allocate a ring of Row buffers on the `ScrollbackHistory` side and copy into a fixed slot rather than allocating a fresh array per scroll. Measure before optimizing — if measurements show no regression at 60 MB/s sustained throughput, document "deferred with measurement" and move on.
+
+4. **`ScreenSnapshot` 12-param init.** Extract a `TerminalStateSnapshot` sub-struct covering the 7 terminal-state fields. Driven by the fact that Phase 3 adds at least `cursorShape` and possibly `iconName` — refactoring before the 13th/14th field lands keeps the `init` tractable. See §4.
+
+5. **`ScreenModel.swift` file split.** At 941 lines with 10 logical sections, split into `ScreenModel.swift` + `ScreenModel+Buffer.swift` (contains `Buffer`, `ScrollRegion`, `mutateActive`, `scrollAndMaybeEvict`, `clearGrid`) + `ScreenModel+History.swift` (history storage, `publishHistoryTail`, `buildAttachPayload`, `restore(from payload:)`, `latestHistoryTail`). Requires promoting `Buffer` and `ScrollRegion` from `private` to `fileprivate` or `internal`. Low risk, high readability payoff as Phase 3 handlers grow the file further.
+
+6. **`DispatchQueue` → `DispatchSerialQueue` force-cast hardening.** `ScreenModel.init(queue:)` force-casts the base-class parameter to `DispatchSerialQueue`. If a future caller passes a `.concurrent` queue the force-cast crashes at runtime with no compile-time warning. Fix: add a new `public init(…, queue: DispatchSerialQueue? = nil)` with the typed parameter, deprecate the untyped `init(…, queue: DispatchQueue? = nil)` via `@available(*, deprecated, renamed: …)`. Because `BUILD_LIBRARY_FOR_DISTRIBUTION` is enabled on TermCore (Release), keep both inits to preserve binary compatibility.
+
+7. **`cellAt` scrolled-render loop restructuring.** When `scrollOffset > 0` the renderer calls `history[historyRowIdx]` once per (row, col) pair instead of once per row. Hoist the row load to the outer loop. Small per-scrolled-frame cost (~46 KB of header copies) but trivial fix.
+
+8. **`publishHistoryTail()` ordering doc.** Add a one-sentence doc comment on `publishHistoryTail()` describing the history-before-snapshot ordering invariant, so a future refactor does not accidentally invert the calls.
+
+9. **`Cursor.zero` / `.origin` static.** One-liner on `Cursor` to replace the 4 inline `Cursor(row: 0, col: 0)` sites. Nice-to-have; bundle with (4) since both touch `ScreenSnapshot.swift` / `Cell.swift`.
+
+10. **`CircularCollection` TODO (line 53).** Pre-existing from Phase 1 — "we can split the payload into before and after slices, and apply them, 2 steps instead of n." Addressed in Phase 3 only if benchmarks indicate `append(contentsOf:)` is a hotspot. Default: defer with a tracking comment that this was reconsidered in Phase 3.
+
+11. **`ImmutableBox<T>` extraction (still deferred — conditional).** Do **not** extract the `SnapshotBox` / `HistoryBox` duplication into a generic `ImmutableBox<T>` for Phase 3's initial work. **Trigger revisit:** if Phase 3's OSC 52 clipboard work or cursor-shape work adds a third `Mutex<Box>` to `ScreenModel`, extract then. Otherwise, two named types are more readable than a generic.
+
+12. **Test gaps from Phase 2.** Add:
+    - A test pinning the `AttributeProjection.atlasVariant` invariance against dim/underline/blink (non-atlas attributes should not affect variant).
+    - An integration test verifying `restore(from payload:)` clear-before-publish ordering (or document why this ordering cannot be unit-tested without a concurrent reader).
+    - `top`/`htop` fixture in the integration corpus.
+
+13. **Comment cleanup.** No outstanding items — the `TermView.swift:192` "T10's scroll handlers" stale comment was addressed by ongoing polish before Phase 3 opens; verify during Phase 3 that no stale T-references remain.
+
+**Track B test discipline.** Every item lands behind existing tests + any new tests specifically asserting the regression it fixes (e.g., per-frame allocation count via `os_signpost` instrumentation for item 1; boundary test for item 6).
+
+#### Phase 3 open questions for the planner (to be resolved before writing the plan)
+
+1. **OSC 52 query response in Phase 3 or Phase 4?** Reading `NSPasteboard` and writing back into the PTY requires the daemon to accept a client-originated byte injection via XPC. That is a new daemon surface. Possibly defer the query side of OSC 52 to Phase 4 and ship only the *set* path in Phase 3.
+
+2. **Flyweight `CellStyle`.** With OSC 8 hyperlinks adding ~16 B to `CellStyle`, memory pressure doubles. Ship flyweight in Phase 3 **conditionally on measurement** (cold-attach payload > 3 MB or scrollback > 100 MB). Planner decision: define the measurement gate and stick to it.
+
+3. **Measurement instrumentation.** Track B items 1 and 3 both recommend measurement before optimization. Which measurement tool — `os_signpost`, Metal frame capture, allocation profiler? Planner picks one and applies it consistently across all Phase 3 hot-path fixes.
+
+4. **Scope of OSC 8 URI opening.** Sandboxed `NSWorkspace.open(_:)` for `http(s)://` and `file://` only, or broader? Security posture question.
+
+5. **Plan-granularity preference.** Track A and Track B are large enough that a single Phase 3 plan may exceed a reasonable single-session scope. Planner may split into `phase-3-features` and `phase-3-hygiene` plans, or interleave. Decision point.
 
 ### Cross-phase principles
 
 - Every phase ends on green tests.
-- Every phase preserves daemon/client protocol compatibility within its own cut. Phase boundaries may bump snapshot fields (nothing external has shipped), but within a phase the bundled daemon + client are always compatible.
+- Every phase preserves daemon/client protocol compatibility within its own cut. Phase boundaries may bump snapshot fields (nothing external has shipped), but within a phase the bundled daemon + client are always compatible. **Phase 3 constraint:** must not break Phase 1/2 wire format — new fields use `decodeIfPresent`, removal is forbidden.
 - No phase introduces a feature flag. If something isn't ready, it doesn't merge.
-- Phase 1 and Phase 2 each get their own implementation plan via the writing-plans skill. Phase 3 items will be planned individually as they're picked up.
+- Phase 1 and Phase 2 landed with their own implementation plans. Phase 3 items may be planned as one or two plans per the open-question decision above.
 
 ## Appendix A — Open seams documented for future phases
 
-- `Span<Cell>` at internal API boundaries
-- `CellStyle` flyweight via `styleID: UInt16` + `StyleTable`
-- Per-row dirty tracking in `ScreenModel` + snapshot
-- `DaemonRequest.fetchHistory(sessionID:, rowRange:)` for deep backscroll
-- OSC 8 (`CellStyle.hyperlink: Hyperlink?`) — Cell-shape change that motivates phase ordering
-- OSC 52 clipboard (sandbox + consent work)
+Updated 2026-05-02 to reflect Phase 2 landing state.
+
+**Live seams (planned for Phase 3, see §8 Track B):**
+- OSC 8 (`CellStyle.hyperlink: Hyperlink?`) — Cell-shape change
+- OSC 52 clipboard set path (query path may slip to Phase 4)
+- DECSCUSR cursor shape, blink uniform
+- DECOM, DECCOLM
+- DA1 / DA2 / CPR responses (write-back-to-PTY path)
+- `DaemonResponse.clipboardWrite(...)` new XPC push case for OSC 52
+
+**Deferred past Phase 3 (still open, not scheduled):**
+- `Span<Cell>` at internal API boundaries — no profiling evidence of a regression that demands it
+- `CellStyle` flyweight via `styleID: UInt16` + `StyleTable` — revisit conditionally if OSC 8 + full hyperlink cell surface crosses the memory-pressure gate (see Phase 3 open question 2)
+- Per-row dirty tracking — version counter + full-frame re-upload is sufficient
+- `DaemonRequest.fetchHistory(sessionID:, rowRange:)` for deep backscroll — 500-row attach still sufficient
+- Unicode glyph atlas beyond ASCII (dynamic LRU + CoreText fallback) — Phase 4 material
+- Sixel / kitty graphics (DCS passthrough) — Phase 4+
+- Mouse tracking (X10, UTF-8 1005, SGR 1006, urxvt 1015) — Phase 4
+- Character sets (G0/G1, SS2/SS3, DEC special graphics) — Phase 4+
+- East Asian wide characters — separate spec
 - GPU-side color projection (uniform palette + enum-encoded Cell colors)
 - LUT-based color quantization (32K RGB bins → palette index)
 - `protocolVersion` envelope field — only if daemon and client ever ship on separate cadences
 
 ## Appendix B — Non-goals
 
-Explicitly not addressed in this spec:
+Updated 2026-05-02. Some items moved into Phase 3 scope (see §8); those are no longer non-goals.
 
-- Mouse reporting (SGR 1000/1002/1006 — future work)
-- Character sets (G0/G1 switching, DEC special graphics — future work)
-- DCS passthrough (sixel graphics, kitty image protocol — future work)
-- VT100 hard reset (RIS — out of scope)
-- Multi-byte character widths (East Asian wide characters — needs tracking as a separate spec)
+Still not addressed in this spec:
+
+- Mouse reporting (SGR 1000/1002/1006) — Phase 4
+- Character sets (G0/G1 switching, DEC special graphics) — Phase 4+
+- DCS passthrough (sixel graphics, kitty image protocol) — Phase 4+
+- VT100 hard reset (RIS) — out of scope
+- Multi-byte character widths (East Asian wide characters) — needs tracking as a separate spec
 - Configurable keybindings (input side — separate concern)
 - Per-session palette overrides (palette is client-global, not session-local)
+
+**Moved into Phase 3 scope** (no longer non-goals): OSC 8 hyperlinks, OSC 52 clipboard, DECSCUSR cursor shape, blink, DECOM, DECCOLM, DA1/DA2/CPR responses, palette chooser UI.
