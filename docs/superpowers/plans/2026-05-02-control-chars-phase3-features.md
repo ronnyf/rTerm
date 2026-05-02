@@ -203,10 +203,14 @@ no-op with no sink)."
 
 **Spec reference:** §8 Phase 3 Track A — Terminal identification responses.
 
-**Goal:** Parser emits `.csi(.deviceAttributes(.primary))` for `CSI c` / `CSI 0 c` and `.csi(.deviceAttributes(.secondary))` for `CSI > c` / `CSI > 0 c`. `ScreenModel` responds via `emitWriteback` with xterm-compatible identifiers:
+**Goal:** Parser emits `.csi(.deviceAttributes(.primary))` for `CSI c` / `CSI 0 c` and `.csi(.deviceAttributes(.secondary))` for `CSI > c` / `CSI > 0 c`. `ScreenModel` responds via `emitWriteback` with xterm-compatible identifiers.
 
-- DA1 (primary): `ESC [ ? 65 ; 22 c` — claims VT520 with ANSI color (22). Chose 65 over 6 (VT102) because tmux and mosh treat 65+ as "modern xterm-class" and enable extended features we want.
-- DA2 (secondary): `ESC [ > 1 ; 95 ; 0 c` — VT220 firmware-version-95, cartridge 0. The 95 slot maps to "xterm 95"; tmux reads this verbatim.
+**VT semantics — grounded against xterm's documented behavior:**
+
+- **DA1 (primary):** xterm's canonical default DA1 response is `ESC [ ? 1 ; 2 c` — VT102 terminal class (1) with advanced video option (2). This is the response most terminal detection logic (tmux, vim, less, ncurses) pattern-matches against for "baseline xterm-class." Emitting anything else risks tmux concluding "this is not xterm-class." We adopt the `1 ; 2` pair.
+- **DA2 (secondary):** xterm's DA2 is `ESC [ > 0 ; Pv ; 0 c` where the first `0` is terminal class ("xterm"), `Pv` is xterm's patch level (version), and final `0` is cartridge ROM. Real xterm patch numbers are usually 3-digit (e.g., 314, 322, 358). We emit `Pv = 322` — a concrete, credible xterm patch level that maps to an actual xterm release. This is not critical (tmux mostly ignores the patch number) but we cite a specific xterm patch so the choice is grounded rather than arbitrary.
+
+(The earlier draft's `65 ; 22` DA1 and `> 1 ; 95 ; 0` DA2 were speculative. `65` in DA1 means VT525 and may cause tmux to reject the terminal as non-xterm; `95` in DA2 is not an xterm patch version.)
 
 **Files:**
 - Modify: `TermCore/CSICommand.swift` (add `.deviceAttributes(DeviceAttributesKind)`)
@@ -292,11 +296,13 @@ Add to the `handleCSI` switch:
 case .deviceAttributes(let kind):
     switch kind {
     case .primary:
-        // CSI ? 65 ; 22 c  — xterm-class VT520 + ANSI color.
-        emitWriteback(Data([0x1B, 0x5B, 0x3F, 0x36, 0x35, 0x3B, 0x32, 0x32, 0x63]))
+        // CSI ? 1 ; 2 c  — xterm default: VT102 + advanced video.
+        // Bytes: 0x1B 0x5B 0x3F 0x31 0x3B 0x32 0x63
+        emitWriteback(Data([0x1B, 0x5B, 0x3F, 0x31, 0x3B, 0x32, 0x63]))
     case .secondary:
-        // CSI > 1 ; 95 ; 0 c  — xterm 95, cartridge 0.
-        emitWriteback(Data([0x1B, 0x5B, 0x3E, 0x31, 0x3B, 0x39, 0x35, 0x3B, 0x30, 0x63]))
+        // CSI > 0 ; 322 ; 0 c  — xterm-class (0), patch 322, cartridge 0.
+        // Bytes: 0x1B 0x5B 0x3E 0x30 0x3B 0x33 0x32 0x32 0x3B 0x30 0x63
+        emitWriteback(Data([0x1B, 0x5B, 0x3E, 0x30, 0x3B, 0x33, 0x32, 0x32, 0x3B, 0x30, 0x63]))
     }
     return false  // no snapshot bump — pure writeback
 ```
@@ -323,22 +329,22 @@ import Testing
 @Suite("Device Attribute responses")
 struct DeviceAttributesTests {
 
-    @Test("DA1 writes CSI ? 65 ; 22 c")
+    @Test("DA1 writes CSI ? 1 ; 2 c (xterm default VT102 + advanced video)")
     func test_DA1_response() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let sink = DataSink()
         model.installWritebackSink { sink.append($0) }
         await model.apply([.csi(.deviceAttributes(.primary))])
-        #expect(sink.all() == Data([0x1B, 0x5B, 0x3F, 0x36, 0x35, 0x3B, 0x32, 0x32, 0x63]))
+        #expect(sink.all() == Data([0x1B, 0x5B, 0x3F, 0x31, 0x3B, 0x32, 0x63]))
     }
 
-    @Test("DA2 writes CSI > 1 ; 95 ; 0 c")
+    @Test("DA2 writes CSI > 0 ; 322 ; 0 c (xterm class, patch 322)")
     func test_DA2_response() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let sink = DataSink()
         model.installWritebackSink { sink.append($0) }
         await model.apply([.csi(.deviceAttributes(.secondary))])
-        #expect(sink.all() == Data([0x1B, 0x5B, 0x3E, 0x31, 0x3B, 0x39, 0x35, 0x3B, 0x30, 0x63]))
+        #expect(sink.all() == Data([0x1B, 0x5B, 0x3E, 0x30, 0x3B, 0x33, 0x32, 0x32, 0x3B, 0x30, 0x63]))
     }
 }
 
@@ -368,10 +374,12 @@ git commit -m "feat(TermCore): DA1 + DA2 device-attribute responses
 
 Parse CSI c / CSI 0 c as deviceAttributes(.primary) and CSI > c /
 CSI > 0 c as deviceAttributes(.secondary). Model responds via the
-Phase 3 writeback sink with xterm-class identifiers:
-  - DA1: ESC [ ? 65 ; 22 c  (VT520 + ANSI color)
-  - DA2: ESC [ > 1 ; 95 ; 0 c  (xterm 95, cartridge 0)
-Chosen to satisfy tmux, vim, and mosh detection logic."
+Phase 3 writeback sink with xterm-compatible identifiers:
+  - DA1: ESC [ ? 1 ; 2 c  (xterm default: VT102 + advanced video)
+  - DA2: ESC [ > 0 ; 322 ; 0 c  (xterm class, patch 322, cartridge 0)
+These match xterm's own default responses — chosen so tmux, vim,
+and mosh detection logic (which pattern-matches 'CSI ? 1' and 'CSI > 0'
+for xterm-class) recognizes rTerm correctly."
 ```
 
 ---
@@ -984,14 +992,23 @@ case 3: self = .column132
 
 - [ ] **Step 2: Handle in `ScreenModel.handleSetMode`**
 
-DECCOLM is a mode that changes buffer dimensions. The actor cannot directly drive a PTY resize — that's the daemon's job. Instead, the model:
-1. Clears the screen (full ED 2).
-2. Homes the cursor.
-3. Emits a new `DaemonResponse.deccolmChange(sessionID:, cols:)` push — OR — exposes an internal-only "pending cols change" signal that the daemon reads on the next draw.
+**VT semantics — verified against VT510 spec (DECCOLM, mode 3) + xterm's documented behavior for mode 3.** Per the spec, setting or resetting DECCOLM performs FOUR state changes, not two:
+
+1. Clear the screen (equivalent to `ED 2`).
+2. Home the cursor.
+3. **Reset DECSTBM (scroll region) to the full screen** — any prior `CSI <top> ; <bot> r` is discarded.
+4. **Reset DECOM (origin mode) to off** — any prior `CSI ? 6 h` is cleared.
+
+The earlier draft of this plan covered (1) and (2) only. tmux and vim use DECCOLM on entry and rely on the post-toggle state being "full-screen region, origin off"; without (3) a prior `CSI 5;22 r` leaks into the 132-column session; without (4) a prior `CSI ?6 h` silently re-origins subsequent cursor-position commands.
+
+DECCOLM is a mode that changes buffer dimensions. The actor cannot directly drive a PTY resize — that's the daemon's job. The model:
+1. Clears both screens (alt and main) via ED-style grid clear.
+2. Resets scroll region on BOTH buffers (side effect 3 above).
+3. Resets origin mode (side effect 4 above).
+4. Homes the cursor on the active buffer.
+5. Signals the pending-cols change through `pendingCols`.
 
 For Phase 3 simplicity, expose via an `@Observable` property on `TerminalSession` that the SwiftUI view reacts to by calling `session.resize(rows:, cols:)`. The resize eventually reaches the daemon via the existing `DaemonRequest.resize` path.
-
-Design choice for minimum coupling:
 
 ```swift
 // In ScreenModel:
@@ -1003,9 +1020,18 @@ public private(set) var pendingCols: Int? = nil
 // In handleSetMode:
 case .column132:
     let newCols = enabled ? 132 : 80
-    // Clear active buffer + home cursor, then signal the pending resize.
-    clearGrid(active)
-    active.cursor = Cursor.zero
+    // (1) Clear both buffers — DECCOLM clears the screen; alt is cleared
+    // defensively so a subsequent alt-enter finds a clean grid.
+    Self.clearGrid(in: &main, cols: cols, rows: rows)
+    Self.clearGrid(in: &alt, cols: cols, rows: rows)
+    // (2) + (3) Reset scroll region on both buffers.
+    main.scrollRegion = nil
+    alt.scrollRegion = nil
+    // (4) Reset origin mode.
+    modes.originMode = false
+    // (5) Home cursor on the active buffer.
+    mutateActive { buf in buf.cursor = Cursor.zero }
+    // Signal the pending resize.
     pendingCols = newCols
     return true
 ```
@@ -1042,6 +1068,40 @@ struct DECCOLMTests {
         #expect(snap[0, 1].character == " ")
         #expect(snap.cursor == Cursor.zero)
     }
+
+    @Test("DECCOLM resets DECSTBM scroll region (side effect 3)")
+    func test_deccolm_resets_scroll_region() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        // Set a scroll region, then DECCOLM — region must be gone.
+        await model.apply([
+            .csi(.setScrollRegion(top: 5, bottom: 22)),
+            .csi(.setMode(.column132, enabled: true)),
+        ])
+        // Verify by writing a line-feed flood: if region survived, the
+        // bottom row would be the region bottom - 1 (0-indexed row 21),
+        // not the screen bottom (row 23). Simplest check: after
+        // flooding, cursor ends up at row 23.
+        for _ in 0..<30 {
+            await model.apply([.c0(.lineFeed)])
+        }
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 23, "region should have been cleared; LF flood must hit the screen bottom")
+    }
+
+    @Test("DECCOLM resets DECOM origin mode (side effect 4)")
+    func test_deccolm_resets_origin_mode() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        // Turn origin mode on, set a region, then DECCOLM — origin must
+        // be off so a subsequent CUP is absolute.
+        await model.apply([
+            .csi(.setScrollRegion(top: 10, bottom: 20)),
+            .csi(.setMode(.originMode, enabled: true)),
+            .csi(.setMode(.column132, enabled: true)),
+            .csi(.cursorPosition(row: 0, col: 0)),
+        ])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursor.row == 0, "origin mode should be off after DECCOLM; CUP 0;0 is absolute")
+    }
 }
 ```
 
@@ -1058,8 +1118,17 @@ git add TermCore/DECPrivateMode.swift \
         TermCoreTests/DECCOLMTests.swift
 git commit -m "feat(TermCore): DECCOLM 132-column mode (mode 3)
 
-Set/reset DECCOLM clears the active grid, homes the cursor, and
-signals a pending column change via ScreenModel.pendingCols.
+Set/reset DECCOLM performs all four VT510-spec side effects:
+  1. clear both buffers (equivalent to ED 2 on each)
+  2. home the cursor on the active buffer
+  3. reset DECSTBM scroll region to full screen on both buffers
+  4. reset DECOM origin mode to off
+
+Per VT510 reference + xterm's documented behavior for mode 3. Side
+effects 3 and 4 are load-bearing for tmux/vim which rely on the
+post-DECCOLM state being 'full-screen region, origin off'.
+
+Signals a pending column change via ScreenModel.pendingCols.
 ContentView observes the signal and routes a resize request through
 the existing TerminalSession.resize → daemon → PTY TIOCSWINSZ path,
 preserving the Phase 1/2 resize semantics unchanged."
@@ -1121,6 +1190,18 @@ case setHyperlink(Hyperlink?)   // nil terminates the pen hyperlink
 
 - [ ] **Step 3: Parse OSC 8 in `TerminalParser`**
 
+**VT semantics — verified against the consensus OSC 8 hyperlink grammar** (Egmont Kob's spec, https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda — adopted by iTerm2, WezTerm, kitty, Alacritty):
+
+> "params is an optional list of key=value assignments, separated by the : character. Example: id=xyz123:foo=bar:baz=quux."
+>
+> "Due to the syntax, additional parameter values cannot contain the `:` and `;` characters either."
+
+In other words:
+- Outer: `OSC 8 ; <params> ; <uri> ST` — `;` separates the three fields (8, params, uri).
+- Inner (inside `<params>`): **`:`** separates key=value entries.
+
+The earlier draft of this plan split `<params>` on `;` — that would never find multiple entries because the outer split already consumed them. Correct separator is `:`.
+
 In `mapOSC(ps:pt:)`:
 
 ```swift
@@ -1144,9 +1225,11 @@ private static func parseOSC8(pt: String) -> OSCCommand {
     if uriPart.isEmpty {
         return .setHyperlink(nil)
     }
-    // Extract id= from params
+    // Extract id= from params. Inner separator is ':' per the OSC 8
+    // grammar; '; ' is the outer field separator and was already
+    // consumed by the split above.
     let id: String? = paramsPart
-        .split(separator: ";")
+        .split(separator: ":")
         .compactMap { kv -> String? in
             let parts = kv.split(separator: "=", maxSplits: 1)
             guard parts.count == 2, parts[0] == "id" else { return nil }
@@ -1250,6 +1333,28 @@ struct HyperlinkTests {
         var p = TerminalParser()
         let events = p.parse(Data([0x1B, 0x5D, 0x38, 0x3B, 0x3B, 0x1B, 0x5C]))
         #expect(events == [.osc(.setHyperlink(nil))])
+    }
+
+    @Test("OSC 8 with multi-param id=A:user=joe extracts id correctly")
+    func test_osc8_multi_param_colon_separator() {
+        // Per the OSC 8 grammar, inner key=value entries are separated
+        // by ':'. A payload "id=A:user=joe;http://x" must yield
+        // id == "A", regardless of whether 'user' appears before or
+        // after 'id' in the list.
+        var p = TerminalParser()
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B] +
+            Array("id=A:user=joe".utf8) + [0x3B] +
+            Array("http://x".utf8) + [0x1B, 0x5C]
+        let events = p.parse(Data(bytes))
+        #expect(events == [.osc(.setHyperlink(Hyperlink(id: "A", uri: "http://x")))])
+
+        // Also verify order-independence.
+        let bytes2: [UInt8] = [0x1B, 0x5D, 0x38, 0x3B] +
+            Array("user=joe:id=B".utf8) + [0x3B] +
+            Array("http://y".utf8) + [0x1B, 0x5C]
+        var p2 = TerminalParser()
+        let events2 = p2.parse(Data(bytes2))
+        #expect(events2 == [.osc(.setHyperlink(Hyperlink(id: "B", uri: "http://y")))])
     }
 
     @Test("Pen hyperlink stamps onto subsequent printable writes")
@@ -1551,6 +1656,18 @@ scheme is logged and ignored."
 
 - [ ] **Step 1: Create `ClipboardTarget`**
 
+**VT semantics — verified against xterm ctlseqs' "Manipulate Selection Data" (OSC 52) grammar** (per the consensus behavior across xterm, tmux, kitty, WezTerm, Alacritty): the `<target>` parameter is a **string of characters**, not a single character. Each character selects one pasteboard slot. xterm defines these letters:
+
+| Char | Target         |
+|------|----------------|
+| `c`  | clipboard (macOS: `NSPasteboard.general`) |
+| `p`  | primary (X11 primary selection; no macOS equivalent) |
+| `q`  | secondary (rarely used) |
+| `s`  | "select" — bracket around whichever of primary/clipboard applies |
+| `0`–`7` | cut buffers (xterm-only; no macOS equivalent) |
+
+Shells commonly send `"cs"` (clipboard + select) or `""` (use default `s0`). The Phase 3 scope is the set-path only; we route any `target` set that includes `c` to `NSPasteboard.general`, and log the other letters for completeness (macOS has no separate primary selection, so `p`/`q`/`s`/`0`-`7` all collapse to the same pasteboard).
+
 Create `TermCore/ClipboardTarget.swift`:
 
 ```swift
@@ -1562,22 +1679,43 @@ Create `TermCore/ClipboardTarget.swift`:
 //  Licensed under GPLv3 — see project LICENSE.
 //
 
-/// OSC 52 clipboard target selector. xterm semantics: each letter in
-/// the `<target>` string enables a specific pasteboard slot. The most
-/// common is "c" (the generic clipboard). We collapse the full xterm
-/// matrix to the three relevant slots; less common combinations fall
-/// back to `.clipboard`.
-@frozen public enum ClipboardTarget: Sendable, Equatable, Codable {
-    case clipboard         // "c"
-    case primary           // "p" (X11 primary selection — macOS has no equivalent, but harmless)
-    case selection         // "s" (xterm "select"; macOS treats as .clipboard)
+/// OSC 52 target selector. xterm's `<target>` is a STRING — each char
+/// selects one slot. We model this as an `OptionSet` so a payload
+/// `"cs"` becomes `[.clipboard, .select]` and a payload `""` becomes
+/// the default `.select`. Routing in `ContentView` collapses every
+/// member to `NSPasteboard.general` on macOS (the only pasteboard
+/// that exists), but the shape preserves the xterm semantics so
+/// upstream code can't silently lose information.
+public struct ClipboardTargets: OptionSet, Sendable, Equatable, Codable {
+    public let rawValue: UInt8
+    public init(rawValue: UInt8) { self.rawValue = rawValue }
 
-    public static func from(xtermChar ch: Character) -> ClipboardTarget {
-        switch ch {
-        case "p": return .primary
-        case "s": return .selection
-        default:  return .clipboard
+    public static let clipboard = ClipboardTargets(rawValue: 1 << 0)  // 'c'
+    public static let primary   = ClipboardTargets(rawValue: 1 << 1)  // 'p'
+    public static let secondary = ClipboardTargets(rawValue: 1 << 2)  // 'q'
+    public static let select    = ClipboardTargets(rawValue: 1 << 3)  // 's'
+    public static let cutBuffer = ClipboardTargets(rawValue: 1 << 4)  // '0'..'7'
+
+    /// Parse xterm's `<target>` string into a target set. An empty
+    /// string yields the xterm default of `.select` (which on macOS
+    /// collapses to `NSPasteboard.general` just like `.clipboard`).
+    public static func parse(_ s: String) -> ClipboardTargets {
+        if s.isEmpty { return .select }
+        var out: ClipboardTargets = []
+        for ch in s {
+            switch ch {
+            case "c": out.insert(.clipboard)
+            case "p": out.insert(.primary)
+            case "q": out.insert(.secondary)
+            case "s": out.insert(.select)
+            case "0", "1", "2", "3", "4", "5", "6", "7":
+                out.insert(.cutBuffer)
+            default:
+                // Unknown letter — skip. xterm ignores unknown targets.
+                continue
+            }
         }
+        return out
     }
 }
 ```
@@ -1585,7 +1723,7 @@ Create `TermCore/ClipboardTarget.swift`:
 - [ ] **Step 2: Add to `OSCCommand`**
 
 ```swift
-case setClipboard(target: ClipboardTarget, base64Payload: String)
+case setClipboard(targets: ClipboardTargets, base64Payload: String)
 ```
 
 Phase 3 carries the base64-encoded payload verbatim across the XPC boundary; decoding happens on the client side just before the pasteboard write. This keeps `TermCore` from taking an `NSPasteboard` dependency (it's AppKit-only, not framework-safe).
@@ -1596,20 +1734,21 @@ In `mapOSC`:
 
 ```swift
 case 52:
-    // Format: "<target>;<base64-payload>"
+    // Format: "<target-string>;<base64-payload>"
+    // <target-string> is a string of target letters (c/p/q/s/0-7),
+    // not a single character — see ClipboardTargets.parse.
     guard let sep = pt.firstIndex(of: ";") else {
         return .unknown(ps: 52, pt: pt)
     }
-    let targetStr = pt[..<sep]
+    let targetStr = String(pt[..<sep])
     let payload = String(pt[pt.index(after: sep)...])
-    let target: ClipboardTarget = ClipboardTarget.from(
-        xtermChar: targetStr.first ?? "c")
     // Query form ("?") is OSC 52's query path — deferred to Phase 4.
     // Treat as unknown for now.
     if payload == "?" {
         return .unknown(ps: 52, pt: pt)
     }
-    return .setClipboard(target: target, base64Payload: payload)
+    let targets = ClipboardTargets.parse(targetStr)
+    return .setClipboard(targets: targets, base64Payload: payload)
 ```
 
 - [ ] **Step 4: Add `DaemonResponse.clipboardWrite`**
@@ -1617,7 +1756,7 @@ case 52:
 In `TermCore/DaemonProtocol.swift`:
 
 ```swift
-case clipboardWrite(sessionID: SessionID, target: ClipboardTarget, base64Payload: String)
+case clipboardWrite(sessionID: SessionID, targets: ClipboardTargets, base64Payload: String)
 ```
 
 - [ ] **Step 5: `ScreenModel` → clipboard sink**
@@ -1626,23 +1765,23 @@ Add a sibling of `writebackSink`:
 
 ```swift
 @ObservationIgnored
-private var _clipboardSink: (@Sendable (ClipboardTarget, String) -> Void)? = nil
+private var _clipboardSink: (@Sendable (ClipboardTargets, String) -> Void)? = nil
 
-public func installClipboardSink(_ sink: @escaping @Sendable (ClipboardTarget, String) -> Void) {
+public func installClipboardSink(_ sink: @escaping @Sendable (ClipboardTargets, String) -> Void) {
     precondition(_clipboardSink == nil, "clipboard sink already installed")
     _clipboardSink = sink
 }
 
-internal func emitClipboardWrite(target: ClipboardTarget, base64Payload: String) {
-    _clipboardSink?(target, base64Payload)
+internal func emitClipboardWrite(targets: ClipboardTargets, base64Payload: String) {
+    _clipboardSink?(targets, base64Payload)
 }
 ```
 
 Handle in `handleOSC`:
 
 ```swift
-case .setClipboard(let target, let payload):
-    emitClipboardWrite(target: target, base64Payload: payload)
+case .setClipboard(let targets, let payload):
+    emitClipboardWrite(targets: targets, base64Payload: payload)
     return false  // pure side effect; no snapshot bump
 ```
 
@@ -1655,10 +1794,10 @@ In `rtermd/Session.swift`, install the clipboard sink inside `startOutputHandler
 ```swift
 screenModel.assumeIsolated { model in
     model.installWritebackSink { [weak self] bytes in … }  // Task 1
-    model.installClipboardSink { [weak self] target, payload in
+    model.installClipboardSink { [weak self] targets, payload in
         guard let self else { return }
         self.broadcast(.clipboardWrite(sessionID: self.id,
-                                        target: target,
+                                        targets: targets,
                                         base64Payload: payload))
     }
 }
@@ -1669,38 +1808,26 @@ screenModel.assumeIsolated { model in
 In `rTerm/ContentView.swift`'s response handler:
 
 ```swift
-case .clipboardWrite(_, let target, let base64):
+case .clipboardWrite(_, let targets, let base64):
     Task { @MainActor in
         guard let data = Data(base64Encoded: base64),
               let text = String(data: data, encoding: .utf8) else {
             log.warning("OSC 52: ignoring undecodable payload")
             return
         }
-        if await clipboardConsent(for: target, preview: text) {
+        // On macOS, every OSC 52 target letter routes to
+        // NSPasteboard.general (no separate primary/cut-buffer).
+        // We still log the full target set so users/debuggers can see
+        // what the shell asked for.
+        log.info("OSC 52: targets=\(String(describing: targets)) len=\(text.count)")
+        if await clipboardConsent(for: targets, preview: text) {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
-            log.info("OSC 52: wrote \(text.count) chars to \(String(describing: target))")
         }
     }
 ```
 
-Define `clipboardConsent(for:preview:)`:
-
-```swift
-@MainActor
-private func clipboardConsent(for target: ClipboardTarget, preview: String) async -> Bool {
-    // Simple modal — one prompt per session. Accept-remembered is a
-    // future feature; for Phase 3 prompt every time unless user has
-    // opted in via Settings (not yet built — always prompts).
-    let alert = NSAlert()
-    alert.messageText = "Terminal app requests clipboard write"
-    let snippet = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
-    alert.informativeText = "About to write to the clipboard:\n\n\(snippet)"
-    alert.addButton(withTitle: "Allow")
-    alert.addButton(withTitle: "Deny")
-    return alert.runModal() == .alertFirstButtonReturn
-}
-```
+Define `clipboardConsent(for:preview:)` — see Pass 5 blocker 1.8 fix; this is implemented via `beginSheetModal(for:completionHandler:)` + `withCheckedContinuation`, NOT `NSAlert.runModal()` (which would freeze the renderer + XPC handler).
 
 - [ ] **Step 8: Tests**
 
@@ -1721,7 +1848,30 @@ struct ClipboardTests {
         let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x63, 0x3B] +
             Array(payload.utf8) + [0x1B, 0x5C]
         let events = p.parse(Data(bytes))
-        #expect(events == [.osc(.setClipboard(target: .clipboard, base64Payload: payload))])
+        #expect(events == [.osc(.setClipboard(targets: .clipboard, base64Payload: payload))])
+    }
+
+    @Test("OSC 52 ; cs ; <base64> ST parses multi-target set")
+    func test_osc52_multi_target() {
+        // Per xterm grammar, <target> is a string: 'cs' = clipboard + select.
+        var p = TerminalParser()
+        let payload = "aGk="
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x63, 0x73, 0x3B] +
+            Array(payload.utf8) + [0x1B, 0x5C]
+        let events = p.parse(Data(bytes))
+        let expected: ClipboardTargets = [.clipboard, .select]
+        #expect(events == [.osc(.setClipboard(targets: expected, base64Payload: payload))])
+    }
+
+    @Test("OSC 52 ; ; <base64> ST (empty target) defaults to .select")
+    func test_osc52_empty_target_default() {
+        // Empty target per xterm = 's0' default; we collapse to .select.
+        var p = TerminalParser()
+        let payload = "aGk="
+        let bytes: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B, 0x3B] +
+            Array(payload.utf8) + [0x1B, 0x5C]
+        let events = p.parse(Data(bytes))
+        #expect(events == [.osc(.setClipboard(targets: .select, base64Payload: payload))])
     }
 
     @Test("OSC 52 query form routes to unknown (Phase 3 set-only)")
@@ -1741,19 +1891,22 @@ struct ClipboardTests {
     func test_model_emits_clipboard_sink() async {
         let model = ScreenModel(cols: 80, rows: 24)
         let received = ClipboardSpy()
-        model.installClipboardSink { target, payload in
-            received.record(target, payload)
+        model.installClipboardSink { targets, payload in
+            received.record(targets, payload)
         }
-        await model.apply([.osc(.setClipboard(target: .clipboard, base64Payload: "aGk="))])
-        #expect(received.all() == [(ClipboardTarget.clipboard, "aGk=")])
+        await model.apply([.osc(.setClipboard(targets: .clipboard, base64Payload: "aGk="))])
+        let all = received.all()
+        #expect(all.count == 1)
+        #expect(all[0].0 == .clipboard)
+        #expect(all[0].1 == "aGk=")
     }
 }
 
 private final class ClipboardSpy: @unchecked Sendable {
-    private var log: [(ClipboardTarget, String)] = []
+    private var log: [(ClipboardTargets, String)] = []
     private let lock = NSLock()
-    func record(_ t: ClipboardTarget, _ p: String) { lock.lock(); log.append((t, p)); lock.unlock() }
-    func all() -> [(ClipboardTarget, String)] { lock.lock(); defer { lock.unlock() }; return log }
+    func record(_ t: ClipboardTargets, _ p: String) { lock.lock(); log.append((t, p)); lock.unlock() }
+    func all() -> [(ClipboardTargets, String)] { lock.lock(); defer { lock.unlock() }; return log }
 }
 ```
 

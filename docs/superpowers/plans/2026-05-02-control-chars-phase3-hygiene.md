@@ -232,6 +232,8 @@ Use the existing fixture structure. The sequence should:
 
 - [ ] **Step 2: Add the fixture + test**
 
+**Assertion design note:** the earlier draft of this fixture applied the entire byte stream in a single `model.apply(events)` call and asserted only the final `activeBuffer == .main` state. That admits a buggy handler that treats `1049 h`/`1049 l` as no-ops — both enter and exit become no-ops, the shell's content goes to main, and the end state still satisfies `.main`. The rewritten test splits the stream into two halves so we assert (a) alt was entered AND (b) alt grid holds the shell-drawn content, THEN (c) exit restores main with the MAIN content intact.
+
 Append to `TerminalIntegrationTests.swift`:
 
 ```swift
@@ -251,45 +253,51 @@ func top_like_pattern_round_trips_alt_screen() async {
     #expect(beforeAlt.activeBuffer == .main)
     #expect(beforeAlt[0, 0].character == "M")
 
-    // Raw top-style byte stream. Hand-assembled; keep it readable.
-    var bytes: [UInt8] = []
+    // --- Part 1: alt enter + draw (everything before 1049 exit). ---
+    var enterBytes: [UInt8] = []
     // ESC [ ? 1049 h  — save main cursor, swap to alt, clear alt
-    bytes += [0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68]
+    enterBytes += [0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68]
     // ESC [ 2 J  — erase in display, all
-    bytes += [0x1B, 0x5B, 0x32, 0x4A]
+    enterBytes += [0x1B, 0x5B, 0x32, 0x4A]
     // ESC [ H  — cursor to 1;1
-    bytes += [0x1B, 0x5B, 0x48]
+    enterBytes += [0x1B, 0x5B, 0x48]
     // Bold + reverse header row
-    bytes += [0x1B, 0x5B, 0x31, 0x3B, 0x37, 0x6D]        // ESC [ 1 ; 7 m
-    bytes += Array("PID   USER   CPU%".utf8)
-    bytes += [0x1B, 0x5B, 0x30, 0x6D]                    // ESC [ 0 m
+    enterBytes += [0x1B, 0x5B, 0x31, 0x3B, 0x37, 0x6D]        // ESC [ 1 ; 7 m
+    enterBytes += Array("PID   USER   CPU%".utf8)
+    enterBytes += [0x1B, 0x5B, 0x30, 0x6D]                    // ESC [ 0 m
     // Move to row 2: ESC [ 2 ; 1 H
-    bytes += [0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48]
+    enterBytes += [0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48]
     // DECSTBM: ESC [ 3 ; 22 r
-    bytes += [0x1B, 0x5B, 0x33, 0x3B, 0x32, 0x32, 0x72]
+    enterBytes += [0x1B, 0x5B, 0x33, 0x3B, 0x32, 0x32, 0x72]
     // 5 colored process rows
     for i in 0..<5 {
-        // ESC [ 32 m   (green)
-        bytes += [0x1B, 0x5B, 0x33, 0x32, 0x6D]
+        enterBytes += [0x1B, 0x5B, 0x33, 0x32, 0x6D]           // ESC [ 32 m (green)
         let line = "proc\(i)  alice   1.\(i)%"
-        bytes += Array(line.utf8)
-        bytes += [0x0D, 0x0A]
+        enterBytes += Array(line.utf8)
+        enterBytes += [0x0D, 0x0A]
     }
-    // Partial repaint: cursor to row 3 col 1, overwrite with "*" marker
-    bytes += [0x1B, 0x5B, 0x33, 0x3B, 0x31, 0x48]
-    bytes += [0x2A]  // '*'
-    // ESC [ ? 1049 l  — exit alt, restore main cursor
-    bytes += [0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x6C]
+    // Partial repaint: cursor to row 3 col 1, overwrite with "*"
+    enterBytes += [0x1B, 0x5B, 0x33, 0x3B, 0x31, 0x48]
+    enterBytes += [0x2A]
 
     var parser = TerminalParser()
-    let events = parser.parse(Data(bytes))
-    await model.apply(events)
+    let enterEvents = parser.parse(Data(enterBytes))
+    await model.apply(enterEvents)
+
+    // Assert we actually landed on alt and the shell's content is there.
+    let mid = model.latestSnapshot()
+    #expect(mid.activeBuffer == .alt, "1049 h must swap to alt buffer")
+    #expect(mid[0, 0].character == "P", "header row 'P' from 'PID ...' must be on alt")
+    #expect(mid[2, 0].character == "*", "partial repaint '*' must be at row 3 col 1 of alt")
+
+    // --- Part 2: exit alt. ---
+    // ESC [ ? 1049 l
+    var exitBytes: [UInt8] = [0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x6C]
+    let exitEvents = parser.parse(Data(exitBytes))
+    await model.apply(exitEvents)
 
     let after = model.latestSnapshot()
-
-    // After exiting alt, we should be back on main with the original MAIN
-    // text still intact.
-    #expect(after.activeBuffer == .main, "exited alt back to main")
+    #expect(after.activeBuffer == .main, "1049 l must restore main")
     #expect(after[0, 0].character == "M")
     #expect(after[0, 1].character == "A")
     #expect(after[0, 2].character == "I")
