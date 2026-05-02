@@ -162,9 +162,9 @@ struct ScreenModelTests {
         #expect(snap.cursor == Cursor(row: 0, col: 2))
     }
 
-    // MARK: - Bell is no-op
+    // MARK: - Bell does not affect cursor or grid
 
-    @Test func bellIsNoOp() async {
+    @Test func bell_does_not_move_cursor_or_affect_grid() async {
         let model = ScreenModel(cols: 4, rows: 3)
         await model.apply([.printable("A"), .c0(.bell), .printable("B")])
         let snap = await model.snapshot()
@@ -537,5 +537,116 @@ struct ScreenModelVersionTests {
         let v0 = model.latestSnapshot().version
         await model.apply([.csi(.cursorPosition(row: 5, col: 5))])
         #expect(model.latestSnapshot().version == v0 + 1)
+    }
+}
+
+// MARK: - DEC private modes (Phase 2 T3)
+
+struct ScreenModelModeTests {
+
+    @Test("DECAWM disable: writing past last column overwrites the last cell")
+    func test_decawm_off_overwrites_last_column() async {
+        let model = ScreenModel(cols: 5, rows: 3)
+        // Disable autoWrap.
+        await model.apply([.csi(.setMode(.autoWrap, enabled: false))])
+        // Fill the row past its end.
+        let chars: [TerminalEvent] = "abcdefg".map { .printable($0) }
+        await model.apply(chars)
+        let snap = model.latestSnapshot()
+        // Row 0: "abcdg" — the first 4 cells hold abcd; the last cell holds the
+        // most-recently-written byte (g) because each subsequent write overwrites.
+        let row0: String = (0..<5).map { String(snap[0, $0].character) }.joined()
+        #expect(row0 == "abcdg")
+        // Cursor stayed on row 0; no wrap occurred.
+        #expect(snap.cursor.row == 0)
+    }
+
+    @Test("DECAWM re-enable: wrapping resumes after being turned back on")
+    func test_decawm_reenable_wraps() async {
+        let model = ScreenModel(cols: 3, rows: 2)
+        await model.apply([.csi(.setMode(.autoWrap, enabled: false))])
+        // Fill past the end with autoWrap off — cursor stays on row 0.
+        await model.apply("abcde".map { .printable($0) })
+        #expect(model.latestSnapshot().cursor.row == 0)
+        // Re-enable DECAWM, then write one more — should wrap to row 1.
+        await model.apply([
+            .csi(.setMode(.autoWrap, enabled: true)),
+            .printable("f"),
+        ])
+        #expect(model.latestSnapshot().cursor.row == 1)
+    }
+
+    @Test("DECTCEM disable: snapshot.cursorVisible reflects the change")
+    func test_dectcem_off() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.cursorVisible, enabled: false))])
+        let snap = model.latestSnapshot()
+        #expect(snap.cursorVisible == false)
+    }
+
+    @Test("DECCKM enable: snapshot.cursorKeyApplication = true")
+    func test_decckm_on() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.cursorKeyApplication, enabled: true))])
+        #expect(model.latestSnapshot().cursorKeyApplication == true)
+    }
+
+    @Test("Bracketed paste enable: snapshot.bracketedPaste = true")
+    func test_bracketed_paste_on() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.bracketedPaste, enabled: true))])
+        #expect(model.latestSnapshot().bracketedPaste == true)
+    }
+
+    @Test("Mode toggle to same value does not bump version")
+    func test_mode_toggle_idempotent() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.csi(.setMode(.cursorKeyApplication, enabled: true))])
+        let v1 = model.latestSnapshot().version
+        await model.apply([.csi(.setMode(.cursorKeyApplication, enabled: true))])
+        let v2 = model.latestSnapshot().version
+        #expect(v1 == v2, "Idempotent mode set should not bump version")
+    }
+
+    // MARK: - Bell (Phase 2 T3)
+
+    @Test("BEL increments bellCount and bumps version")
+    func test_bell_increments_count() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        let v0 = model.latestSnapshot().version
+        let b0 = model.latestSnapshot().bellCount
+        await model.apply([.c0(.bell)])
+        let snap = model.latestSnapshot()
+        #expect(snap.bellCount == b0 + 1)
+        #expect(snap.version == v0 + 1)
+    }
+
+    @Test("Three BELs in one batch increment bellCount by 3")
+    func test_bell_batch_count() async {
+        let model = ScreenModel(cols: 80, rows: 24)
+        await model.apply([.c0(.bell), .c0(.bell), .c0(.bell)])
+        #expect(model.latestSnapshot().bellCount == 3)
+    }
+
+    // MARK: - Restore preserves modes + bellCount
+
+    @Test("restore(from:) re-seeds autoWrap, cursorKeyApplication, bracketedPaste, bellCount")
+    func test_restore_preserves_modes_and_bell() async {
+        let original = ScreenModel(cols: 80, rows: 24)
+        await original.apply([
+            .csi(.setMode(.autoWrap, enabled: false)),
+            .csi(.setMode(.cursorKeyApplication, enabled: true)),
+            .csi(.setMode(.bracketedPaste, enabled: true)),
+            .c0(.bell), .c0(.bell)
+        ])
+        let snap = original.latestSnapshot()
+        let restored = ScreenModel(cols: 80, rows: 24)
+        await restored.restore(from: snap)
+        let restoredSnap = restored.latestSnapshot()
+        #expect(restoredSnap.autoWrap == false,
+                "autoWrap=false must survive restore — otherwise client/daemon diverge on writes-past-margin")
+        #expect(restoredSnap.cursorKeyApplication == true)
+        #expect(restoredSnap.bracketedPaste == true)
+        #expect(restoredSnap.bellCount == 2)
     }
 }

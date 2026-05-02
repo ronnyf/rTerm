@@ -75,6 +75,14 @@ public actor ScreenModel {
     /// updates only `windowTitle`.
     private var iconName: String? = nil
 
+    /// DEC private modes (DECAWM / DECTCEM / DECCKM / bracketed paste).
+    /// Persists across buffer swap (T4); set via `handleCSI(.setMode(...))`.
+    private var modes: TerminalModes = .default
+
+    /// Monotonic count of `BEL` (0x07) events received. Renderer side (T9)
+    /// observes deltas and triggers `NSSound.beep()` on the MainActor.
+    private var bellCount: UInt64 = 0
+
     /// Number of columns.
     public let cols: Int
 
@@ -167,6 +175,10 @@ public actor ScreenModel {
             cursorVisible: true,
             activeBuffer: .main,
             windowTitle: nil,
+            cursorKeyApplication: false,
+            bracketedPaste: false,
+            bellCount: 0,
+            autoWrap: true,
             version: 0
         )
         self._latestSnapshot = Mutex(SnapshotBox(initial))
@@ -213,39 +225,67 @@ public actor ScreenModel {
     /// Build a fresh snapshot from the current state and swap it into the
     /// lock-protected cache. Called only when `apply(_:)` reports a real change.
     private func publishSnapshot() {
-        let buf = active
-        let snap = ScreenSnapshot(
+        let snap = makeSnapshot(from: active)
+        _latestSnapshot.withLock { $0 = SnapshotBox(snap) }
+    }
+
+    /// Construct a `ScreenSnapshot` from the given buffer plus the current
+    /// terminal-wide state (modes, bell count, title, version). Shared between
+    /// `publishSnapshot` (the cache update path) and the actor-isolated
+    /// `snapshot()` accessor so adding a snapshot field needs only one edit.
+    private func makeSnapshot(from buf: Buffer) -> ScreenSnapshot {
+        ScreenSnapshot(
             activeCells: buf.grid,
             cols: cols,
             rows: rows,
             cursor: snapshotCursor(from: buf),
-            cursorVisible: true,         // T3 reads modes.cursorVisible
+            cursorVisible: modes.cursorVisible,
             activeBuffer: activeKind,
             windowTitle: windowTitle,
+            cursorKeyApplication: modes.cursorKeyApplication,
+            bracketedPaste: modes.bracketedPaste,
+            bellCount: bellCount,
+            autoWrap: modes.autoWrap,
             version: version
         )
-        _latestSnapshot.withLock { $0 = SnapshotBox(snap) }
     }
 
     // MARK: - Event handlers (all return Bool; true = state mutated = version bump)
 
     private func handlePrintable(_ char: Character) -> Bool {
+        let pen = self.pen
+        let autoWrap = modes.autoWrap
         return mutateActive { buf in
             if buf.cursor.col >= cols {
-                buf.cursor.col = 0
-                buf.cursor.row += 1
-                if buf.cursor.row >= rows { Self.scrollUp(in: &buf, cols: cols, rows: rows) }
+                if autoWrap {
+                    buf.cursor.col = 0
+                    buf.cursor.row += 1
+                    if buf.cursor.row >= rows { Self.scrollUp(in: &buf, cols: cols, rows: rows) }
+                } else {
+                    // DECAWM off: writes overwrite the last column without wrapping.
+                    buf.cursor.col = cols - 1
+                }
             }
             buf.grid[buf.cursor.row * cols + buf.cursor.col] = Cell(character: char, style: pen)
-            buf.cursor.col += 1
+            // With autoWrap on, advance unconditionally (the deferred-wrap guard
+            // at the top of the next call will resolve col == cols).
+            // With autoWrap off (DECAWM-off), stop at cols-1 so the cursor never
+            // exceeds the grid boundary and subsequent writes keep overwriting that
+            // last column — xterm DECAWM-off semantics.
+            if autoWrap || buf.cursor.col < cols - 1 {
+                buf.cursor.col += 1
+            }
             return true
         }
     }
 
     private func handleC0(_ control: C0Control) -> Bool {
         switch control {
-        case .nul, .bell, .shiftOut, .shiftIn, .delete:
+        case .nul, .shiftOut, .shiftIn, .delete:
             return false
+        case .bell:
+            bellCount &+= 1
+            return true   // snapshot includes bellCount; renderer observes delta.
         case .backspace:
             return mutateActive { buf in
                 guard buf.cursor.col > 0 else { return false }
@@ -347,8 +387,10 @@ public actor ScreenModel {
         case .sgr(let attrs):
             applySGR(attrs)
             return false    // Pen change alone — grid unchanged.
-        case .setMode, .setScrollRegion, .unknown:
-            return false    // Handled in later tasks / phases.
+        case .setMode(let mode, let enabled):
+            return handleSetMode(mode, enabled: enabled)
+        case .setScrollRegion, .unknown:
+            return false   // T5 wires .setScrollRegion.
         }
     }
 
@@ -463,6 +505,13 @@ public actor ScreenModel {
         }
         self.activeKind = snapshot.activeBuffer
         self.windowTitle = snapshot.windowTitle
+        self.modes = TerminalModes(
+            autoWrap: snapshot.autoWrap,
+            cursorVisible: snapshot.cursorVisible,
+            cursorKeyApplication: snapshot.cursorKeyApplication,
+            bracketedPaste: snapshot.bracketedPaste
+        )
+        self.bellCount = snapshot.bellCount
         self.version = snapshot.version
         publishSnapshot()
     }
@@ -475,17 +524,7 @@ public actor ScreenModel {
     /// pending (`col >= cols`), the snapshot cursor reports the position the
     /// next printable character would land at.
     public func snapshot() -> ScreenSnapshot {
-        let buf = active
-        return ScreenSnapshot(
-            activeCells: buf.grid,
-            cols: cols,
-            rows: rows,
-            cursor: snapshotCursor(from: buf),
-            cursorVisible: true,
-            activeBuffer: activeKind,
-            windowTitle: windowTitle,
-            version: version
-        )
+        makeSnapshot(from: active)
     }
 
     /// Returns the current window title set via OSC 0 / OSC 2, or `nil` if the
@@ -562,5 +601,37 @@ public actor ScreenModel {
             buf.grid[lastRowStart + col] = .empty
         }
         buf.cursor.row = rows - 1
+    }
+
+    /// Apply a `CSI ? Pm h/l` mode change. Returns `true` when the change
+    /// produces a state mutation that should be reflected in a new snapshot
+    /// (all four wired user modes — DECAWM, DECTCEM, DECCKM, bracketed paste —
+    /// each surface as a snapshot field). Returns `false` for idempotent
+    /// no-ops, alt-screen modes (T4), and unknown modes.
+    private func handleSetMode(_ mode: DECPrivateMode, enabled: Bool) -> Bool {
+        switch mode {
+        case .autoWrap:
+            guard modes.autoWrap != enabled else { return false }
+            modes.autoWrap = enabled
+            return true
+        case .cursorVisible:
+            guard modes.cursorVisible != enabled else { return false }
+            modes.cursorVisible = enabled
+            return true
+        case .cursorKeyApplication:
+            guard modes.cursorKeyApplication != enabled else { return false }
+            modes.cursorKeyApplication = enabled
+            return true
+        case .bracketedPaste:
+            guard modes.bracketedPaste != enabled else { return false }
+            modes.bracketedPaste = enabled
+            return true
+        case .alternateScreen47, .alternateScreen1047,
+             .alternateScreen1049, .saveCursor1048:
+            // T4 wires these.
+            return false
+        case .unknown:
+            return false
+        }
     }
 }

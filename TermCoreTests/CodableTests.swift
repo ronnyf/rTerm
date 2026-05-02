@@ -246,3 +246,50 @@ struct AttachPayloadCodableTests {
         #expect(decoded.recentHistory.isEmpty)
     }
 }
+
+// MARK: - ScreenSnapshot Phase 2 backward compat + round-trip
+
+struct ScreenSnapshotPhase2CodableTests {
+
+    @Test("ScreenSnapshot decodes a Phase 1-shaped JSON payload (missing new fields)")
+    func test_snapshot_decodes_phase1_payload() throws {
+        // A minimal Phase 1-shaped snapshot — no cursorKeyApplication / bracketedPaste / bellCount / autoWrap.
+        let json = """
+        {
+            "activeCells": [],
+            "cols": 0,
+            "rows": 0,
+            "cursor": {"row": 0, "col": 0},
+            "cursorVisible": true,
+            "activeBuffer": "main",
+            "version": 0
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ScreenSnapshot.self, from: json)
+        #expect(decoded.cursorKeyApplication == false)
+        #expect(decoded.bracketedPaste == false)
+        #expect(decoded.bellCount == 0)
+        #expect(decoded.autoWrap == true,
+                "autoWrap defaults to true to match VT power-on state")
+    }
+
+    @Test("ScreenSnapshot Codable round-trip preserves all Phase 2 fields")
+    func test_snapshot_roundtrip_phase2_fields() throws {
+        let original = ScreenSnapshot(
+            activeCells: ContiguousArray(repeating: .empty, count: 6),
+            cols: 3, rows: 2,
+            cursor: Cursor(row: 1, col: 2),
+            cursorVisible: false,
+            activeBuffer: .alt,
+            windowTitle: "vim",
+            cursorKeyApplication: true,
+            bracketedPaste: true,
+            bellCount: 42,
+            autoWrap: false,
+            version: 7
+        )
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ScreenSnapshot.self, from: encoded)
+        #expect(decoded == original)
+    }
+}

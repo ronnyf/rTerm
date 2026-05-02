@@ -62,6 +62,7 @@
 		E3F2CA062F900120001F0001 /* OSCCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA052F900120001F0001 /* OSCCommand.swift */; };
 		E3F2CA082F900120001F0001 /* SGRAttribute.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA072F900120001F0001 /* SGRAttribute.swift */; };
 		E3F2CA0A2F900120001F0001 /* DECPrivateMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F2CA092F900120001F0001 /* DECPrivateMode.swift */; };
+		E3F3CA022F900130001F0001 /* TerminalModes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F3CA012F900130001F0001 /* TerminalModes.swift */; };
 		E3F7CA022F900170001F0001 /* AttachPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F7CA012F900170001F0001 /* AttachPayload.swift */; };
 		E3F9CA022F900190001F0001 /* ScreenSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F9CA012F900190001F0001 /* ScreenSnapshot.swift */; };
 		E3F8CA022F900180001F0001 /* RGBA.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F8CA012F900180001F0001 /* RGBA.swift */; };
@@ -251,6 +252,7 @@
 		E3F2CA052F900120001F0001 /* OSCCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OSCCommand.swift; sourceTree = "<group>"; };
 		E3F2CA072F900120001F0001 /* SGRAttribute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SGRAttribute.swift; sourceTree = "<group>"; };
 		E3F2CA092F900120001F0001 /* DECPrivateMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DECPrivateMode.swift; sourceTree = "<group>"; };
+		E3F3CA012F900130001F0001 /* TerminalModes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalModes.swift; sourceTree = "<group>"; };
 		E3F7CA012F900170001F0001 /* AttachPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachPayload.swift; sourceTree = "<group>"; };
 		E3F9CA012F900190001F0001 /* ScreenSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSnapshot.swift; sourceTree = "<group>"; };
 		E3F8CA012F900180001F0001 /* RGBA.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RGBA.swift; sourceTree = "<group>"; };
@@ -455,6 +457,7 @@
 				E3F2CA052F900120001F0001 /* OSCCommand.swift */,
 				E3F2CA072F900120001F0001 /* SGRAttribute.swift */,
 				E3F2CA092F900120001F0001 /* DECPrivateMode.swift */,
+				E3F3CA012F900130001F0001 /* TerminalModes.swift */,
 				E3F7CA012F900170001F0001 /* AttachPayload.swift */,
 				E3F9CA012F900190001F0001 /* ScreenSnapshot.swift */,
 			);
@@ -861,6 +864,7 @@
 				E3F2CA062F900120001F0001 /* OSCCommand.swift in Sources */,
 				E3F2CA082F900120001F0001 /* SGRAttribute.swift in Sources */,
 				E3F2CA0A2F900120001F0001 /* DECPrivateMode.swift in Sources */,
+				E3F3CA022F900130001F0001 /* TerminalModes.swift in Sources */,
 				E3F7CA022F900170001F0001 /* AttachPayload.swift in Sources */,
 				E3F9CA022F900190001F0001 /* ScreenSnapshot.swift in Sources */,
 			);
