@@ -1838,7 +1838,28 @@ private func handleSetScrollRegion(top: Int?, bottom: Int?) -> Bool {
 
 - [ ] **Step 4: Replace the call sites of `Self.scrollUp(in:cols:rows:)` with a region-aware helper**
 
-`handlePrintable` and `handleC0(.lineFeed/.verticalTab/.formFeed)` currently call `Self.scrollUp(in: &buf, cols: cols, rows: rows)` whenever cursor.row goes past the last row. Replace those call sites with a call to a new `Self.scrollUpRespectingRegion` helper that knows about `buf.scrollRegion`:
+> **Plan correction (2026-05-01).** The original Step 4 had two internal contradictions surfaced during implementation:
+> 1. The trigger condition `if buf.cursor.row >= rows` only fires when cursor reaches the screen edge — but a region-internal LF at `region.bottom` increments cursor to `region.bottom + 1`, which is `< rows` when the region ends above the last screen row. Without this trigger, `test_decstbm_set_region` (region=[1,3] in a 6-row screen) would never invoke the dispatcher.
+> 2. The `else` branch of `scrollWithinActiveBounds` clamped without scrolling when the LF was outside the region, but `test_decstbm_lf_below_region_does_full_screen_scroll` asserts that this case triggers a full-screen scroll (xterm behavior — a cursor below the region that reaches the screen edge still scrolls the whole screen).
+>
+> The corrected code below: (1) extracts `Buffer.shouldScroll(rows:)` so the trigger condition checks both `cursor.row >= rows` and `cursor.row > region.bottom`, and (2) the dispatcher's else branch calls `scrollUp` for full-screen scroll instead of clamping. Tests confirm xterm behavior. **The original `>= rows`-only trigger and the clamp-without-scroll else branch are incorrect and must not be reintroduced.**
+
+`handlePrintable` and `handleC0(.lineFeed/.verticalTab/.formFeed)` currently call `Self.scrollUp(in: &buf, cols: cols, rows: rows)` whenever cursor.row goes past the last row. Replace those call sites with a call to `Self.scrollWithinActiveBounds`, gated by the new `Buffer.shouldScroll(rows:)` predicate so region-internal LFs also trigger the dispatcher.
+
+First, add the `shouldScroll(rows:)` predicate to the nested `Buffer` struct (T2):
+
+```swift
+/// True when the cursor has stepped past either the screen's last row
+/// or the active scroll region's bottom. Both `handlePrintable`'s wrap
+/// path and `handleC0`'s LF/VT/FF path use this to decide when to call
+/// the scroll dispatcher. The region-bottom-overflow case is what makes
+/// DECSTBM scroll only the region instead of the full screen.
+func shouldScroll(rows: Int) -> Bool {
+    if cursor.row >= rows { return true }
+    if let region = scrollRegion { return cursor.row > region.bottom }
+    return false
+}
+```
 
 In `handlePrintable`, change:
 
@@ -1849,7 +1870,7 @@ if buf.cursor.row >= rows { Self.scrollUp(in: &buf, cols: cols, rows: rows) }
 to:
 
 ```swift
-if buf.cursor.row >= rows {
+if buf.shouldScroll(rows: rows) {
     Self.scrollWithinActiveBounds(in: &buf, cols: cols, rows: rows)
 }
 ```
@@ -1862,38 +1883,32 @@ Replace the existing `Self.scrollUp(in:cols:rows:)` static helper with:
 /// Full-screen scroll: shift rows 1..<rows up by one, clear the last row.
 /// T6 will hook this for history feeds (main buffer only).
 static func scrollUp(in buf: inout Buffer, cols: Int, rows: Int) {
-    let stride = cols
     for dstRow in 0 ..< (rows - 1) {
-        let srcStart = (dstRow + 1) * stride
-        let dstStart = dstRow * stride
-        for col in 0 ..< stride {
+        let srcStart = (dstRow + 1) * cols
+        let dstStart = dstRow * cols
+        for col in 0 ..< cols {
             buf.grid[dstStart + col] = buf.grid[srcStart + col]
         }
     }
-    let lastRowStart = (rows - 1) * stride
-    for col in 0 ..< stride {
+    let lastRowStart = (rows - 1) * cols
+    for col in 0 ..< cols {
         buf.grid[lastRowStart + col] = .empty
     }
     buf.cursor.row = rows - 1
 }
 
-/// Region-aware scroll: when `buf.scrollRegion` is non-nil and the cursor
-/// just stepped past `region.bottom`, scroll only `region.top ... region.bottom`.
-/// When the cursor stepped past the last screen row outside any region, do a
-/// full-screen scroll. When cursor went past the screen but is OUTSIDE the
-/// active region, clamp to last row without scrolling (matches xterm behavior).
+/// Region-aware scroll dispatcher. Three branches:
+/// 1. Region exists AND cursor stepped past `region.bottom` (i.e.,
+///    `cursor.row == region.bottom + 1`) → scroll only the region; clamp
+///    cursor to `region.bottom`.
+/// 2. Region exists AND cursor stepped past last screen row from outside the
+///    region → full-screen scroll (xterm behavior — a cursor below the region
+///    that reaches the screen edge still scrolls the whole screen).
+/// 3. No region → full-screen scroll.
 static func scrollWithinActiveBounds(in buf: inout Buffer, cols: Int, rows: Int) {
-    if let region = buf.scrollRegion {
-        // Cursor is at row == rows (one past last); the LF/wrap that took us
-        // here was inside the region only if buf.cursor.row - 1 == region.bottom.
-        if buf.cursor.row - 1 == region.bottom {
-            scrollRegionUp(in: &buf, cols: cols, region: region)
-            buf.cursor.row = region.bottom
-        } else {
-            // Cursor went past last screen row but the LF was outside the region.
-            // Clamp without scrolling (preserves region content).
-            buf.cursor.row = rows - 1
-        }
+    if let region = buf.scrollRegion, buf.cursor.row == region.bottom + 1 {
+        scrollRegionUp(in: &buf, cols: cols, region: region)
+        buf.cursor.row = region.bottom
     } else {
         scrollUp(in: &buf, cols: cols, rows: rows)
     }
@@ -1902,16 +1917,15 @@ static func scrollWithinActiveBounds(in buf: inout Buffer, cols: Int, rows: Int)
 /// Scroll only the rows inside `region`. Top row of region evicted (discarded —
 /// region scrolls do not feed history per spec §4); bottom row of region cleared.
 private static func scrollRegionUp(in buf: inout Buffer, cols: Int, region: ScrollRegion) {
-    let stride = cols
     for dstRow in region.top ..< region.bottom {
-        let srcStart = (dstRow + 1) * stride
-        let dstStart = dstRow * stride
-        for col in 0 ..< stride {
+        let srcStart = (dstRow + 1) * cols
+        let dstStart = dstRow * cols
+        for col in 0 ..< cols {
             buf.grid[dstStart + col] = buf.grid[srcStart + col]
         }
     }
-    let bottomStart = region.bottom * stride
-    for col in 0 ..< stride {
+    let bottomStart = region.bottom * cols
+    for col in 0 ..< cols {
         buf.grid[bottomStart + col] = .empty
     }
 }

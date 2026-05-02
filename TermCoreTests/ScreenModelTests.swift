@@ -893,3 +893,118 @@ struct ScreenModelAltScreenTests {
         #expect(model.latestSnapshot().cursor == Cursor(row: 1, col: 2))
     }
 }
+
+// MARK: - DECSTBM scroll region (Phase 2 T5)
+
+struct ScreenModelScrollRegionTests {
+
+    @Test("CSI 2;4 r sets scroll region rows 1..3 (0-indexed inclusive)")
+    func test_decstbm_set_region() async {
+        let model = ScreenModel(cols: 4, rows: 6)
+        // Fill rows with row numbers (0..5).
+        for r in 0..<6 {
+            await model.apply([
+                .csi(.cursorPosition(row: r, col: 0)),
+                .printable(Character(String(r)))
+            ])
+        }
+        // CSI 2;4 r → top=1 bottom=3 after 1→0 shift.
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 4))])
+        // Move cursor to last row of region (row 3) and emit LF — region scrolls.
+        await model.apply([
+            .csi(.cursorPosition(row: 3, col: 0)),
+            .c0(.lineFeed),
+        ])
+        let snap = model.latestSnapshot()
+        // Rows outside the region must be untouched.
+        #expect(snap[0, 0].character == "0")
+        #expect(snap[5, 0].character == "5")
+        // Inside the region: row 1 was "1", scrolled out; rows 1/2 now hold what
+        // was previously rows 2/3; row 3 is blank (newly cleared bottom).
+        #expect(snap[1, 0].character == "2")
+        #expect(snap[2, 0].character == "3")
+        #expect(snap[3, 0].character == " ")
+    }
+
+    @Test("CSI r (no params) resets scroll region to full screen")
+    func test_decstbm_reset() async {
+        let model = ScreenModel(cols: 3, rows: 4)
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 3))])
+        await model.apply([.csi(.setScrollRegion(top: nil, bottom: nil))])
+        // Fill row 0 then trigger full-screen scroll from the bottom.
+        await model.apply([
+            .printable("a"), .printable("b"), .printable("c"),
+            .csi(.cursorPosition(row: 3, col: 0)),
+            .c0(.lineFeed),
+        ])
+        // With region reset, the full screen scrolled — row 0 ("abc") evicted.
+        let snap = model.latestSnapshot()
+        #expect(snap[0, 0].character != "a", "Region reset should allow full-screen scroll")
+    }
+
+    @Test("Cursor positioning ignores scroll region (CSI H is free movement)")
+    func test_decstbm_cursor_position_unbounded() async {
+        let model = ScreenModel(cols: 3, rows: 5)
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 4))])  // rows 1..3
+        // CUP to (4, 2) — row 4 is OUTSIDE the region but still a valid screen row.
+        await model.apply([.csi(.cursorPosition(row: 4, col: 2))])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 4, col: 2))
+        // Equally valid above the region.
+        await model.apply([.csi(.cursorPosition(row: 0, col: 0))])
+        #expect(model.latestSnapshot().cursor == Cursor(row: 0, col: 0))
+    }
+
+    @Test("LF below the scroll region triggers full-screen scroll (xterm behavior)")
+    func test_decstbm_lf_below_region_does_full_screen_scroll() async {
+        let model = ScreenModel(cols: 2, rows: 5)
+        // Fill row 1 (will be inside region) so we can observe scroll motion.
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 0)),
+            .printable("X"),
+        ])
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 4))])  // rows 1..3 (0-indexed)
+        // Cursor at row 4 (BELOW region), then LF. Per xterm: full-screen
+        // scroll happens; region-internal content rides along; top row evicts.
+        await model.apply([
+            .csi(.cursorPosition(row: 4, col: 0)),
+            .c0(.lineFeed),
+        ])
+        let snap = model.latestSnapshot()
+        // 'X' was at row 1 → after one full-screen scroll, it's at row 0.
+        #expect(snap[0, 0].character == "X",
+                "Row containing 'X' shifted up by one full-screen scroll")
+        // Cursor stays clamped at last row.
+        #expect(snap.cursor.row == 4)
+    }
+
+    @Test("Setting region with bottom < top is rejected (region stays unchanged)")
+    func test_decstbm_invalid_range() async {
+        let model = ScreenModel(cols: 2, rows: 5)
+        await model.apply([.csi(.setScrollRegion(top: 4, bottom: 2))])
+        // Subsequent LF at the last row scrolls the full screen (region was rejected).
+        await model.apply([
+            .csi(.cursorPosition(row: 0, col: 0)),
+            .printable("a"),
+            .csi(.cursorPosition(row: 4, col: 0)),
+            .c0(.lineFeed),
+        ])
+        // Row 0 'a' must have evicted (full-screen scroll happened).
+        #expect(model.latestSnapshot()[0, 0].character != "a")
+    }
+
+    @Test("CSI 3;3 r (top == bottom) is rejected — single-row region is invalid")
+    func test_decstbm_single_row_region_rejected() async {
+        let model = ScreenModel(cols: 2, rows: 5)
+        await model.apply([.csi(.setScrollRegion(top: 3, bottom: 3))])
+        // Subsequent LF at the last row scrolls the full screen (region was rejected;
+        // the validation `topZero < botZero` is strict, so single-row regions fail).
+        await model.apply([
+            .csi(.cursorPosition(row: 0, col: 0)),
+            .printable("a"),
+            .csi(.cursorPosition(row: 4, col: 0)),
+            .c0(.lineFeed),
+        ])
+        #expect(model.latestSnapshot()[0, 0].character != "a",
+                "Single-row region must be rejected → full-screen scroll evicts row 0")
+    }
+}

@@ -128,6 +128,17 @@ public actor ScreenModel {
             self.savedCursor = nil
             self.scrollRegion = nil
         }
+
+        /// True when the cursor has stepped past either the screen's last row
+        /// or the active scroll region's bottom. Both `handlePrintable`'s wrap
+        /// path and `handleC0`'s LF/VT/FF path use this to decide when to call
+        /// the scroll dispatcher. The region-bottom-overflow case is what makes
+        /// DECSTBM scroll only the region instead of the full screen.
+        func shouldScroll(rows: Int) -> Bool {
+            if cursor.row >= rows { return true }
+            if let region = scrollRegion { return cursor.row > region.bottom }
+            return false
+        }
     }
 
     // MARK: - Active-buffer access
@@ -260,7 +271,9 @@ public actor ScreenModel {
                 if autoWrap {
                     buf.cursor.col = 0
                     buf.cursor.row += 1
-                    if buf.cursor.row >= rows { Self.scrollUp(in: &buf, cols: cols, rows: rows) }
+                    if buf.shouldScroll(rows: rows) {
+                        Self.scrollWithinActiveBounds(in: &buf, cols: cols, rows: rows)
+                    }
                 } else {
                     // DECAWM off: writes overwrite the last column without wrapping.
                     buf.cursor.col = cols - 1
@@ -303,7 +316,9 @@ public actor ScreenModel {
             return mutateActive { buf in
                 buf.cursor.col = 0
                 buf.cursor.row += 1
-                if buf.cursor.row >= rows { Self.scrollUp(in: &buf, cols: cols, rows: rows) }
+                if buf.shouldScroll(rows: rows) {
+                    Self.scrollWithinActiveBounds(in: &buf, cols: cols, rows: rows)
+                }
                 return true
             }
         case .carriageReturn:
@@ -384,8 +399,10 @@ public actor ScreenModel {
             return false    // Pen change alone — grid unchanged.
         case .setMode(let mode, let enabled):
             return handleSetMode(mode, enabled: enabled)
-        case .setScrollRegion, .unknown:
-            return false   // T5 wires .setScrollRegion.
+        case .setScrollRegion(let top, let bottom):
+            return handleSetScrollRegion(top: top, bottom: bottom)
+        case .unknown:
+            return false
         }
     }
 
@@ -598,6 +615,51 @@ public actor ScreenModel {
         buf.cursor.row = rows - 1
     }
 
+    /// Region-aware scroll dispatcher. Called by `handlePrintable` and
+    /// `handleC0(LF/VT/FF)` when the cursor has stepped past either
+    /// `region.bottom` (while a scroll region is active) or the last screen row.
+    ///
+    /// - When a region is active and cursor stepped past `region.bottom`
+    ///   (i.e. `cursor.row == region.bottom + 1`), scroll only the region.
+    /// - When no region is active, OR the cursor stepped past the last screen
+    ///   row while outside the region (cursor.row >= rows), do a full-screen
+    ///   scroll — xterm behavior: LF at or below the last row always scrolls
+    ///   the whole screen even if a region is active but didn't cover that row.
+    private static func scrollWithinActiveBounds(in buf: inout Buffer, cols: Int, rows: Int) {
+        if let region = buf.scrollRegion {
+            // Did the LF/wrap happen at region.bottom specifically?
+            if buf.cursor.row == region.bottom + 1 {
+                // Region-internal scroll: only rows region.top...region.bottom move.
+                scrollRegionUp(in: &buf, cols: cols, region: region)
+                buf.cursor.row = region.bottom
+            } else {
+                // Cursor stepped past the last screen row while outside the region
+                // (buf.cursor.row >= rows). Full-screen scroll — xterm behavior.
+                scrollUp(in: &buf, cols: cols, rows: rows)
+            }
+        } else {
+            scrollUp(in: &buf, cols: cols, rows: rows)
+        }
+    }
+
+    /// Scroll only the rows inside `region`. The top row of the region is evicted
+    /// (discarded — region scrolls do not feed history per spec §4; T6 will hook
+    /// full-screen scrolls for the main buffer only). The bottom row is cleared.
+    /// Cursor is not moved; callers are responsible for clamping to `region.bottom`.
+    private static func scrollRegionUp(in buf: inout Buffer, cols: Int, region: ScrollRegion) {
+        for dstRow in region.top ..< region.bottom {
+            let srcStart = (dstRow + 1) * cols
+            let dstStart = dstRow * cols
+            for col in 0 ..< cols {
+                buf.grid[dstStart + col] = buf.grid[srcStart + col]
+            }
+        }
+        let bottomStart = region.bottom * cols
+        for col in 0 ..< cols {
+            buf.grid[bottomStart + col] = .empty
+        }
+    }
+
     /// Clear `buf`'s grid in place. Cursor is left untouched — callers that
     /// need a cursor reset do it explicitly. Static so it can be invoked on
     /// any named buffer (`main`/`alt`) directly without going through
@@ -648,6 +710,28 @@ public actor ScreenModel {
         case .unknown:
             return false
         }
+    }
+
+    /// Apply DECSTBM. `top` and `bottom` are 1-indexed VT values straight from
+    /// the parser (or nil for "use screen edge"). After validation, store on the
+    /// active buffer's `scrollRegion` as 0-indexed inclusive bounds. Invalid ranges
+    /// (top >= bottom, out of [0..<rows]) are rejected silently — the existing
+    /// region stays in place. Returns `false` because the change is not visible
+    /// in the current snapshot (it only affects future scroll behavior).
+    private func handleSetScrollRegion(top: Int?, bottom: Int?) -> Bool {
+        // nil/nil = reset to full screen.
+        if top == nil && bottom == nil {
+            mutateActive { $0.scrollRegion = nil }
+            return false
+        }
+        let topZero = (top ?? 1) - 1          // VT 1-indexed → 0-indexed
+        let botZero = (bottom ?? rows) - 1
+        // Validate.
+        guard topZero >= 0, botZero < rows, topZero < botZero else {
+            return false
+        }
+        mutateActive { $0.scrollRegion = ScrollRegion(top: topZero, bottom: botZero) }
+        return false
     }
 
     /// Handle the alt-screen-related DEC private modes (47 / 1047 / 1048 / 1049).
