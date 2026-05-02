@@ -36,6 +36,11 @@ final class TerminalMTKView: MTKView {
     /// Called with the encoded byte sequence for each key-down event.
     var onKeyInput: ((Data) -> Void)?
 
+    /// Called by `keyDown` to fetch the current DECCKM state. Returns
+    /// `.normal` when nil. The closure is set by the SwiftUI bridge from
+    /// `screenModel.latestSnapshot().cursorKeyApplication` at view-make time.
+    var cursorKeyModeProvider: (() -> CursorKeyMode)?
+
     override var acceptsFirstResponder: Bool { true }
 
     override func viewDidMoveToWindow() {
@@ -44,8 +49,9 @@ final class TerminalMTKView: MTKView {
     }
 
     override func keyDown(with event: NSEvent) {
+        let mode = cursorKeyModeProvider?() ?? .normal
         let encoder = KeyEncoder()
-        if let data = encoder.encode(event) {
+        if let data = encoder.encode(event, cursorKeyMode: mode) {
             log.debug("keyDown: keyCode=\(event.keyCode), encoded \(data.count) bytes")
             onKeyInput?(data)
         } else {
@@ -76,12 +82,25 @@ struct TermView: NSViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = clearColor(for: settings.palette.defaultBackground)
         view.onKeyInput = onInput
+        view.cursorKeyModeProvider = makeCursorKeyModeProvider()
         return view
     }
 
     func updateNSView(_ nsView: TerminalMTKView, context: Context) {
         nsView.onKeyInput = onInput
         nsView.clearColor = clearColor(for: settings.palette.defaultBackground)
+        nsView.cursorKeyModeProvider = makeCursorKeyModeProvider()
+    }
+
+    /// Build the closure that the view will call on each keyDown to decide
+    /// between normal and application cursor-key encoding. Reads
+    /// `cursorKeyApplication` from `latestSnapshot()` (nonisolated, lock-protected
+    /// — safe from the AppKit responder chain). Centralising the closure here
+    /// keeps `makeNSView` and `updateNSView` in lockstep as T8/T10 add more
+    /// view-callback hooks.
+    private func makeCursorKeyModeProvider() -> () -> CursorKeyMode {
+        let model = screenModel
+        return { model.latestSnapshot().cursorKeyApplication ? .application : .normal }
     }
 
     private func clearColor(for rgba: RGBA) -> MTLClearColor {
