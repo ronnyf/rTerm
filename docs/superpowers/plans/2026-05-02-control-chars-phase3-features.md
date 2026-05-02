@@ -55,24 +55,34 @@ Extend the `Codable` conformance accordingly (if hand-coded). If `DaemonResponse
 
 - [ ] **Step 2: Add `writebackSink` to `ScreenModel`**
 
+**Isolation note — verified against `TermCore/ScreenModel.swift:49`:** `ScreenModel` is a `public actor`. The sink install and `emitWriteback` run inside the actor (either via `assumeIsolated` at daemon-queue callsites, or via `await` elsewhere). The sink closure type is `@Sendable (Data) -> Void` so it can be safely stored on the actor and invoked from any actor-isolated method; the closure itself does not need to be isolated because the daemon's implementation synchronizes through its own serial queue.
+
 In `TermCore/ScreenModel.swift`:
 
 ```swift
 /// Installed by the daemon's `Session` at create time so the model can
 /// originate writes to the PTY primary (e.g., DA1/DA2/CPR responses).
 /// `nil` when running client-side — the client never originates writeback.
-@ObservationIgnored
+///
+/// Mutated only inside the actor; readers are also actor-isolated so
+/// no additional sync is needed beyond the actor's existing serial
+/// executor.
 private var _writebackSink: (@Sendable (Data) -> Void)? = nil
 
 /// Install a writeback sink. Called exactly once per model instance;
 /// a second call is a programmer error.
+///
+/// Actor-isolated — callers must be inside the actor. From the daemon's
+/// `Session.startOutputHandler()`, wrap the call in
+/// `screenModel.assumeIsolated { model in model.installWritebackSink(…) }`.
+/// From an `async` context, call `await model.installWritebackSink(…)`.
 public func installWritebackSink(_ sink: @escaping @Sendable (Data) -> Void) {
     precondition(_writebackSink == nil, "writeback sink already installed")
     _writebackSink = sink
 }
 
 /// Invoke the writeback sink with `data`. No-op if no sink is installed
-/// (e.g., client-side).
+/// (e.g., client-side). Actor-isolated.
 internal func emitWriteback(_ data: Data) {
     _writebackSink?(data)
 }
@@ -1761,10 +1771,11 @@ case clipboardWrite(sessionID: SessionID, targets: ClipboardTargets, base64Paylo
 
 - [ ] **Step 5: `ScreenModel` → clipboard sink**
 
-Add a sibling of `writebackSink`:
+Add a sibling of `writebackSink`. Isolation rules are identical to Task 1: install/emit are actor-isolated; the closure itself is `@Sendable`. The daemon installs via `assumeIsolated` inside `startOutputHandler()`.
 
 ```swift
-@ObservationIgnored
+// Mutated only inside the actor; no @ObservationIgnored needed —
+// ScreenModel is not @Observable (it's a plain actor).
 private var _clipboardSink: (@Sendable (ClipboardTargets, String) -> Void)? = nil
 
 public func installClipboardSink(_ sink: @escaping @Sendable (ClipboardTargets, String) -> Void) {

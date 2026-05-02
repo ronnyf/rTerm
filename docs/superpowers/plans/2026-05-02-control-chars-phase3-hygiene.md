@@ -762,131 +762,134 @@ change — existing call-site comments remain."
 
 ---
 
-## Task 6: `DispatchSerialQueue` typed init + deprecation
+## Task 6: `DispatchSerialQueue` typed init
 
 **Spec reference:** §8 Track B item 6.
 
-**Goal:** `ScreenModel.init(..., queue: DispatchQueue? = nil)` force-casts to `DispatchSerialQueue` at runtime. A caller that accidentally passes a `.concurrent` queue crashes with no compile-time warning. Add a new `init(..., queue: DispatchSerialQueue? = nil)` with the typed parameter and deprecate the untyped one. Keep both — `BUILD_LIBRARY_FOR_DISTRIBUTION` is enabled on TermCore (Release), so removing the old init is a binary-compat break.
+**Goal:** `ScreenModel.init(..., queue: DispatchQueue? = nil)` force-casts to `DispatchSerialQueue` at runtime. A caller that accidentally passes a `.concurrent` queue crashes with no compile-time warning. Land a single typed init that takes `serialQueue: DispatchSerialQueue?` and migrate the one in-tree caller that passes a queue (`rtermd/Session.swift:123`) in the same commit.
+
+**Design decision — overload resolution hazard avoided.** An earlier draft of this plan kept BOTH inits (typed + deprecated untyped) with defaulted-nil. Swift's overload resolution on `nil` against `DispatchQueue?` vs `DispatchSerialQueue?` is **ambiguous** (no canonical tiebreaker). The rewrite below drops the untyped init entirely rather than keeping both — every default-nil call site would otherwise emit either an ambiguity error or a surprise deprecation warning.
+
+**Binary-compat note for BUILD_LIBRARY_FOR_DISTRIBUTION:** TermCore enables `BUILD_LIBRARY_FOR_DISTRIBUTION` only for Release. Since rTerm ships daemon + client in lockstep (spec §6), removing a `public init` is a **source** break but not a meaningful wire/binary break — there is no third-party consumer of TermCore to worry about. All in-tree callers migrate in the same commit.
 
 **Files:**
 - Modify: `TermCore/ScreenModel.swift`
 - Modify: `rtermd/Session.swift` (call site uses new typed init)
-- Modify: `rTerm/ContentView.swift` if it passes a queue (check — it currently passes nil, so no change)
+- Modify: `rtermd/main.swift` if it constructs the daemon queue as untyped `DispatchQueue` (check with `rg -n "DispatchQueue\(label:" rtermd/`)
 
 ### Steps
 
 - [ ] **Step 1: Read the existing `init`**
 
-Open `TermCore/ScreenModel.swift` around line 210–230. Current signature:
+Open `TermCore/ScreenModel.swift` around line 211. Current signature:
 
 ```swift
 public init(cols: Int = 80, rows: Int = 24, historyCapacity: Int = 10_000,
             queue: DispatchQueue? = nil) {
-    ...
+    let q = queue ?? DispatchQueue(label: "com.ronnyf.TermCore.ScreenModel")
+    // swiftlint:disable:next force_cast
     self.executorQueue = q as! DispatchSerialQueue
     ...
 }
 ```
 
-- [ ] **Step 2: Extract the initialization body into a private helper**
-
-Create a `private func _initialize(cols:rows:historyCapacity:queue:)` taking `DispatchSerialQueue?` (the typed form). Move the existing body into it. Both inits will delegate.
+- [ ] **Step 2: Replace with a single typed init**
 
 ```swift
-private init(cols: Int, rows: Int, historyCapacity: Int, serialQueue: DispatchSerialQueue?) {
-    // ... the full original body, using serialQueue (no force-cast needed) ...
-}
-```
-
-- [ ] **Step 3: Add the typed public init**
-
-```swift
-/// Preferred initializer — `queue` is typed to require a serial dispatch
-/// queue at compile time. Passing a concurrent queue is a compile error.
-public convenience init(cols: Int = 80, rows: Int = 24,
-                         historyCapacity: Int = 10_000,
-                         queue: DispatchSerialQueue? = nil) {
-    self.init(cols: cols, rows: rows,
-              historyCapacity: historyCapacity,
-              serialQueue: queue)
-}
-```
-
-- [ ] **Step 4: Replace the old untyped init with a deprecated delegating one**
-
-```swift
-/// Legacy untyped-queue initializer. Retained for binary compatibility
-/// under BUILD_LIBRARY_FOR_DISTRIBUTION; will be removed once all
-/// callers migrate to the typed-`queue` form.
+/// Creates a screen model with the given dimensions.
 ///
-/// - Warning: Passing a queue that is not a `DispatchSerialQueue` traps
-///   at runtime via an internal force-cast. Use the typed overload.
-@available(*, deprecated,
-           message: "Pass DispatchSerialQueue? instead of DispatchQueue?. The untyped overload traps at runtime on concurrent queues.",
-           renamed: "init(cols:rows:historyCapacity:queue:)")
-public convenience init(cols: Int = 80, rows: Int = 24,
-                         historyCapacity: Int = 10_000,
-                         queue: DispatchQueue? = nil) {
-    // swiftlint:disable:next force_cast
-    let serial = queue.map { $0 as! DispatchSerialQueue }
-    self.init(cols: cols, rows: rows,
-              historyCapacity: historyCapacity,
-              serialQueue: serial)
+/// - Parameter serialQueue: Optional serial dispatch queue to use as the
+///   actor's executor. When `nil`, a private `DispatchSerialQueue` is
+///   created. Typed so a concurrent queue is a compile error at the
+///   call site — no runtime trap.
+public init(cols: Int = 80, rows: Int = 24,
+            historyCapacity: Int = 10_000,
+            serialQueue: DispatchSerialQueue? = nil) {
+    let q = serialQueue
+        ?? DispatchSerialQueue(label: "com.ronnyf.TermCore.ScreenModel")
+    self.executorQueue = q
+    // ... rest of body unchanged, with `q as! DispatchSerialQueue` removed ...
 }
 ```
 
-**Compiler-overload note:** Swift's overload resolution prefers the most specific type, so a caller passing `nil` picks the `DispatchSerialQueue?` overload (more specific context); a caller passing `DispatchQueue(label:)` matches the deprecated overload and gets the deprecation warning. A caller passing an explicitly-typed `DispatchSerialQueue` matches the typed overload with no warning.
+Note the **argument label rename** — `queue:` → `serialQueue:`. Renaming the label avoids any overload-resolution ambiguity (there is no second overload) AND makes the call-site migration trivially greppable.
 
-- [ ] **Step 5: Migrate known callers in-tree**
+- [ ] **Step 3: Migrate known callers in-tree**
 
 ```bash
 rg -n "ScreenModel\(" TermCore/ rtermd/ rTerm/
 ```
 
-Callers to check:
-- `rTerm/ContentView.swift`: `TerminalSession.init` passes nothing (defaults). No migration needed beyond recompiling — default-nil binds to the new typed overload.
-- `rtermd/Session.swift`: check if it passes a queue. If so, ensure the queue variable is typed `DispatchSerialQueue` (not `DispatchQueue`). Given the summary says the queue originates from `main.swift` as `DispatchQueue(label:)`, update `main.swift` to type it as `DispatchSerialQueue` explicitly or cast at the call site.
-- `TermCoreTests/ScreenModelTests.swift`: 79 call sites. None pass a queue (all are `ScreenModel(cols: X, rows: Y)`), so no migration needed.
+Expected call sites (verified during plan remediation):
+- `rtermd/Session.swift:123` — passes `queue: queue` with `queue: DispatchQueue` typed as untyped. Migration: retype `queue` at the call site (the existing `Session.init` takes `queue: DispatchQueue`; upgrade the init parameter to `DispatchSerialQueue` or wrap at the call site — see Step 4 below).
+- `rTerm/ContentView.swift` (inside `TerminalSession.init` — grep to confirm): passes nothing (defaults), so no migration beyond a clean rebuild.
+- `TermCoreTests/ScreenModelTests.swift`: ~79 call sites, none pass a queue; no migration.
 
-If any test file does pass a queue, migrate it.
+- [ ] **Step 4: Retype the Session queue parameter**
 
-- [ ] **Step 6: Add a compile-time test**
+In `rtermd/Session.swift:111`, the `init(...)` signature currently takes `queue: DispatchQueue`. Upgrade to `DispatchSerialQueue`:
+
+```swift
+init(id: SessionID, shell: Shell, rows: UInt16, cols: UInt16,
+     queue: DispatchSerialQueue) throws {
+    ...
+    self.screenModel = ScreenModel(cols: Int(cols), rows: Int(rows),
+                                    serialQueue: queue)
+    ...
+}
+```
+
+Then follow up in `rtermd/main.swift` (or wherever the daemon queue is created): ensure the daemon queue variable is typed `DispatchSerialQueue` rather than untyped `DispatchQueue`. Swift's `DispatchQueue(label:)` default is serial but typed as `DispatchQueue` — construct with `DispatchSerialQueue(label:)` explicitly (or cast once where the queue is first created).
+
+- [ ] **Step 5: Add a compile-time test**
 
 In `TermCoreTests/ScreenModelTests.swift`, add at file scope (or a new `ScreenModelInitTests.swift`):
 
 ```swift
 @Test("Typed init accepts a DispatchSerialQueue and nil")
-func test_typed_init_compiles() {
+func test_typed_init_compiles() async {
     let m1 = ScreenModel(cols: 80, rows: 24)
-    #expect(m1.historyCapacity == 10_000)
+    #expect(await m1.historyCapacity == 10_000)
     let q = DispatchSerialQueue(label: "test.serial")
-    let m2 = ScreenModel(cols: 80, rows: 24, historyCapacity: 100, queue: q)
-    #expect(m2.historyCapacity == 100)
-    // If the typed overload resolves, this compiles. If the untyped
-    // overload resolved instead, the deprecation warning would surface.
+    let m2 = ScreenModel(cols: 80, rows: 24, historyCapacity: 100, serialQueue: q)
+    #expect(await m2.historyCapacity == 100)
 }
 ```
 
-- [ ] **Step 7: Build + test**
+(Intentionally no "untyped-queue overload" test — that overload no longer exists. A failing test would mean the migration was incomplete.)
+
+- [ ] **Step 6: Build + test**
 
 ```bash
 xcodebuild -project rTerm.xcodeproj -scheme rTerm -configuration Debug build -quiet
 xcodebuild -project rTerm.xcodeproj -scheme TermCoreTests test -quiet
 ```
 
-Expected: clean build. If a deprecation warning fires in production code, migrate that caller.
+Expected: clean build. Any compile error at `ScreenModel(...queue:...)` call sites is a migration miss — retype the queue at the reporting site.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add TermCore/ScreenModel.swift rtermd/ rTerm/ TermCoreTests/
-git commit -m "api(TermCore): typed DispatchSerialQueue init; deprecate untyped
+git add TermCore/ScreenModel.swift \
+        rtermd/Session.swift \
+        rtermd/main.swift \
+        TermCoreTests/
+git commit -m "api(TermCore): typed DispatchSerialQueue init; migrate callers
 
-ScreenModel.init gains a typed-queue overload. The untyped overload
-remains for BUILD_LIBRARY_FOR_DISTRIBUTION binary compat but is
-@available deprecated with a renamed: directive pointing at the
-typed form. Production callers (ContentView, Session, main.swift)
-migrated; 79 test sites unaffected (none pass a queue)."
+ScreenModel.init's queue parameter is now DispatchSerialQueue?, not
+DispatchQueue?. Passing a concurrent queue is a compile error — no
+runtime trap via force_cast. The argument label also renamed to
+serialQueue: so the call-site migration is greppable.
+
+All in-tree callers (rtermd/Session.swift, rtermd/main.swift)
+migrated in the same commit; TermCore tests (79 default-nil sites)
+recompile unchanged. We intentionally dropped the deprecated
+untyped-init overload because Swift's resolution of nil against
+DispatchQueue? vs DispatchSerialQueue? is ambiguous — keeping both
+would force every default-nil call site to emit a surprise
+deprecation warning or a build error. TermCore ships in lockstep
+with rtermd + rTerm per spec §6, so the source break has no
+third-party blast radius."
 ```
 
 ---
@@ -1128,6 +1131,8 @@ rTermTests exercise the preamble without a live Metal drawable."
 - [ ] **Step 1: Add measurement first — baseline count**
 
 In `rTerm/RenderCoordinator.swift`, add a DEBUG-only counter:
+
+**Swift 6 isolation note:** `nonisolated(unsafe)` tells the compiler "I take responsibility for the races." In this test counter's case the invariant we rely on is that only the MainActor draws frames (so writes happen on the MainActor) and only the MainActor runs the allocation test's assertions (so reads happen on the MainActor). Violating either would make the counter meaningless — the test must also be `@MainActor` (see Step 6 test body below).
 
 ```swift
 #if DEBUG
@@ -1492,6 +1497,8 @@ Approach: add allocation instrumentation, run a sustained-throughput benchmark, 
 - [ ] **Step 1: Add an allocation counter to `ScrollbackHistory`**
 
 In `TermCore/ScrollbackHistory.swift`:
+
+**Swift 6 isolation note:** `nonisolated(unsafe)` is a pointed escape hatch. For this counter the invariant we rely on is that the actor's executor serializes writes (every increment happens inside `ScreenModel`'s actor context on the daemon queue) AND the allocation test reads after awaiting a deterministic number of actor-isolated applies (so the read happens-after all writes). Violating either — e.g., reading the counter without an intervening `await` — makes the number meaningless.
 
 ```swift
 #if DEBUG
