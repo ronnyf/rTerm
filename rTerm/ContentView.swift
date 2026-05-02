@@ -85,7 +85,7 @@ class TerminalSession {
                 // produced between session creation and attach.
                 let attachReply = try client.sendSync(.attach(sessionID: info.id))
                 if case .attachPayload(_, let payload) = attachReply {
-                    await screenModel.restore(from: payload.snapshot)
+                    await screenModel.restore(from: payload)
                 }
             }
         } catch {
@@ -148,7 +148,7 @@ class TerminalSession {
             case .attachPayload(_, let payload):
                 log.info("Received attach payload")
                 Task { @MainActor in
-                    await screenModel.restore(from: payload.snapshot)
+                    await screenModel.restore(from: payload)
                     self.windowTitle = await screenModel.currentWindowTitle()
                 }
 

@@ -111,8 +111,14 @@ extension CircularCollection: Collection where Container.Index == Int {
 }
 
 extension CircularCollection: BidirectionalCollection where Container.Index == Int {
-    
+
     public func index(before i: Container.Index) -> Container.Index {
         elements.index(before: i)
     }
 }
+
+/// `CircularCollection` is a value-type wrapper around `Container` plus an
+/// `Int` offset; both are `Sendable` when the underlying container is. This
+/// conditional conformance lets `Sendable` value-type wrappers (e.g.
+/// `ScrollbackHistory`) hold a `CircularCollection` without `@unchecked`.
+extension CircularCollection: Sendable where Container: Sendable, Container.Index: Sendable {}

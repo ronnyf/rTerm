@@ -1008,3 +1008,199 @@ struct ScreenModelScrollRegionTests {
                 "Single-row region must be rejected → full-screen scroll evicts row 0")
     }
 }
+
+// MARK: - Scrollback history (Phase 2 T6)
+
+struct ScreenModelHistoryTests {
+
+    @Test("Main-buffer LF at last row pushes evicted top row to history")
+    func test_history_feed_main_buffer() async {
+        let model = ScreenModel(cols: 4, rows: 3, historyCapacity: 100)
+        // Fill row 0 with 'aaaa', then move cursor to last row + LF to scroll.
+        await model.apply([
+            .printable("a"), .printable("a"), .printable("a"), .printable("a"),
+            .csi(.cursorPosition(row: 2, col: 0)),
+            .c0(.lineFeed),
+        ])
+        let tail = model.latestHistoryTail()
+        #expect(tail.count == 1)
+        #expect(tail[0].count == 4)
+        #expect(tail[0].allSatisfy { $0.character == "a" })
+    }
+
+    @Test("Alt-buffer LF at last row does NOT push to history")
+    func test_history_feed_alt_buffer_suppressed() async {
+        let model = ScreenModel(cols: 4, rows: 3, historyCapacity: 100)
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        await model.apply([
+            .printable("z"), .printable("z"), .printable("z"), .printable("z"),
+            .csi(.cursorPosition(row: 2, col: 0)),
+            .c0(.lineFeed),
+        ])
+        #expect(model.latestHistoryTail().count == 0)
+    }
+
+    @Test("DECSTBM region scroll does NOT push to history")
+    func test_history_feed_region_scroll_suppressed() async {
+        let model = ScreenModel(cols: 4, rows: 5, historyCapacity: 100)
+        // Set region 1..3 (0-indexed inclusive), write inside the region, LF at
+        // region.bottom triggers a region-internal scroll — must not feed history.
+        await model.apply([.csi(.setScrollRegion(top: 2, bottom: 4))])  // rows 1..3
+        await model.apply([
+            .csi(.cursorPosition(row: 1, col: 0)),
+            .printable("X"),
+            .csi(.cursorPosition(row: 3, col: 0)),
+            .c0(.lineFeed),
+        ])
+        #expect(model.latestHistoryTail().count == 0)
+    }
+
+    @Test("History grows to capacity then evicts oldest")
+    func test_history_capacity_evicts_oldest() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 3)
+        // Each iter places the current letter into row 0 explicitly (post-scroll
+        // the cursor sits at row 1, so without an explicit reposition the
+        // printable would land in row 1 and the eviction would lag by one frame).
+        for letter in "abcdef" {
+            await model.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(letter))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        let tail = model.latestHistoryTail()
+        #expect(tail.count == 3, "Capacity-bound history")
+        // Last 3 evicted rows are 'd', 'e', 'f' (in chronological order).
+        let chars = tail.map { $0.first?.character ?? " " }
+        #expect(chars == ["d", "e", "f"])
+    }
+
+    @Test("buildAttachPayload populates recentHistory with last 500 rows when main active")
+    func test_attach_payload_populates_history() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 1000)
+        for _ in 0..<10 {
+            await model.apply([.printable("x"), .csi(.cursorPosition(row: 1, col: 0)), .c0(.lineFeed)])
+        }
+        let payload = model.buildAttachPayload()
+        #expect(payload.recentHistory.count == 10)
+        #expect(payload.historyCapacity == 1000)
+    }
+
+    @Test("buildAttachPayload returns empty recentHistory when alt active")
+    func test_attach_payload_empty_history_in_alt() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 1000)
+        // Build up some history in main first.
+        for _ in 0..<5 {
+            await model.apply([.printable("x"), .csi(.cursorPosition(row: 1, col: 0)), .c0(.lineFeed)])
+        }
+        // Switch to alt.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        let payload = model.buildAttachPayload()
+        #expect(payload.recentHistory.isEmpty)
+        #expect(payload.snapshot.activeBuffer == .alt)
+    }
+
+    @Test("restore(from payload:) seeds local history from payload.recentHistory")
+    func test_restore_payload_seeds_history() async {
+        // Build source model with some history. Each iter explicitly resets to
+        // row 0 so the printable lands there; the LF then captures row 0 to
+        // history (without the reset the captured letter lags by one iter).
+        let source = ScreenModel(cols: 1, rows: 2, historyCapacity: 1000)
+        for c in "abc" {
+            await source.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(c))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        let payload = source.buildAttachPayload()
+        // Restore into a fresh client mirror.
+        let mirror = ScreenModel(cols: 1, rows: 2, historyCapacity: 1000)
+        await mirror.restore(from: payload)
+        let tail = mirror.latestHistoryTail()
+        #expect(tail.count == 3)
+        let chars = tail.map { $0.first?.character ?? " " }
+        #expect(chars == ["a", "b", "c"])
+    }
+
+    @Test("latestHistoryTail caps at publishedHistoryTailSize (1000)")
+    func test_history_tail_publication_cap() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 5000)
+        for _ in 0..<1500 {
+            await model.apply([.printable("x"), .csi(.cursorPosition(row: 1, col: 0)), .c0(.lineFeed)])
+        }
+        // Internal history holds all 1500; published tail caps at 1000.
+        #expect(model.latestHistoryTail().count == 1000)
+    }
+
+    @Test("Alt-buffer scrolls do not corrupt main-buffer history")
+    func test_history_preserved_across_alt_enter_exit() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 100)
+        // Establish 3 rows of main-buffer history.
+        for c in "abc" {
+            await model.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(c))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        let mainTail = model.latestHistoryTail()
+        #expect(mainTail.count == 3)
+        // Enter alt and force several scrolls there.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: true))])
+        for _ in 0..<5 {
+            await model.apply([.printable("z"), .csi(.cursorPosition(row: 1, col: 0)), .c0(.lineFeed)])
+        }
+        // Exit alt back to main.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        // Main history must be unchanged — alt activity never touches it.
+        let after = model.latestHistoryTail()
+        #expect(after.count == 3)
+        let chars = after.map { $0.first?.character ?? " " }
+        #expect(chars == ["a", "b", "c"])
+    }
+
+    @Test("ED 3 (.scrollback) clears history alongside the grid (main buffer)")
+    func test_ed3_clears_scrollback() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 100)
+        // Build 3 rows of history.
+        for c in "abc" {
+            await model.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(c))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        #expect(model.latestHistoryTail().count == 3)
+        // ED 3 — erase the scrollback.
+        await model.apply([.csi(.eraseInDisplay(.scrollback))])
+        #expect(model.latestHistoryTail().isEmpty,
+                "ED 3 must clear scrollback so PgUp shows nothing after clear")
+    }
+
+    @Test("ED 3 issued while alt is active does not clear main history")
+    func test_ed3_in_alt_preserves_main_history() async {
+        let model = ScreenModel(cols: 1, rows: 2, historyCapacity: 100)
+        // Build 2 rows of main history.
+        for c in "ab" {
+            await model.apply([
+                .csi(.cursorPosition(row: 0, col: 0)),
+                .printable(Character(String(c))),
+                .csi(.cursorPosition(row: 1, col: 0)),
+                .c0(.lineFeed),
+            ])
+        }
+        // Enter alt and ED 3 — the .scrollback semantics belong to main; alt has no history.
+        await model.apply([
+            .csi(.setMode(.alternateScreen1049, enabled: true)),
+            .csi(.eraseInDisplay(.scrollback)),
+        ])
+        // Exit alt — main history must still be intact.
+        await model.apply([.csi(.setMode(.alternateScreen1049, enabled: false))])
+        #expect(model.latestHistoryTail().count == 2)
+    }
+}
