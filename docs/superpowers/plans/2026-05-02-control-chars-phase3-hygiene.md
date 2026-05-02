@@ -1199,6 +1199,14 @@ makeBuffer invocation count to tests."
 
 - [ ] **Step 2: Build `MetalBufferRing`**
 
+**GPU-sync design — verified against Apple docs (https://developer.apple.com/documentation/metal/synchronizing-cpu-and-gpu-work):**
+
+> "Even with `maxBuffersInFlight=3`, you must wait for the GPU to finish using the buffer before the CPU modifies it."
+
+The canonical pattern is `DispatchSemaphore(value: maxBuffersInFlight)` paired with `commandBuffer.addCompletedHandler { semaphore.signal() }`. The CPU calls `semaphore.wait()` before writing into the next ring buffer; the completion handler signals when the GPU is done with the frame that used it. Without this sync, the CPU can overwrite a buffer the GPU is still sampling — torn reads or visual corruption, often intermittent.
+
+**Ownership:** the semaphore lives **on the ring**, not on the coordinator. The ring provides `nextBuffer(copying:length:)` (which internally `wait()`s) and `signalOnCompletion(commandBuffer:)` (which registers the handler). Callers never see the semaphore; they treat the ring as a serialized resource.
+
 Create `rTerm/MetalBufferRing.swift`:
 
 ```swift
@@ -1211,30 +1219,45 @@ Create `rTerm/MetalBufferRing.swift`:
 //
 
 import Metal
+import Dispatch
 
 /// Pre-allocated ring of `MTLBuffer`s used to avoid per-frame
-/// `makeBuffer` allocations in the render loop.
+/// `makeBuffer` allocations in the render loop. Pairs a GPU-sync
+/// semaphore with the ring so the CPU cannot overwrite a buffer the
+/// GPU is still reading — see
+/// https://developer.apple.com/documentation/metal/synchronizing-cpu-and-gpu-work.
 ///
-/// The ring holds `count` buffers each sized at `byteLength`. Call
-/// `nextBuffer(copying:)` to write `data` into the next buffer in the
-/// ring and return it. Sized to one buffer per draw pass per
-/// frame-in-flight; `RenderCoordinator` owns six rings (one per
-/// vertex-pass category).
+/// Usage per frame (inside draw(in:)):
+///   1. let buf = ring.nextBuffer(copying: ptr, length: n)
+///      // internally: semaphore.wait(); copy bytes; advance cursor
+///   2. encode draw using `buf`
+///   3. ring.signalOnCompletion(commandBuffer: cb)
+///      // attaches addCompletedHandler that signals the ring's semaphore
+///   4. cb.commit()
 ///
-/// On grid resize the ring is rebuilt; call `resize(byteLength:)` from
-/// the coordinator's drawable-size change hook.
+/// On resize, call drainAndResize(byteLength:) — it waits for every
+/// in-flight frame to finish (semaphore.wait() × count) before
+/// rebuilding the buffers, guaranteeing no GPU is still reading.
 @MainActor
 final class MetalBufferRing {
     private let device: MTLDevice
     private var buffers: [MTLBuffer]
     private var cursor: Int = 0
     private(set) var byteLength: Int
+    private let count: Int
+
+    /// GPU-sync gate. Initial value = count (all buffers free at start).
+    /// wait() blocks if all buffers are in flight; signal() releases
+    /// one slot after a frame completes.
+    nonisolated(unsafe) private let semaphore: DispatchSemaphore
 
     init(device: MTLDevice, count: Int, byteLength: Int) {
         precondition(count > 0, "ring count must be positive")
         precondition(byteLength > 0, "ring byteLength must be positive")
         self.device = device
+        self.count = count
         self.byteLength = byteLength
+        self.semaphore = DispatchSemaphore(value: count)
         self.buffers = (0..<count).compactMap {
             device.makeBuffer(length: byteLength, options: .storageModeShared)
         }
@@ -1243,30 +1266,51 @@ final class MetalBufferRing {
     }
 
     /// Write `data` into the next buffer in the ring and return it.
-    /// Truncates if `data` exceeds `byteLength` (should not happen if
-    /// `resize` is driven by draw preconditions).
+    /// Blocks on the GPU-sync semaphore if all buffers are in flight.
+    /// Truncates if `length > byteLength`; caller must have resized.
     func nextBuffer(copying data: UnsafeRawPointer, length: Int) -> MTLBuffer {
         precondition(length <= byteLength,
                      "incoming data length \(length) exceeds ring byteLength \(byteLength); caller must resize first")
+        // Wait until the GPU has finished with the buffer at `cursor`.
+        semaphore.wait()
         let buf = buffers[cursor]
         buf.contents().copyMemory(from: data, byteCount: length)
-        cursor = (cursor + 1) % buffers.count
+        cursor = (cursor + 1) % count
         return buf
     }
 
-    /// Resize every buffer in the ring. O(count). Caller guarantees no
-    /// buffer is currently in flight.
-    func resize(byteLength newByteLength: Int) {
+    /// Register a GPU-completion handler that signals the ring's
+    /// semaphore. Call this after the command buffer uses the buffer
+    /// returned by nextBuffer, before committing.
+    func signalOnCompletion(commandBuffer: MTLCommandBuffer) {
+        let sem = semaphore
+        commandBuffer.addCompletedHandler { _ in
+            sem.signal()
+        }
+    }
+
+    /// Drain every in-flight slot and resize. Blocks until the GPU has
+    /// finished all outstanding frames that used this ring, then
+    /// rebuilds the buffers. Caller (coordinator) must call this from
+    /// the resize hook BEFORE the next draw.
+    func drainAndResize(byteLength newByteLength: Int) {
         precondition(newByteLength > 0)
         guard newByteLength != byteLength else { return }
-        buffers = (0..<buffers.count).compactMap {
+        // Wait for every in-flight frame to complete.
+        for _ in 0..<count { semaphore.wait() }
+        // Rebuild.
+        buffers = (0..<count).compactMap {
             device.makeBuffer(length: newByteLength, options: .storageModeShared)
         }
         byteLength = newByteLength
         cursor = 0
+        // Release all slots — the new buffers are all free.
+        for _ in 0..<count { semaphore.signal() }
     }
 }
 ```
+
+**Note on `nonisolated(unsafe)` for the semaphore:** `DispatchSemaphore` is reference-safe from any thread by contract (it's the whole point of the API). The `@MainActor` class annotation keeps the ring's buffer slice serialized, but the semaphore itself must be readable from the GPU completion handler which runs on an arbitrary Dispatch thread. `nonisolated(unsafe)` is the correct annotation here; the invariant is that `signal()` and `wait()` are both thread-safe operations.
 
 - [ ] **Step 3: Tests for the ring**
 
@@ -1286,35 +1330,58 @@ final class MetalBufferRingTests: XCTestCase {
                                     "Metal device required for this test")
         let ring = MetalBufferRing(device: device, count: 3, byteLength: 256)
         var payload: [UInt8] = Array(repeating: 0xAB, count: 16)
+
+        // Three uses fill the ring.
         let b1 = ring.nextBuffer(copying: &payload, length: 16)
         let b2 = ring.nextBuffer(copying: &payload, length: 16)
         let b3 = ring.nextBuffer(copying: &payload, length: 16)
-        let b4 = ring.nextBuffer(copying: &payload, length: 16)
         XCTAssertNotEqual(ObjectIdentifier(b1), ObjectIdentifier(b2))
         XCTAssertNotEqual(ObjectIdentifier(b2), ObjectIdentifier(b3))
+
+        // A fourth use would block on the semaphore — simulate GPU
+        // completion on b1 by manually signaling through a fake command
+        // buffer's completion handler. In a real render this happens
+        // via addCompletedHandler.
+        let cq = try XCTUnwrap(device.makeCommandQueue())
+        let cb = try XCTUnwrap(cq.makeCommandBuffer())
+        ring.signalOnCompletion(commandBuffer: cb)
+        cb.commit()
+        cb.waitUntilCompleted()  // waits until the handler fires
+
+        // Now a fourth use returns b1 (slot released, cursor wraps).
+        let b4 = ring.nextBuffer(copying: &payload, length: 16)
         XCTAssertEqual(ObjectIdentifier(b1), ObjectIdentifier(b4),
-                       "cursor should wrap to index 0 after count=3 uses")
+                       "cursor should wrap to index 0 after slot 0 signaled")
     }
 
     @MainActor
-    func test_ring_resize_reallocates_buffers() throws {
+    func test_drainAndResize_rebuilds_buffers_at_new_size() throws {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         let ring = MetalBufferRing(device: device, count: 2, byteLength: 128)
         XCTAssertEqual(ring.byteLength, 128)
-        ring.resize(byteLength: 512)
+        ring.drainAndResize(byteLength: 512)
         XCTAssertEqual(ring.byteLength, 512)
     }
 
     @MainActor
-    func test_ring_resize_noop_when_size_unchanged() throws {
+    func test_drainAndResize_noop_when_size_unchanged() throws {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         let ring = MetalBufferRing(device: device, count: 2, byteLength: 128)
         var payload: [UInt8] = Array(repeating: 0, count: 16)
+
+        // First use — takes slot 0.
         let before = ring.nextBuffer(copying: &payload, length: 16)
-        ring.resize(byteLength: 128)  // same size — must not reallocate
-        ring.resize(byteLength: 128)  // still same size
-        // After two same-size resizes, the next buffer in the ring
-        // cycles normally (we did not reset cursor).
+
+        // Signal completion so the slot is released.
+        let cq = try XCTUnwrap(device.makeCommandQueue())
+        let cb = try XCTUnwrap(cq.makeCommandBuffer())
+        ring.signalOnCompletion(commandBuffer: cb)
+        cb.commit()
+        cb.waitUntilCompleted()
+
+        ring.drainAndResize(byteLength: 128)  // same size — noop
+
+        // After the noop, the cursor has advanced; next use takes slot 1.
         let after = ring.nextBuffer(copying: &payload, length: 16)
         XCTAssertNotEqual(ObjectIdentifier(before), ObjectIdentifier(after))
     }
@@ -1355,12 +1422,13 @@ private func ensureRings(cols: Int, rows: Int) {
         underlineRing = MetalBufferRing(device: device, count: Self.maxBuffersInFlight, byteLength: overlayBytes)
         strikethroughRing = MetalBufferRing(device: device, count: Self.maxBuffersInFlight, byteLength: overlayBytes)
     } else if regularRing!.byteLength < glyphBytes {
-        regularRing!.resize(byteLength: glyphBytes)
-        boldRing!.resize(byteLength: glyphBytes)
-        italicRing!.resize(byteLength: glyphBytes)
-        boldItalicRing!.resize(byteLength: glyphBytes)
-        underlineRing!.resize(byteLength: overlayBytes)
-        strikethroughRing!.resize(byteLength: overlayBytes)
+        // Resize path — drainAndResize waits for in-flight frames.
+        regularRing!.drainAndResize(byteLength: glyphBytes)
+        boldRing!.drainAndResize(byteLength: glyphBytes)
+        italicRing!.drainAndResize(byteLength: glyphBytes)
+        boldItalicRing!.drainAndResize(byteLength: glyphBytes)
+        underlineRing!.drainAndResize(byteLength: overlayBytes)
+        strikethroughRing!.drainAndResize(byteLength: overlayBytes)
     }
 }
 ```
@@ -1369,7 +1437,7 @@ Call `ensureRings(cols: cols, rows: rows)` at the top of `draw(in:)` (right afte
 
 - [ ] **Step 5: Replace `makeBuffer` call sites with ring allocation**
 
-Find each `device.makeBuffer(bytes: ...verts, length: ..., options: .storageModeShared)` site in `RenderCoordinator.swift` and replace:
+Find each `device.makeBuffer(bytes: ...verts, length: ..., options: .storageModeShared)` site in `RenderCoordinator.swift` and replace. Each pass's `nextBuffer` must be paired with a `signalOnCompletion` on the enclosing `commandBuffer` so the semaphore is released when the GPU finishes the frame:
 
 ```swift
 // Before:
@@ -1377,8 +1445,22 @@ let buf = device.makeBuffer(bytes: regularVerts, length: regularVerts.count * 4,
 
 // After:
 let buf = regularVerts.withUnsafeBufferPointer { ptr in
-    regularRing!.nextBuffer(copying: ptr.baseAddress!, length: ptr.count * MemoryLayout<Float>.stride)
+    regularRing!.nextBuffer(copying: ptr.baseAddress!,
+                             length: ptr.count * MemoryLayout<Float>.stride)
 }
+// ... encode the draw call using `buf` ...
+```
+
+After encoding ALL passes, register one completion handler per ring on the shared command buffer, right before commit:
+
+```swift
+regularRing!.signalOnCompletion(commandBuffer: commandBuffer)
+boldRing!.signalOnCompletion(commandBuffer: commandBuffer)
+italicRing!.signalOnCompletion(commandBuffer: commandBuffer)
+boldItalicRing!.signalOnCompletion(commandBuffer: commandBuffer)
+underlineRing!.signalOnCompletion(commandBuffer: commandBuffer)
+strikethroughRing!.signalOnCompletion(commandBuffer: commandBuffer)
+commandBuffer.commit()
 ```
 
 Repeat for bold, italic, boldItalic, underline, strikethrough passes. Cursor and overlay (scroll bell flash, etc.) passes that use `setVertexBytes` or separate allocations stay unchanged unless they fit the pattern.
@@ -1431,16 +1513,24 @@ git add rTerm/MetalBufferRing.swift \
         rTerm/RenderCoordinator.swift \
         rTermTests/MetalBufferRingTests.swift \
         rTermTests/RenderCoordinatorAllocationTests.swift
-git commit -m "perf(rTerm): pre-allocated Metal buffer rings
+git commit -m "perf(rTerm): pre-allocated Metal buffer rings with GPU sync
 
 Six MetalBufferRing instances (one per vertex-pass category — regular,
 bold, italic, boldItalic, underline, strikethrough). Each ring holds
-maxBuffersInFlight=3 MTLBuffers sized to the worst-case grid; draw(in:)
-writes via nextBuffer(copying:) instead of device.makeBuffer.
+maxBuffersInFlight=3 MTLBuffers sized to the worst-case grid, plus a
+DispatchSemaphore(value: 3) gating CPU writes against in-flight GPU
+reads (per Apple's triple-buffering guidance:
+https://developer.apple.com/documentation/metal/synchronizing-cpu-and-gpu-work).
 
-Steady-state makeBuffer count drops from 4–6/frame to 0. Ring resize
-on grid grow preserves correctness; resize is a no-op when byteLength
-matches the current sizing. DEBUG-only counter test pins the
+draw(in:) writes via nextBuffer(copying:length:) (which semaphore.wait()s
+before returning the next slot) and registers signalOnCompletion on the
+frame's command buffer so the semaphore signals when the GPU finishes.
+Grid resize uses drainAndResize(byteLength:) which waits for every
+in-flight slot to drain before rebuilding — no torn reads possible.
+
+Steady-state makeBuffer count drops from 4-6/frame to 0. Ring lifecycle
+covered by unit tests that exercise the semaphore via a real
+MTLCommandQueue. DEBUG-only counter test pins the
 zero-steady-state invariant."
 ```
 

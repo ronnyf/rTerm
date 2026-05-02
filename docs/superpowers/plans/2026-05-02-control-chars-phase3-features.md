@@ -1293,7 +1293,9 @@ public struct CellStyle: Sendable, Equatable, Codable {
 }
 ```
 
-The hand-coded Codable + `decodeIfPresent` preserves Phase 1/2 wire compat — existing JSON without a "hyperlink" key still decodes.
+**Why hand-coded Codable, not auto-derived?** The current `CellStyle` (`TermCore/CellStyle.swift:40`) uses **auto-derived** `Codable` (`public struct CellStyle: Sendable, Equatable, Codable`, no hand-written `init(from:)` or `encode(to:)`). Adding a new field `hyperlink: Hyperlink?` with auto-derived Codable would make the synthesized `init(from:)` require the new key — decoding a legacy Phase 1/2 payload (no `hyperlink` key) would throw.
+
+The rewrite **to** hand-coded Codable with `decodeIfPresent` is the `Hyperlink?` field's contract: nil-valued. Decoding legacy payloads yields `hyperlink: nil`; encoding drops the key when nil. This is the project convention for all new Codable fields (spec §6). Note: mixed daemon/client versions are not a Phase 3 constraint (daemon and client ship together per spec §6) — the compat motivation here is "round-trip tests of pre-Phase-3 JSON blobs continue to decode," not "new daemon talks to old client."
 
 - [ ] **Step 5: `ScreenModel` pen state + handler**
 
@@ -1401,6 +1403,26 @@ struct HyperlinkTests {
         let decoded = try JSONDecoder().decode(Cell.self, from: data)
         #expect(decoded.style.hyperlink == nil)
     }
+
+    @Test("Legacy CellStyle JSON without hyperlink key decodes to nil")
+    func test_legacy_cellstyle_decodes() throws {
+        // Direct CellStyle round-trip — confirms the hand-coded
+        // decodeIfPresent path handles a pre-Phase-3 CellStyle blob.
+        let legacyJSON = #"{"foreground":{"default":{}},"background":{"default":{}},"attributes":{"rawValue":0}}"#
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(CellStyle.self, from: data)
+        #expect(decoded.hyperlink == nil)
+        #expect(decoded.attributes == [])
+    }
+
+    @Test("Encoded CellStyle omits hyperlink key when nil")
+    func test_cellstyle_encode_omits_nil_hyperlink() throws {
+        let style = CellStyle()  // default — no hyperlink
+        let data = try JSONEncoder().encode(style)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(!json.contains("\"hyperlink\""),
+                "nil hyperlink must not be encoded; got \(json)")
+    }
 }
 ```
 
@@ -1417,10 +1439,21 @@ git add TermCore/Hyperlink.swift \
 git commit -m "feat(TermCore): OSC 8 hyperlinks — parser + pen state
 
 Promote OSC 8 out of .osc(.unknown). Parser splits the payload on the
-first semicolon, extracts id= from params, and emits
-.osc(.setHyperlink(Hyperlink(id:uri:))) or .osc(.setHyperlink(nil)) on
-terminator. CellStyle gains a hyperlink: Hyperlink? field via
-decodeIfPresent — Phase 1/2 wire format stays compatible."
+first semicolon, extracts id= from params (inner separator ':' per
+the consensus OSC 8 grammar — iTerm2, WezTerm, kitty, Alacritty), and
+emits .osc(.setHyperlink(Hyperlink(id:uri:))) or
+.osc(.setHyperlink(nil)) on terminator.
+
+CellStyle gains a hyperlink: Hyperlink? field. The rewrite from
+auto-derived to hand-coded Codable is necessary because the
+auto-derived init(from:) cannot ignore a missing 'hyperlink' key —
+it would throw on any pre-Phase-3 JSON blob. Hand-coded with
+decodeIfPresent handles legacy payloads cleanly; encoding drops the
+key when nil. Roundtrip tests pin both the legacy-decodes-to-nil
+and the encode-omits-nil-key invariants. Project convention for all
+new Codable fields (spec §6); mixed daemon/client versions are NOT a
+Phase 3 compat concern (daemon + client ship together per §6), but
+the roundtrip tests guard against a future regression."
 ```
 
 ---
@@ -1838,7 +1871,35 @@ case .clipboardWrite(_, let targets, let base64):
     }
 ```
 
-Define `clipboardConsent(for:preview:)` — see Pass 5 blocker 1.8 fix; this is implemented via `beginSheetModal(for:completionHandler:)` + `withCheckedContinuation`, NOT `NSAlert.runModal()` (which would freeze the renderer + XPC handler).
+Define `clipboardConsent(for:preview:)` using `beginSheetModal(for:completionHandler:)` wrapped in `withCheckedContinuation`. Do NOT use `NSAlert.runModal()` — per Apple docs (https://developer.apple.com/documentation/appkit/nsalert/runmodal) `runModal()` spins a nested modal event loop that blocks the calling thread, which would freeze the renderer and all XPC message handling every time the shell sends an OSC 52. A shell that spams `printf '\033]52;c;...\007'` in a loop would make the app unusable with `runModal()`.
+
+```swift
+@MainActor
+private func clipboardConsent(for targets: ClipboardTargets, preview: String) async -> Bool {
+    // Sheet-modal — non-blocking. Needs a host window; the MainActor
+    // context of the response handler gives us access to NSApp's
+    // keyWindow (or the first main window if none is key).
+    guard let host = NSApp.keyWindow ?? NSApp.mainWindow else {
+        // No window to present a sheet on — deny the write silently.
+        // Alternative: fall back to a borderless panel; defer to
+        // Phase 4.
+        return false
+    }
+    let alert = NSAlert()
+    alert.messageText = "Terminal app requests clipboard write"
+    let snippet = preview.count > 80 ? String(preview.prefix(80)) + "…" : preview
+    alert.informativeText = "About to write to the clipboard:\n\n\(snippet)"
+    alert.addButton(withTitle: "Allow")
+    alert.addButton(withTitle: "Deny")
+    return await withCheckedContinuation { continuation in
+        alert.beginSheetModal(for: host) { response in
+            continuation.resume(returning: response == .alertFirstButtonReturn)
+        }
+    }
+}
+```
+
+**Coalescing:** to prevent stacked prompts when a shell rapidly fires OSC 52, also track a `pendingClipboardPrompt: Bool` on the MainActor view state; if a new consent call arrives while one is pending, skip it (log "dropped OSC 52; prior prompt still open"). Phase 3 keeps this simple — one prompt at a time per session.
 
 - [ ] **Step 8: Tests**
 
